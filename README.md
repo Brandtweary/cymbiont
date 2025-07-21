@@ -97,4 +97,8 @@ See `CLAUDE.md` for detailed development guidelines and `cymbiont_architecture.m
 
 ## License
 
-Licensed under MIT or Apache-2.0, at your option.
+Copyright (c) 2025 Cymbiont developers.
+
+Cymbiont is made available under the terms of either the MIT License or the Apache License 2.0, at your option.
+
+See the [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE) files for license details.

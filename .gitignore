@@ -1,0 +1,49 @@
+# Rust build artifacts
+/target
+/Cargo.lock
+
+# Node.js
+/logseq_plugin/node_modules
+/logseq_plugin/package-lock.json
+
+# Data files
+/data/knowledge_graph.json
+/data/archived_nodes/
+
+# Configuration (keep example)
+/config.yaml
+
+# Logs
+*.log
+
+# Environment files
+.env
+.env.local
+
+# IDE files
+.idea/
+.vscode/
+.windsurfrules
+.claude
+CLAUDE.local.md
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+/tmp
+*.tmp
+
+# Development workflow directories
+notes/
+archive/
+
+# Test coverage
+/coverage
+*.lcov
+
+# Server state
+server_info.json

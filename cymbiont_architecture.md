@@ -5,11 +5,11 @@ A guide to core modules, system design, and data flow for developers.
 ## Recent Updates
 
 ### Logging Improvements (Latest)
-**Status**: Implemented emoji-based permanent log identification system
-- **Emoji Convention**: Logs intended for production now include emojis (🚀, 📊, 🔌, etc.) to distinguish them from temporary debug logs
+**Status**: Simplified logging conventions
+- **Debug Logs**: All DEBUG level logs are now considered temporary and must be removed before committing
+- **Trace Logs**: TRACE level is now for low-level permanent details worth preserving
 - **Log Level Adjustments**: Moved verbose development logs from INFO to DEBUG/TRACE levels, keeping INFO for user-relevant events
-- **Permanent Trace Logs**: Process management and archive operations marked with emojis at TRACE level for permanent retention
-- **Documentation**: Updated CLAUDE.md with comprehensive logging guidelines and examples
+- **Documentation**: Updated CLAUDE.md with simplified logging guidelines
 
 ## System Overview
 
@@ -23,7 +23,6 @@ cymbiont/
 │   ├── main.rs                    # HTTP server orchestration
 │   ├── config.rs                  # Configuration management
 │   ├── logging.rs                 # Custom tracing formatter
-│   ├── log_utils.rs               # Log analysis utilities
 │   ├── api.rs                     # API types, handlers, routes
 │   ├── utils.rs                   # Utility functions
 │   ├── graph_manager.rs           # Petgraph-based knowledge graph storage
@@ -97,9 +96,6 @@ The core server provides HTTP API endpoints, graph management using petgraph, an
 - **logging.rs**: Custom logging configuration
   - Implements ConditionalLocationFormatter for cleaner log output
   - Shows file:line information only for ERROR and WARN levels
-- **log_utils.rs**: Log analysis utilities for the emoji convention
-  - Static analysis tools to identify permanent vs temporary logs
-  - CLI commands: `log-check emoji`, `log-check temp`, `log-check report`
 - **api.rs**: Consolidated API implementation
   - API types: ApiResponse, PKMData, LogMessage
   - All endpoint handlers: root, receive_data, sync operations, logging
@@ -183,7 +179,7 @@ The core server provides HTTP API endpoints, graph management using petgraph, an
   - Node archival: Deleted nodes saved to `archived_nodes/archive_YYYYMMDD_HHMMSS.json`
   - Deletion detection via `verify_and_archive_missing_nodes()` after sync
 - **pkm_data.rs**: Shared data structures and validation logic
-- **Logging**: Uses tracing crate with conditional formatter (file:line only for WARN/ERROR), emoji convention for permanent logs
+- **Logging**: Uses tracing crate with conditional formatter (file:line only for WARN/ERROR)
 
 **Operation Notes**
 - Backend server must be running before loading the Logseq plugin

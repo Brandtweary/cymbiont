@@ -38,21 +38,22 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::process::exit;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, RwLock};
 use std::error::Error;
 use std::fs;
 use std::time::{Duration, Instant};
 use tracing::{info, warn, error, debug};
 use clap::Parser;
+use std::collections::HashMap;
 
 // Import our modules
 mod pkm_data;
 mod graph_manager;
 mod config;
 mod logging;
-mod log_utils;
 mod api;
 mod utils;
+mod websocket;
 
 use graph_manager::GraphManager;
 use config::{load_config, validate_js_plugin_config, Config};
@@ -76,28 +77,10 @@ struct Args {
     #[arg(long)]
     force_incremental_sync: bool,
     
-    /// Run log analysis instead of starting the server
-    #[command(subcommand)]
-    log_check: Option<LogCheckCommand>,
-}
-
-#[derive(Parser, Debug)]
-enum LogCheckCommand {
-    /// Show all permanent logs with emojis
-    LogCheck {
-        #[command(subcommand)]
-        command: LogCheckSubCommand,
-    },
-}
-
-#[derive(Parser, Debug)]
-enum LogCheckSubCommand {
-    /// Show all permanent logs with emojis
-    Emoji,
-    /// Show temporary logs without emojis
-    Temp,
-    /// Show full analysis report
-    Report,
+    /// Test WebSocket by sending a command after connection
+    #[arg(long)]
+    test_websocket: Option<String>,
+    
 }
 
 // Application state that will be shared between handlers
@@ -106,9 +89,11 @@ pub struct AppState {
     pub logseq_child: Mutex<Option<std::process::Child>>,
     pub plugin_init_tx: Mutex<Option<oneshot::Sender<()>>>,
     pub sync_complete_tx: Mutex<Option<oneshot::Sender<()>>>,
+    pub ws_ready_tx: Mutex<Option<oneshot::Sender<()>>>,
     pub force_full_sync: bool,
     pub force_incremental_sync: bool,
     pub config: Config,
+    pub ws_connections: Option<Arc<RwLock<HashMap<String, websocket::WsConnection>>>>,
 }
 
 // Cleanup function to handle graceful shutdown
@@ -141,34 +126,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Parse command line arguments
     let args = Args::parse();
     
-    // Initialize logging first so log check commands can use it
+    // Initialize logging
     init_logging();
-    
-    // Handle log check command if provided
-    if let Some(LogCheckCommand::LogCheck { command }) = args.log_check {
-        use log_utils::{find_emoji_logs, find_temp_logs, print_log_report};
-        
-        match command {
-            LogCheckSubCommand::Emoji => {
-                let logs = find_emoji_logs();
-                info!("📋 Found {} permanent logs with emojis:", logs.len());
-                for log in logs {
-                    info!("  {}", log.display());
-                }
-            }
-            LogCheckSubCommand::Temp => {
-                let logs = find_temp_logs();
-                info!("📋 Found {} temporary logs without emojis:", logs.len());
-                for log in logs {
-                    info!("  {}", log.display());
-                }
-            }
-            LogCheckSubCommand::Report => {
-                print_log_report();
-            }
-        }
-        return Ok(());
-    }
     
     // Load configuration
     let config = load_config();
@@ -203,9 +162,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         logseq_child: Mutex::new(None),
         plugin_init_tx: Mutex::new(None),
         sync_complete_tx: Mutex::new(None),
+        ws_ready_tx: Mutex::new(None),
         force_full_sync: args.force_full_sync,
         force_incremental_sync: args.force_incremental_sync,
         config: config.clone(),
+        ws_connections: Some(Arc::new(RwLock::new(HashMap::new()))),
     });
     
     // Set up exit handler
@@ -265,7 +226,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if let Some(duration) = duration_secs {
         if let Some(rx) = plugin_init_rx {
             // Wait for plugin initialization before starting timer
-            run_with_duration(listener, app, app_state.clone(), rx, duration).await?;
+            run_with_duration(listener, app, app_state.clone(), rx, duration, args.test_websocket).await?;
         } else {
             // No Logseq, start timer immediately
             debug!("Server will run for {} seconds", duration);
@@ -300,6 +261,7 @@ async fn run_with_duration(
     app_state: Arc<AppState>,
     plugin_initialized: oneshot::Receiver<()>,
     duration_secs: u64,
+    test_websocket: Option<String>,
 ) -> Result<(), Box<dyn Error>> {
     // Create graceful shutdown signal
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -316,7 +278,33 @@ async fn run_with_duration(
             shutdown_rx.await.ok();
         });
     
-    // Wait for plugin initialization, then start duration timer
+    // Spawn test WebSocket task if requested
+    let test_task = if let Some(test_command) = test_websocket {
+        let app_state_clone = app_state.clone();
+        let (ws_ready_tx, ws_ready_rx) = oneshot::channel::<()>();
+        
+        // Store the channel for WebSocket ready signal
+        if let Ok(mut tx_guard) = app_state.ws_ready_tx.lock() {
+            *tx_guard = Some(ws_ready_tx);
+        }
+        
+        Some(tokio::spawn(async move {
+            // Wait for WebSocket connection to be ready
+            match ws_ready_rx.await {
+                Ok(_) => {
+                    info!("🧪 WebSocket ready, executing test command");
+                    test_websocket_command(&app_state_clone, &test_command).await;
+                }
+                Err(_) => {
+                    error!("WebSocket ready signal never received");
+                }
+            }
+        }))
+    } else {
+        None
+    };
+    
+    // Run server and timer concurrently
     tokio::select! {
         result = server => {
             if let Err(e) = result {
@@ -327,25 +315,25 @@ async fn run_with_duration(
             // Wait for plugin to initialize
             match plugin_initialized.await {
                 Ok(_) => {
-                    debug!("Server will run for {} seconds after plugin initialization", duration_secs);
+                    debug!("🏃 Server will run for {} seconds after plugin initialization", duration_secs);
                     tokio::time::sleep(Duration::from_secs(duration_secs)).await;
-                    debug!("Duration limit reached, checking for active sync...");
+                    debug!("⏱️ Duration limit reached, checking for active sync...");
                     
                     // Wait for sync completion with timeout
                     tokio::select! {
                         _ = sync_rx => {
-                            debug!("Sync completion received, shutting down gracefully");
+                            debug!("✅ Sync completion received, shutting down gracefully");
                         }
                         _ = tokio::time::sleep(Duration::from_secs(10)) => {
-                            debug!("Timeout waiting for sync completion, shutting down anyway");
+                            debug!("⏱️ Timeout waiting for sync completion, shutting down anyway");
                         }
                     }
                 },
                 Err(_) => {
                     // If plugin init fails, still run with timer
-                    debug!("Plugin initialization failed, running with {} second timer anyway", duration_secs);
+                    debug!("⚠️ Plugin initialization failed, running with {} second timer anyway", duration_secs);
                     tokio::time::sleep(Duration::from_secs(duration_secs)).await;
-                    debug!("Duration limit reached, shutting down gracefully");
+                    debug!("⏱️ Duration limit reached, shutting down gracefully");
                 }
             }
             
@@ -354,7 +342,54 @@ async fn run_with_duration(
         } => {}
     }
     
+    // Clean up test task if it's still running
+    if let Some(task) = test_task {
+        task.abort();
+    }
+    
     Ok(())
+}
+
+// Send test WebSocket command
+async fn test_websocket_command(app_state: &Arc<AppState>, command_type: &str) {
+    use websocket::{Command, broadcast_command};
+    
+    let command = match command_type {
+        "test" | "echo" => {
+            info!("🧪 Sending test WebSocket command");
+            Command::Test {
+                message: format!("Test message from server at {:?}", std::time::SystemTime::now()),
+            }
+        },
+        "page" | "create-page" => {
+            info!("🧪 Sending create page command");
+            let mut properties = HashMap::new();
+            properties.insert("type".to_string(), "test-page".to_string());
+            properties.insert("created-by".to_string(), "cymbiont-websocket".to_string());
+            
+            Command::CreatePage {
+                name: "test-websocket".to_string(),
+                properties: Some(properties),
+            }
+        },
+        "block" | "create-block" => {
+            info!("🧪 Sending create block command");
+            Command::CreateBlock {
+                content: format!("Test block created via WebSocket at {:?}", std::time::SystemTime::now()),
+                parent_id: None,
+                page_name: Some("test-websocket".to_string()),
+            }
+        },
+        _ => {
+            error!("Unknown test command type: {} (use 'test', 'page', 'block')", command_type);
+            return;
+        }
+    };
+    
+    match broadcast_command(app_state, command).await {
+        Ok(()) => info!("✅ Test WebSocket command sent successfully"),
+        Err(e) => error!("Failed to send test WebSocket command: {}", e),
+    }
 }
 
 // Simple timeout for when Logseq is not launched

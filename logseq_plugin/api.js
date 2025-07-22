@@ -395,3 +395,192 @@ window.KnowledgeGraphAPI.sendBatchToBackend = async function(type, batch, graphN
     console.error(`Error sending ${type} batch:`, error);
   }
 }
+
+/**
+ * WebSocket Client for bidirectional communication
+ * @namespace
+ */
+window.KnowledgeGraphAPI.websocket = {
+  ws: null,
+  reconnectInterval: null,
+  reconnectDelay: 1000, // Start with 1 second
+  maxReconnectDelay: 30000, // Max 30 seconds
+  authenticated: false,
+  commandQueue: [],
+  commandHandlers: {},
+  
+  /**
+   * Connect to WebSocket server
+   * @returns {Promise<boolean>} - Whether connection was successful
+   */
+  async connect() {
+    try {
+      // Get server info first
+      const serverInfo = await discoverServerPort();
+      if (!serverInfo) {
+        console.error('WebSocket: No backend server found');
+        return false;
+      }
+      
+      const wsUrl = `ws://${serverInfo.host}:${serverInfo.port}/ws`;
+      
+      this.ws = new WebSocket(wsUrl);
+      
+      this.ws.onopen = () => {
+        console.info('WebSocket: Connected to backend');
+        this.reconnectDelay = 1000; // Reset reconnect delay
+        this.authenticated = false;
+        
+        // Send auth command immediately
+        this.send({ type: 'auth', token: 'dummy-token' }); // TODO: Real auth token
+        
+        // Process queued commands
+        while (this.commandQueue.length > 0 && this.ws.readyState === WebSocket.OPEN) {
+          const cmd = this.commandQueue.shift();
+          this.ws.send(JSON.stringify(cmd));
+        }
+      };
+      
+      this.ws.onmessage = async (event) => {
+        try {
+          const response = JSON.parse(event.data);
+          await this.handleResponse(response);
+        } catch (error) {
+          console.error('WebSocket: Error parsing message:', error);
+        }
+      };
+      
+      this.ws.onerror = (error) => {
+        console.error('WebSocket: Error:', error);
+      };
+      
+      this.ws.onclose = () => {
+        console.info('WebSocket: Disconnected');
+        this.authenticated = false;
+        this.scheduleReconnect();
+      };
+      
+      return true;
+    } catch (error) {
+      console.error('WebSocket: Connection error:', error);
+      this.scheduleReconnect();
+      return false;
+    }
+  },
+  
+  /**
+   * Schedule reconnection with exponential backoff
+   */
+  scheduleReconnect() {
+    if (this.reconnectInterval) {
+      clearTimeout(this.reconnectInterval);
+    }
+    
+    this.reconnectInterval = setTimeout(() => {
+      console.info(`WebSocket: Attempting reconnect (delay: ${this.reconnectDelay}ms)`);
+      this.connect();
+      
+      // Exponential backoff
+      this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay);
+    }, this.reconnectDelay);
+  },
+  
+  /**
+   * Send a command to the backend
+   * @param {Object} command - Command to send
+   */
+  send(command) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(command));
+    } else {
+      // Queue command for when connection is restored
+      this.commandQueue.push(command);
+      // Ensure we're trying to connect
+      if (!this.reconnectInterval) {
+        this.scheduleReconnect();
+      }
+    }
+  },
+  
+  /**
+   * Handle response from backend
+   * @param {Object} response - Response from backend
+   */
+  async handleResponse(response) {
+    switch (response.type) {
+      case 'heartbeat':
+        // Send pong
+        this.send({ type: 'heartbeat' });
+        break;
+        
+      case 'success':
+        if (!this.authenticated) {
+          this.authenticated = true;
+          console.info('WebSocket: Authenticated');
+        }
+        break;
+        
+      case 'error':
+        console.error('WebSocket: Command error:', response.message);
+        break;
+        
+      case 'create_block':
+      case 'update_block':
+      case 'delete_block':
+      case 'create_page':
+        // Forward to command handlers
+        const handler = this.commandHandlers[response.type];
+        if (handler) {
+          await handler(response);
+        } else {
+          console.warn(`WebSocket: No handler for command type: ${response.type}`);
+        }
+        break;
+        
+      case 'test':
+        // Handle test command - echo it back to test bidirectional flow
+        console.info('WebSocket: Test command received:', response);
+        window.KnowledgeGraphAPI.log.info('Test command received', response);
+        
+        // Send a test command back to the server
+        if (response.message) {
+          this.send({
+            type: 'test',
+            message: `Echo from client: ${response.message}`
+          });
+          window.KnowledgeGraphAPI.log.info('Sent test response back to server');
+        }
+        break;
+        
+      default:
+        console.warn('WebSocket: Unknown response type:', response.type);
+    }
+  },
+  
+  /**
+   * Register a command handler
+   * @param {string} type - Command type
+   * @param {Function} handler - Handler function
+   */
+  registerHandler(type, handler) {
+    this.commandHandlers[type] = handler;
+  },
+  
+  /**
+   * Disconnect WebSocket
+   */
+  disconnect() {
+    if (this.reconnectInterval) {
+      clearTimeout(this.reconnectInterval);
+      this.reconnectInterval = null;
+    }
+    
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+    
+    this.authenticated = false;
+    this.commandQueue = [];
+  }
+};

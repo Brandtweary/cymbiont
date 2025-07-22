@@ -280,6 +280,14 @@ async function handleDBChanges(changesData) {
     return;
   }
   
+  // Debug logging to track if WebSocket commands trigger real-time sync
+  KnowledgeGraphAPI.log.debug('DB changes detected', {
+    blocks: changesData.blocks?.length || 0,
+    pages: changesData.pages?.length || 0,
+    firstBlock: changesData.blocks?.[0]?.uuid,
+    firstPage: changesData.pages?.[0]?.name
+  });
+  
   
   // Queue blocks for timestamp updates (avoids race conditions)
   for (const change of changes) {
@@ -361,6 +369,7 @@ window.sendBatchToBackend = sendBatchToBackend;
 // SYNC MODULE INTEGRATION
 //=============================================================================
 
+
 //=============================================================================
 // PLUGIN INITIALIZATION
 //=============================================================================
@@ -386,6 +395,15 @@ async function main() {
     logseq.App.showMsg('Plugin initialization failed: Sync module not loaded', 'error');
     return;
   }
+  
+  if (typeof window.KnowledgeGraphWebSocket === 'undefined') {
+    KnowledgeGraphAPI.log.error('KnowledgeGraphWebSocket not found! websocket.js may not have loaded properly.');
+    logseq.App.showMsg('Plugin initialization failed: WebSocket module not loaded', 'error');
+    return;
+  }
+  
+  // Register WebSocket command handlers
+  KnowledgeGraphWebSocket.registerHandlers();
   
 
   // Set up DB change monitoring
@@ -447,6 +465,10 @@ async function main() {
       payload: JSON.stringify({ syncSkipped: true })
     });
   }
+  
+  // Initialize WebSocket connection
+  KnowledgeGraphAPI.log.info('Initializing WebSocket connection');
+  await KnowledgeGraphWebSocket.connect();
 }
 
 // Initialize the plugin

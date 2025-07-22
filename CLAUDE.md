@@ -35,7 +35,6 @@ RUST_LOG=debug cargo run         # Run backend server with debug logging (do not
   - **utils.rs**: Process management, datetime parsing, general utilities
   - **logging.rs**: Custom formatter (file:line only for ERROR/WARN)
   - **pkm_data.rs**: Shared data structures (PKMBlockData, PKMPageData)
-  - **log_utils.rs**: Log analysis utilities
 - **tests/**: Integration tests
 - **Cargo.toml**: Dependencies and metadata
 
@@ -45,18 +44,10 @@ RUST_LOG=debug cargo run         # Run backend server with debug logging (do not
 
 ### Log Level Guidelines
 - **INFO**: Use sparingly, only for messages you would want to see on every single run
-- **DEBUG**: Mainly used for temporary troubleshooting, don't clutter the codebase with these
+- **DEBUG**: Temporary troubleshooting only - all debug logs must be removed before committing
 - **WARN**: Use for problematic behavior that can be fully recovered from, e.g. an invalid parameter which gracefully falls back to a default value
 - **ERROR**: Use for any true software bugs - when in doubt whether something should be warn vs error, choose error
-- **TRACE**: Use for high-volume debugging - do not add trace logs preemptively, only use them while actively troubleshooting
-
-### Emoji Usage in Logs
-- **Permanent logs**: Prepend emojis to logs that should be preserved in the codebase
-- **Temporary debugging**: Logs without emojis are typically temporary debugging aids (run `cargo run -- log-check report` to analyze)
-- **All levels can have emojis**: INFO, DEBUG, and TRACE logs can all have emojis to indicate permanence
-- **ERROR/WARN**: These are always kept; emojis are optional for these levels
-
-**Permanent log examples**: Server lifecycle events (startup, shutdown), configuration validation, plugin connections, graph loading/saving, sync operations, archive operations, and performance-relevant events like cache hits are all worth marking with emojis for production retention.
+- **TRACE**: Low-level implementation details worth preserving (e.g. "Entering function X", "Cache hit for key Y", "Parsed N bytes")
 
 ## Development Best Practices
 
@@ -67,11 +58,10 @@ RUST_LOG=debug cargo run         # Run backend server with debug logging (do not
 
 ### Clean Console Output
 
-- Remove temporary debug logs after troubleshooting.
-- **Before committing**: Review and prune temporary logs - search for logs without emojis as they're likely debugging aids that should be removed.
-- Do not add debug logging inside hot paths which will flood the console.
-- Optimize logging levels if output becomes overwhelming.
-- When reviewing logs, make sure to point out ANY warnings or errors. The user is NOT reading these logs, it is your responsibility to report issues.
+- **Before committing**: Remove all debug logs (grep for `debug!` to find them)
+- Do not add logging inside hot paths which will flood the console
+- Optimize logging levels if output becomes overwhelming
+- When reviewing logs, make sure to point out ANY warnings or errors. The user is NOT reading these logs, it is your responsibility to report issues
 
 ### Fail-Fast During Feature Development
 

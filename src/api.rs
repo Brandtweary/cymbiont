@@ -103,7 +103,7 @@
  * Result<String, String> for success/error messages.
  */
 
-use axum::{extract::State, Json, Router, routing::{get, post, patch}};
+use axum::{extract::State, Json, Router, routing::{get, post, patch, any}};
 use std::sync::Arc;
 use tracing::{info, warn, error, debug, trace};
 use serde::{Deserialize, Serialize};
@@ -112,6 +112,7 @@ use serde_json;
 use crate::AppState;
 use crate::pkm_data::{PKMBlockData, PKMPageData};
 use crate::utils::parse_json_data;
+use crate::websocket::websocket_handler;
 
 // ===== API Types =====
 
@@ -162,6 +163,7 @@ pub fn create_router(app_state: Arc<AppState>) -> Router {
         .route("/sync", patch(update_sync_timestamp))
         .route("/sync/verify", post(verify_pkm_ids))
         .route("/log", post(receive_log))
+        .route("/ws", any(websocket_handler))
         .with_state(app_state)
 }
 
@@ -652,6 +654,7 @@ fn handle_batch_pages(state: Arc<AppState>, payload: &str) -> Result<String, Str
         Err(format!("Failed to process any pages, {error_count} errors"))
     }
 }
+
 
 #[cfg(test)]
 mod tests {

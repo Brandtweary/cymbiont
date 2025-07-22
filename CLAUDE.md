@@ -7,10 +7,6 @@ cargo check                      # Quick syntax check
 cargo build                      # Build cymbiont server
 cargo test                       # Run tests (quiet by default)
 RUST_LOG=debug cargo run         # Run backend server with debug logging (do not alter default 3s duration or set a timeout)
-
-# In logseq_plugin/
-npm test                         # Run JavaScript plugin tests
-npx eslint *.js                  # Run linter to find unused code and errors
 ```
 
 ## CLI Flags (Cymbiont Server)
@@ -24,7 +20,7 @@ npx eslint *.js                  # Run linter to find unused code and errors
 
 ### Core Directories
 - **src/**: Cymbiont server - graph management, API endpoints, sync logic
-- **logseq_plugin/**: JavaScript plugin for Logseq real-time sync
+- **logseq_plugin/**: JavaScript plugin for Logseq real-time sync (see logseq_plugin/CLAUDE.md)
 - **logseq_databases/**: Test graphs and multi-graph support
   - **dummy_graph/**: Test data for development
 - **data/**: Knowledge graph persistence
@@ -45,7 +41,6 @@ npx eslint *.js                  # Run linter to find unused code and errors
 
 ## Codebase Guidelines
 - Rust backend: use `error!()`, `warn!()`, `info!()`, `debug!()`, `trace!()` macros for logging (tracing crate)
-- JS plugin: use `KnowledgeGraphAPI.log.error/warn/info/debug/trace()` to send logs to the Rust server; don't use `console.log()` ever, but `console.error()` and `console.warn()` are acceptable
 - Don't make live LLM calls during tests
 
 ### Log Level Guidelines

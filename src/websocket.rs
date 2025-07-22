@@ -1,3 +1,50 @@
+/**
+ * @module websocket
+ * @description WebSocket server for bidirectional communication with Logseq plugin
+ * 
+ * This module implements a WebSocket server that enables real-time bidirectional
+ * communication between the Cymbiont backend and the Logseq plugin. It provides
+ * the foundation for AI agents to create, update, and delete content in the user's
+ * PKM through WebSocket commands.
+ * 
+ * ## Architecture
+ * 
+ * The module uses Axum's WebSocket support with a connection-based architecture:
+ * - Each connection gets a unique UUID and tracking state
+ * - Connections must authenticate before receiving commands
+ * - Commands are broadcast to all authenticated connections
+ * - Heartbeat mechanism detects stale connections
+ * 
+ * ## Command Protocol
+ * 
+ * Commands use JSON with a tagged enum pattern:
+ * - **Client → Server**: auth, heartbeat, test
+ * - **Server → Client**: create_block, update_block, delete_block, create_page
+ * 
+ * ## Connection Lifecycle
+ * 
+ * 1. Client connects and receives connection ID
+ * 2. Client sends auth command with token
+ * 3. Server validates and marks connection as authenticated
+ * 4. Server can now send PKM manipulation commands
+ * 5. Heartbeat keeps connection alive (30s intervals)
+ * 6. On disconnect, connection is cleaned up
+ * 
+ * ## Concurrency Safety
+ * 
+ * The module implements deadlock-proof patterns:
+ * - Helper functions encapsulate all lock operations
+ * - Locks are never held during async operations
+ * - Connection state is cloned before sending messages
+ * 
+ * ## Future Enhancements
+ * 
+ * - Command acknowledgments with Logseq UUIDs
+ * - Integration with transaction log for correlation
+ * - Command batching for efficiency
+ * - Connection pooling for multi-graph support
+ */
+
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},

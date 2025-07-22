@@ -5,6 +5,7 @@
 - **api.js**: HTTP communication layer, exposes `window.KnowledgeGraphAPI`
 - **sync.js**: Database synchronization orchestration, exposes `window.KnowledgeGraphSync`
 - **data_processor.js**: Data validation and processing, exposes `window.KnowledgeGraphDataProcessor`
+- **websocket.js**: WebSocket command handlers, exposes `window.KnowledgeGraphWebSocket`
 - **index.html**: Plugin loader (loads all JS modules as globals)
 - **package.json**: Plugin metadata and dependencies
 - **icon.png**: Plugin icon for Logseq UI

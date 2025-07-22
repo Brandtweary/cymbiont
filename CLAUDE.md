@@ -35,6 +35,7 @@ RUST_LOG=debug cargo run         # Run backend server with debug logging (do not
   - **utils.rs**: Process management, datetime parsing, general utilities
   - **logging.rs**: Custom formatter (file:line only for ERROR/WARN)
   - **pkm_data.rs**: Shared data structures (PKMBlockData, PKMPageData)
+  - **websocket.rs**: WebSocket server for bidirectional communication
 - **tests/**: Integration tests
 - **Cargo.toml**: Dependencies and metadata
 

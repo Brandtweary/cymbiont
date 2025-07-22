@@ -4,12 +4,14 @@ A guide to core modules, system design, and data flow for developers.
 
 ## Recent Updates
 
-### Logging Improvements (Latest)
-**Status**: Simplified logging conventions
-- **Debug Logs**: All DEBUG level logs are now considered temporary and must be removed before committing
-- **Trace Logs**: TRACE level is now for low-level permanent details worth preserving
-- **Log Level Adjustments**: Moved verbose development logs from INFO to DEBUG/TRACE levels, keeping INFO for user-relevant events
-- **Documentation**: Updated CLAUDE.md with simplified logging guidelines
+### WebSocket Bidirectional Communication (Latest)
+**Status**: Infrastructure complete, pending transaction log integration
+- **WebSocket Server**: Added `src/websocket.rs` module with connection management, heartbeat, and command broadcasting
+- **WebSocket Client**: Implemented in `logseq_plugin/api.js` with automatic reconnection and command queueing
+- **Command Handlers**: Added `logseq_plugin/websocket.js` with handlers for creating/updating/deleting blocks and pages
+- **Test Infrastructure**: Added `--test-websocket` CLI flag for testing block/page creation
+- **Known Issue**: Logseq's DB.onChanged fires 3-5 times for WebSocket-triggered operations (documented, not fixed)
+- **Pending**: Command acknowledgment system and transaction log to prevent race conditions
 
 ## System Overview
 
@@ -26,12 +28,14 @@ cymbiont/
 │   ├── api.rs                     # API types, handlers, routes
 │   ├── utils.rs                   # Utility functions
 │   ├── graph_manager.rs           # Petgraph-based knowledge graph storage
-│   └── pkm_data.rs                # Data structures and validation
+│   ├── pkm_data.rs                # Data structures and validation
+│   └── websocket.rs               # WebSocket server and command protocol
 ├── logseq_plugin/                 # JavaScript Logseq plugin
 │   ├── index.js                   # Plugin entry point (orchestration)
 │   ├── sync.js                    # Database synchronization module
 │   ├── api.js                     # Backend communication layer
 │   ├── data_processor.js          # Data validation and processing
+│   ├── websocket.js               # WebSocket command handlers
 │   ├── package.json               # Plugin metadata and dependencies
 │   └── index.html                 # Plugin loader
 ├── logseq_databases/              # Test graphs and multi-graph support
@@ -71,17 +75,33 @@ The core server provides HTTP API endpoints, graph management using petgraph, an
   - Manages sync status checking and timestamp updates
   - Handles tree traversal for block counting and ID collection
   - Sends all PKM IDs to /sync/verify for deletion detection
-- **api.js**: HTTP communication layer (exposed as `window.KnowledgeGraphAPI`)
-  - `sendToBackend(data)`: Sends data to POST /data endpoint, returns boolean
-  - `sendBatchToBackend(type, batch, graphName)`: Wrapper for batch operations, formats as `${type}_batch`
-  - `log.error/warn/info/debug/trace(message, details, source)`: Sends logs to POST /log endpoint
-  - `checkBackendAvailabilityWithRetry(maxRetries, delayMs)`: Health check with retries (used before sync)
-  - Port discovery (tries 3000-3010), sync status queries
-  - Full API documentation in the module header comments of api.js
+- **api.js**: HTTP and WebSocket communication layer (exposed as `window.KnowledgeGraphAPI`)
+  - HTTP functions:
+    - `sendToBackend(data)`: Sends data to POST /data endpoint, returns boolean
+    - `sendBatchToBackend(type, batch, graphName)`: Wrapper for batch operations, formats as `${type}_batch`
+    - `log.error/warn/info/debug/trace(message, details, source)`: Sends logs to POST /log endpoint
+    - `checkBackendAvailabilityWithRetry(maxRetries, delayMs)`: Health check with retries (used before sync)
+    - Port discovery (tries 3000-3010), sync status queries
+  - WebSocket functions (exposed as `window.KnowledgeGraphAPI.websocket`):
+    - `connect()`: Establish WebSocket connection with reconnection logic
+    - `disconnect()`: Close WebSocket connection
+    - `send(command)`: Send command to backend (queued if offline)
+    - `registerHandler(type, handler)`: Register command handler
+    - Automatic exponential backoff reconnection (1s → 30s max)
+    - Command queueing for offline resilience
 - **data_processor.js**: Validates and transforms Logseq data before transmission
   - Processes blocks and pages into standardized format
   - Adds normalized_name (lowercase) to pages for consistent lookups
   - Extracts references (page refs, block refs, tags)
+- **websocket.js**: WebSocket command handlers (exposed as `window.KnowledgeGraphWebSocket`)
+  - `registerHandlers()`: Sets up handlers for all command types
+  - Command handlers:
+    - `create_block`: Creates blocks with optional parent/page placement
+    - `update_block`: Updates block content while preserving properties
+    - `delete_block`: Removes blocks from the graph
+    - `create_page`: Creates new pages with optional properties
+  - Handles Logseq API quirks (e.g., updateBlock destroying properties)
+  - All operations include error handling and logging
 
 **Rust Backend Server**
 - **main.rs**: HTTP server orchestration and application state management
@@ -167,6 +187,15 @@ The core server provides HTTP API endpoints, graph management using petgraph, an
       - `details`: Optional JSON value with additional context
     - Maps JavaScript log levels to Rust tracing macros
     - Returns: `ApiResponse` confirming receipt
+  
+  - `GET /ws` - WebSocket upgrade endpoint
+    - Upgrades HTTP connection to WebSocket
+    - Authentication via `auth` command after connection
+    - Command protocol (JSON):
+      - Client → Server: `auth`, `heartbeat`, `test`
+      - Server → Client: `create_block`, `update_block`, `delete_block`, `create_page`
+    - Heartbeat mechanism: Server sends heartbeat every 30s
+    - Connection management with authenticated/unauthenticated states
 - **graph_manager.rs**: Core graph storage using petgraph:
   - StableGraph structure maintains consistent node indices across modifications
   - Node types: Page and Block with full metadata (content, properties, timestamps)
@@ -180,6 +209,14 @@ The core server provides HTTP API endpoints, graph management using petgraph, an
   - Deletion detection via `verify_and_archive_missing_nodes()` after sync
 - **pkm_data.rs**: Shared data structures and validation logic
 - **Logging**: Uses tracing crate with conditional formatter (file:line only for WARN/ERROR)
+- **websocket.rs**: WebSocket server implementation:
+  - Connection management with UUID-based tracking
+  - Command protocol enum with bidirectional message types
+  - Authentication state tracking per connection
+  - Broadcast mechanism for sending commands to all authenticated clients
+  - Heartbeat/ping mechanism for connection health
+  - Deadlock-proof helper functions for safe concurrent access
+  - Integration with AppState for WebSocket connection tracking
 
 **Operation Notes**
 - Backend server must be running before loading the Logseq plugin
@@ -262,6 +299,10 @@ Check Last Full Sync → Query All Pages/Blocks → Process ALL Content (No Filt
 - **Development**: `RUST_LOG=debug cargo run` - Run backend server with default 3-second duration for testing
 - **Force Incremental Sync**: `cargo run -- --force-incremental-sync` - Override sync status to force an incremental sync on next plugin connection
 - **Force Full Sync**: `cargo run -- --force-full-sync` - Override sync status to force a full database sync on next plugin connection
+- **Test WebSocket**: `cargo run -- --test-websocket <command>` - Test WebSocket commands:
+  - `test` or `echo`: Send test message and receive echo response
+  - `page` or `create-page`: Create a test page named "test-websocket"
+  - `block` or `create-block`: Create a test block on the "test-websocket" page
 
 ## Development Features
 
@@ -277,3 +318,5 @@ Check Last Full Sync → Query All Pages/Blocks → Process ALL Content (No Filt
 - CLI `--duration X` overrides config default when needed
 - Production builds warn if `default_duration` is not null (should be null for production)
 - Graceful shutdown ensures sync operations complete before timer expires
+
+**Note on Planned Architecture**: The WebSocket infrastructure is complete but not yet integrated with graph mutations. Next steps include implementing a transaction log with WAL for proper distributed coordination, adding WebSocket acknowledgments to return Logseq UUIDs, and building the kg_api module for AI agent integration.

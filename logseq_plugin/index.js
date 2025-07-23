@@ -261,6 +261,11 @@ async function handleDBChanges(changesData) {
     return;
   }
   
+  // TODO: Add client-side filtering to prevent sending changes that originated
+  // from WebSocket commands. This would reduce redundant sync traffic when
+  // AI agents create/update blocks. We could track recent WebSocket operations
+  // by correlation ID and skip syncing those changes for a brief window.
+  
   // The changes parameter is an object with blocks array, not an array itself
   if (!changesData || typeof changesData !== 'object') {
     return;

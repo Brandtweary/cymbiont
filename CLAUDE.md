@@ -3,7 +3,7 @@
 ## Build/Test Commands
 ```bash
 # In cymbiont root
-cargo check                      # Quick syntax check
+cargo check                      # Quick syntax check - don't filter with grep ever
 cargo build                      # Build cymbiont server
 cargo test                       # Run tests (quiet by default)
 RUST_LOG=debug cargo run         # Run backend server with debug logging (do not alter default 3s duration or set a timeout)
@@ -78,12 +78,6 @@ RUST_LOG=debug cargo run         # Run backend server with debug logging (do not
 - **Use `#[allow(dead_code)]` sparingly**: Only when the user explicitly confirms code is kept for forward-compatibility.
 - **Use `#[cfg(test)]` for test code**: If appropriate, silence warnings for production code that is authentically only currently used in tests. But generally, test code need not be caught by the dead code checker. Consider if there is a cleaner solution, such as using a test fixture.
 - **NEVER prefix unused variables with underscores**: This makes it impossible to locate dead code later. Always use compiler flags instead. 
-
-### End of the Dance: Identify and Fix Root Causes
-
-- **Root cause analysis**: Thoroughly investigate and identify exactly what's causing a bug before implementing solutions.
-- **Demand concrete proof**: Always insist on measurement and verification - avoid endlessly theorizing about abstract causes.
-- **No compensatory features**: Do NOT add new features as band-aids to work around bugs without proving they're necessary first. For example, don't add a checksum without first showing that the underlying data corruption isn't fixable at the source.
 
 ## Continuous Documentation
 

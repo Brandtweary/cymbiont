@@ -54,12 +54,19 @@ mod logging;
 mod api;
 mod utils;
 mod websocket;
+mod transaction_log;
+mod transaction;
+mod saga;
+mod kg_api;
 
 use graph_manager::GraphManager;
 use config::{load_config, validate_js_plugin_config, Config};
 use logging::init_logging;
 use api::create_router;
 use utils::{launch_logseq, SERVER_INFO_FILE, terminate_previous_instance, write_server_info, find_available_port};
+use transaction_log::TransactionLog;
+use transaction::TransactionCoordinator;
+use saga::{SagaCoordinator, WorkflowSagas};
 
 // CLI arguments
 #[derive(Parser, Debug)]
@@ -94,6 +101,10 @@ pub struct AppState {
     pub force_incremental_sync: bool,
     pub config: Config,
     pub ws_connections: Option<Arc<RwLock<HashMap<String, websocket::WsConnection>>>>,
+    pub transaction_coordinator: Arc<TransactionCoordinator>,
+    pub saga_coordinator: Arc<SagaCoordinator>,
+    pub workflow_sagas: Arc<WorkflowSagas>,
+    pub correlation_to_saga: Arc<RwLock<HashMap<String, String>>>,
 }
 
 // Cleanup function to handle graceful shutdown
@@ -145,8 +156,30 @@ async fn main() -> Result<(), Box<dyn Error>> {
     
     // Initialize the graph manager
     let data_dir = PathBuf::from("data");
-    let graph_manager = GraphManager::new(data_dir)
+    let graph_manager = GraphManager::new(data_dir.clone())
         .map_err(|e| Box::<dyn Error>::from(format!("Graph manager error: {e:?}")))?;
+    
+    // Initialize transaction log
+    let transaction_log_dir = data_dir.join("transaction_log");
+    fs::create_dir_all(&transaction_log_dir)
+        .map_err(|e| Box::<dyn Error>::from(format!("Failed to create transaction log directory: {e}")))?;
+    let transaction_log = Arc::new(TransactionLog::new(transaction_log_dir)
+        .map_err(|e| Box::<dyn Error>::from(format!("Transaction log error: {e:?}")))?);
+    
+    // Initialize coordinators
+    let transaction_coordinator = Arc::new(TransactionCoordinator::new(transaction_log.clone()));
+    let saga_coordinator = Arc::new(SagaCoordinator::new(transaction_coordinator.clone()));
+    let workflow_sagas = Arc::new(WorkflowSagas::new(
+        saga_coordinator.clone(),
+        transaction_coordinator.clone(),
+    ));
+    
+    // Recover pending transactions
+    let recovered = transaction_coordinator.recover_pending_transactions().await
+        .map_err(|e| Box::<dyn Error>::from(format!("Failed to recover transactions: {e}")))?;
+    if !recovered.is_empty() {
+        info!("Recovered {} pending transactions from previous run", recovered.len());
+    }
     
     // Log if force sync is enabled
     if args.force_full_sync {
@@ -167,6 +200,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         force_incremental_sync: args.force_incremental_sync,
         config: config.clone(),
         ws_connections: Some(Arc::new(RwLock::new(HashMap::new()))),
+        transaction_coordinator: transaction_coordinator.clone(),
+        saga_coordinator: saga_coordinator.clone(),
+        workflow_sagas: workflow_sagas.clone(),
+        correlation_to_saga: Arc::new(RwLock::new(HashMap::new())),
     });
     
     // Set up exit handler
@@ -370,6 +407,7 @@ async fn test_websocket_command(app_state: &Arc<AppState>, command_type: &str) {
             Command::CreatePage {
                 name: "test-websocket".to_string(),
                 properties: Some(properties),
+                correlation_id: None,
             }
         },
         "block" | "create-block" => {
@@ -378,6 +416,8 @@ async fn test_websocket_command(app_state: &Arc<AppState>, command_type: &str) {
                 content: format!("Test block created via WebSocket at {:?}", std::time::SystemTime::now()),
                 parent_id: None,
                 page_name: Some("test-websocket".to_string()),
+                correlation_id: None,
+                temp_id: None,
             }
         },
         _ => {

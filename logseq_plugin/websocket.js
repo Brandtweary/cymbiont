@@ -56,7 +56,7 @@ window.KnowledgeGraphWebSocket.registerHandlers = function() {
   // Handler for creating blocks
   window.KnowledgeGraphAPI.websocket.registerHandler('create_block', async (command) => {
     try {
-      const { content, parent_id, page_name } = command;
+      const { content, parent_id, page_name, correlation_id, temp_id } = command;
       
       let block;
       if (parent_id) {
@@ -70,6 +70,17 @@ window.KnowledgeGraphWebSocket.registerHandlers = function() {
         const page = await logseq.Editor.getPage(page_name);
         if (!page) {
           window.KnowledgeGraphAPI.log.error(`Page not found: ${page_name}`);
+          // Send failure acknowledgment if we have a correlation ID
+          if (correlation_id) {
+            window.KnowledgeGraphAPI.websocket.send({
+              type: 'block_created',
+              correlation_id: correlation_id,
+              block_uuid: null,
+              temp_id: null,
+              success: false,
+              error: `Page not found: ${page_name}`
+            });
+          }
           return;
         }
         block = await logseq.Editor.appendBlockInPage(page.uuid, content);
@@ -78,6 +89,17 @@ window.KnowledgeGraphWebSocket.registerHandlers = function() {
         const currentPage = await logseq.Editor.getCurrentPage();
         if (!currentPage) {
           window.KnowledgeGraphAPI.log.error('No current page to create block on');
+          // Send failure acknowledgment if we have a correlation ID
+          if (correlation_id) {
+            window.KnowledgeGraphAPI.websocket.send({
+              type: 'block_created',
+              correlation_id: correlation_id,
+              block_uuid: null,
+              temp_id: null,
+              success: false,
+              error: 'No current page to create block on'
+            });
+          }
           return;
         }
         block = await logseq.Editor.appendBlockInPage(currentPage.uuid, content);
@@ -85,19 +107,41 @@ window.KnowledgeGraphWebSocket.registerHandlers = function() {
       
       if (block) {
         window.KnowledgeGraphAPI.log.debug(`Created block: ${block.uuid}`);
+        
+        // Send success acknowledgment if we have a correlation ID
+        if (correlation_id && temp_id) {
+          window.KnowledgeGraphAPI.websocket.send({
+            type: 'block_created',
+            correlation_id: correlation_id,
+            block_uuid: block.uuid,
+            temp_id: temp_id
+          });
+        }
       }
     } catch (error) {
       window.KnowledgeGraphAPI.log.error('Failed to create block', {
         error: error.message,
         command
       });
+      
+      // Send failure acknowledgment if we have a correlation ID
+      if (command.correlation_id) {
+        window.KnowledgeGraphAPI.websocket.send({
+          type: 'block_created',
+          correlation_id: command.correlation_id,
+          block_uuid: null,
+          temp_id: null,
+          success: false,
+          error: error.message
+        });
+      }
     }
   });
   
   // Handler for updating blocks
   window.KnowledgeGraphAPI.websocket.registerHandler('update_block', async (command) => {
     try {
-      const { block_id, content } = command;
+      const { block_id, content, correlation_id } = command;
       
       // Get the block first to preserve properties
       const block = await logseq.Editor.getBlock(block_id);
@@ -117,33 +161,71 @@ window.KnowledgeGraphWebSocket.registerHandlers = function() {
       }
       
       window.KnowledgeGraphAPI.log.debug(`Updated block: ${block_id}`);
+      
+      // Send success acknowledgment if we have a correlation ID
+      if (correlation_id) {
+        window.KnowledgeGraphAPI.websocket.send({
+          type: 'block_updated',
+          correlation_id: correlation_id,
+          success: true
+        });
+      }
     } catch (error) {
       window.KnowledgeGraphAPI.log.error('Failed to update block', {
         error: error.message,
         command
       });
+      
+      // Send failure acknowledgment if we have a correlation ID
+      if (command.correlation_id) {
+        window.KnowledgeGraphAPI.websocket.send({
+          type: 'block_updated',
+          correlation_id: command.correlation_id,
+          success: false,
+          error: error.message
+        });
+      }
     }
   });
   
   // Handler for deleting blocks
   window.KnowledgeGraphAPI.websocket.registerHandler('delete_block', async (command) => {
     try {
-      const { block_id } = command;
+      const { block_id, correlation_id } = command;
       
       await logseq.Editor.removeBlock(block_id);
       window.KnowledgeGraphAPI.log.debug(`Deleted block: ${block_id}`);
+      
+      // Send success acknowledgment if we have a correlation ID
+      if (correlation_id) {
+        window.KnowledgeGraphAPI.websocket.send({
+          type: 'block_deleted',
+          correlation_id: correlation_id,
+          success: true
+        });
+      }
     } catch (error) {
       window.KnowledgeGraphAPI.log.error('Failed to delete block', {
         error: error.message,
         command
       });
+      
+      // Send failure acknowledgment if we have a correlation ID
+      if (command.correlation_id) {
+        window.KnowledgeGraphAPI.websocket.send({
+          type: 'block_deleted',
+          correlation_id: command.correlation_id,
+          success: false,
+          error: error.message
+        });
+      }
     }
   });
   
   // Handler for creating pages
   window.KnowledgeGraphAPI.websocket.registerHandler('create_page', async (command) => {
     try {
-      const { name, properties } = command;
+      const { name, properties, correlation_id } = command;
       
       // Create the page
       const page = await logseq.Editor.createPage(name, properties || {}, {
@@ -153,12 +235,31 @@ window.KnowledgeGraphWebSocket.registerHandlers = function() {
       
       if (page) {
         window.KnowledgeGraphAPI.log.debug(`Created page: ${name}`);
+        
+        // Send success acknowledgment if we have a correlation ID
+        if (correlation_id) {
+          window.KnowledgeGraphAPI.websocket.send({
+            type: 'page_created',
+            correlation_id: correlation_id,
+            success: true
+          });
+        }
       }
     } catch (error) {
       window.KnowledgeGraphAPI.log.error('Failed to create page', {
         error: error.message,
         command
       });
+      
+      // Send failure acknowledgment if we have a correlation ID
+      if (command.correlation_id) {
+        window.KnowledgeGraphAPI.websocket.send({
+          type: 'page_created',
+          correlation_id: command.correlation_id,
+          success: false,
+          error: error.message
+        });
+      }
     }
   });
 };

@@ -108,6 +108,8 @@ use std::sync::Arc;
 use tracing::{info, warn, error, debug, trace};
 use serde::{Deserialize, Serialize};
 use serde_json;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 use crate::AppState;
 use crate::pkm_data::{PKMBlockData, PKMPageData};
@@ -487,6 +489,22 @@ fn handle_block_data(state: Arc<AppState>, payload: &str) -> Result<String, Stri
         return Err("Block ID is empty".to_string());
     }
     
+    // Check if this content is already being processed by a transaction
+    // This prevents race conditions where LLM creates content, sends to Logseq,
+    // and then we receive it back via real-time sync
+    let content_hash = compute_content_hash(&block_data.content);
+    let is_pending = tokio::task::block_in_place(|| {
+        let rt = tokio::runtime::Handle::current();
+        rt.block_on(async {
+            state.transaction_coordinator.is_content_pending(&content_hash).await
+        })
+    });
+    
+    if is_pending {
+        trace!("Skipping block {} - content already being processed by transaction", block_data.id);
+        return Ok("Block skipped - duplicate content".to_string());
+    }
+    
     // Process the block data
     let mut graph_manager = state.graph_manager.lock().unwrap();
     
@@ -655,6 +673,12 @@ fn handle_batch_pages(state: Arc<AppState>, payload: &str) -> Result<String, Str
     }
 }
 
+// Helper function to compute content hash
+fn compute_content_hash(content: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    content.hash(&mut hasher);
+    format!("{:x}", hasher.finish())
+}
 
 #[cfg(test)]
 mod tests {

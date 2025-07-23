@@ -80,17 +80,27 @@ pub enum Command {
         content: String,
         parent_id: Option<String>,
         page_name: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        correlation_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        temp_id: Option<String>,
     },
     UpdateBlock {
         block_id: String,
         content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        correlation_id: Option<String>,
     },
     DeleteBlock {
         block_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        correlation_id: Option<String>,
     },
     CreatePage {
         name: String,
         properties: Option<HashMap<String, String>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        correlation_id: Option<String>,
     },
     Heartbeat,
     Auth {
@@ -98,6 +108,27 @@ pub enum Command {
     },
     Test {
         message: String,
+    },
+    // Acknowledgment messages from plugin to server
+    BlockCreated {
+        correlation_id: String,
+        block_uuid: String,
+        temp_id: String,
+    },
+    BlockUpdated {
+        correlation_id: String,
+        success: bool,
+        error: Option<String>,
+    },
+    BlockDeleted {
+        correlation_id: String,
+        success: bool,
+        error: Option<String>,
+    },
+    PageCreated {
+        correlation_id: String,
+        success: bool,
+        error: Option<String>,
     },
 }
 
@@ -219,7 +250,15 @@ async fn handle_command(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     
     // Check authentication for non-auth commands
-    if !matches!(command, Command::Auth { .. } | Command::Heartbeat | Command::Test { .. }) {
+    if !matches!(command, 
+        Command::Auth { .. } | 
+        Command::Heartbeat | 
+        Command::Test { .. } |
+        Command::BlockCreated { .. } |
+        Command::BlockUpdated { .. } |
+        Command::BlockDeleted { .. } |
+        Command::PageCreated { .. }
+    ) {
         if !is_authenticated(connection_id, state).await {
             warn!("Rejecting command from unauthenticated connection {}: {:?}", connection_id, command);
             send_error_response(connection_id, state, "Not authenticated").await?;
@@ -280,6 +319,62 @@ async fn handle_command(
             });
             
             send_success_response(connection_id, state, Some(response_data)).await?;
+        }
+        Command::BlockCreated { correlation_id, block_uuid, temp_id } => {
+            // Handle block creation acknowledgment
+            info!("📥 Block creation acknowledgment: correlation_id={}, uuid={}, temp_id={}", 
+                  correlation_id, block_uuid, temp_id);
+            
+            // Look up saga from correlation ID
+            let saga_id = {
+                let correlation_map = state.correlation_to_saga.read().await;
+                correlation_map.get(&correlation_id).cloned()
+            };
+            
+            if let Some(saga_id) = saga_id {
+                // Update the node's PKM ID from temp to real
+                {
+                    let mut graph_manager = state.graph_manager.lock().unwrap();
+                    if let Some(&node_idx) = graph_manager.pkm_to_node.get(&temp_id) {
+                        if let Some(node) = graph_manager.graph.node_weight_mut(node_idx) {
+                            // Update the node's PKM ID
+                            node.pkm_id = block_uuid.clone();
+                        }
+                        // Update the mapping
+                        graph_manager.pkm_to_node.remove(&temp_id);
+                        graph_manager.pkm_to_node.insert(block_uuid.clone(), node_idx);
+                    }
+                }
+                
+                // Complete the saga
+                match state.workflow_sagas.handle_block_acknowledgment(&saga_id, &temp_id, true, Some(block_uuid)).await {
+                    Ok(_) => {
+                        info!("✅ Saga {} completed successfully", saga_id);
+                        // Clean up correlation mapping
+                        state.correlation_to_saga.write().await.remove(&correlation_id);
+                    }
+                    Err(e) => {
+                        error!("Failed to complete saga {}: {:?}", saga_id, e);
+                    }
+                }
+            } else {
+                warn!("No saga found for correlation_id: {}", correlation_id);
+            }
+        }
+        Command::BlockUpdated { correlation_id, success, error } => {
+            info!("📥 Block update acknowledgment: correlation_id={}, success={}, error={:?}", 
+                  correlation_id, success, error);
+            // TODO: Handle update acknowledgments
+        }
+        Command::BlockDeleted { correlation_id, success, error } => {
+            info!("📥 Block delete acknowledgment: correlation_id={}, success={}, error={:?}", 
+                  correlation_id, success, error);
+            // TODO: Handle delete acknowledgments
+        }
+        Command::PageCreated { correlation_id, success, error } => {
+            info!("📥 Page creation acknowledgment: correlation_id={}, success={}, error={:?}", 
+                  correlation_id, success, error);
+            // TODO: Handle page creation acknowledgments
         }
     }
     

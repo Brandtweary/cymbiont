@@ -45,22 +45,20 @@ Integrate the aichat-agent library as a git submodule in Cymbiont to provide LLM
   - ✅ Completed in `docs/logseq_plugin_api_research.md`
 
 ### 2. Graph Manager Public API with PKM Sync
-**⚠️ PAUSED - Waiting on Dependencies:**
-- **Blocked by**: WebSocket bidirectional communication implementation
-- **Reason**: Discovered that HTTP-based sync is insufficient; need WebSocket for real-time bidirectional sync
-- **Status**: WebSocket implementation is itself blocked by need for transaction log
-- **Dependency chain**: Transaction Log → WebSocket Acknowledgments → kg_api → AIChat Integration
+**✅ COMPLETED - kg_api module created**
+- [x] Created `src/kg_api.rs` module as the public API layer
+- [x] Implemented all core operations with transaction support:
+  - [x] `add_block()` - Creates blocks with saga workflow and temp_id → UUID mapping
+  - [x] `update_block()` - Updates with transaction boundaries
+  - [x] `delete_block()` - Archives nodes with full transaction support
+  - [x] `create_page()` - Page creation with properties
+  - [x] `get_node()` - Query operations (read-only)
+  - [x] `query_graph_bfs()` - Placeholder for BFS traversal
+- [x] WebSocket sync integrated for all write operations
+- [x] Correlation ID support for create_block (acknowledgment flow complete)
+- [x] Transaction consistency via saga pattern
 
-Original tasks (to be revisited after dependencies):
-- [ ] Add public helper functions to `src/graph_manager.rs` for core operations:
-  - [ ] `add_node(node_data: PKMBlockData) -> Result<NodeIndex>`
-  - [ ] `update_node(node_id: &str, updates: PKMBlockData) -> Result<()>`
-  - [ ] `delete_node(node_id: &str) -> Result<()>`
-  - [ ] `query_graph_bfs(start_id: &str, max_depth: usize) -> Vec<NodeInfo>`
-  - [ ] `get_node_by_id(node_id: &str) -> Option<PKMBlockData>`
-- [ ] Implement PKM sync for write operations (will use WebSocket instead of HTTP)
-- [ ] Handle acknowledgments and UUID correlation
-- [ ] Ensure transaction consistency between graph and PKM
+**Note**: The kg_api module is marked with `#![allow(dead_code)]` until it's consumed by the aichat-agent integration. This TODO is tracked in the code and should be removed once the integration is complete.
 
 ### 3. Git Submodule Setup
 - [ ] Add aichat-agent as git submodule at `cymbiont/aichat-agent/`

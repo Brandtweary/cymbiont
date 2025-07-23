@@ -129,6 +129,7 @@ use std::io::{self, Read, Write};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use petgraph::stable_graph::{StableGraph, NodeIndex};
+pub use petgraph::stable_graph::NodeIndex as GraphNodeIndex;
 use petgraph::visit::EdgeRef;
 use thiserror::Error;
 use tracing::{info, warn, error, debug, trace};
@@ -242,10 +243,10 @@ pub struct GraphManager {
     data_dir: PathBuf,
     
     /// The knowledge graph
-    graph: KnowledgeGraph,
+    pub graph: KnowledgeGraph,
     
     /// Mapping from PKM IDs to graph node indices
-    pkm_to_node: NodeMap,
+    pub pkm_to_node: NodeMap,
     
     /// When the last incremental sync was performed (Unix timestamp in milliseconds)
     last_incremental_sync: Option<i64>,
@@ -327,13 +328,24 @@ impl GraphManager {
             pkm_to_node: NodeMap,
             last_incremental_sync: Option<i64>,
             last_full_sync: Option<i64>,
+            #[serde(default)]
+            version: u32,
         }
         
         let serialized: SerializedGraph = serde_json::from_str(&contents)?;
+        
+        // Transaction-aware: Check version for compatibility
+        if serialized.version > 1 {
+            warn!("Graph file version {} is newer than supported version 1", serialized.version);
+        }
+        
         self.graph = serialized.graph;
         self.pkm_to_node = serialized.pkm_to_node;
         self.last_incremental_sync = serialized.last_incremental_sync;
         self.last_full_sync = serialized.last_full_sync;
+        
+        // Transaction-aware: Pending transactions are recovered separately
+        // by the TransactionCoordinator during startup in main.rs
         
         info!("📊 Loaded graph with {} nodes and {} edges", 
               self.graph.node_count(), self.graph.edge_count());
@@ -351,6 +363,8 @@ impl GraphManager {
             pkm_to_node: &'a NodeMap,
             last_incremental_sync: Option<i64>,
             last_full_sync: Option<i64>,
+            // Transaction-aware: version number for schema changes
+            version: u32,
         }
         
         let serialized = SerializedGraph {
@@ -358,11 +372,16 @@ impl GraphManager {
             pkm_to_node: &self.pkm_to_node,
             last_incremental_sync: self.last_incremental_sync,
             last_full_sync: self.last_full_sync,
+            version: 1, // Increment when schema changes
         };
         
         let json = serde_json::to_string_pretty(&serialized)?;
         let mut file = File::create(graph_path)?;
         file.write_all(json.as_bytes())?;
+        
+        // Transaction-aware: The transaction log saves its own state
+        // alongside the graph. Pending transactions are persisted in sled
+        // and will be recovered on startup
         
         // Reset save tracking
         self.last_save_time = Utc::now();
@@ -573,38 +592,73 @@ impl GraphManager {
             return Ok((0, "No nodes to archive".to_string()));
         }
         
-        // Create archive data structure
+        // Use the unified archive_nodes method
+        let nodes_for_archival: Vec<(String, NodeIndex)> = nodes_to_archive
+            .into_iter()
+            .map(|(pkm_id, node_idx, _)| (pkm_id, node_idx))
+            .collect();
+        
+        let archive_message = self.archive_nodes(nodes_for_archival)?;
+        Ok((archived_pages + archived_blocks, archive_message))
+    }
+    
+    /// Build archive JSON for a single node
+    fn build_node_archive_json(&self, pkm_id: &str, node_idx: NodeIndex, node: &NodeData) -> serde_json::Value {
+        let edges_out: Vec<_> = self.graph.edges(node_idx)
+            .map(|edge| {
+                serde_json::json!({
+                    "target": edge.target().index(),
+                    "edge_type": edge.weight()
+                })
+            })
+            .collect();
+            
+        let edges_in: Vec<_> = self.graph.edges_directed(node_idx, petgraph::Direction::Incoming)
+            .map(|edge| {
+                serde_json::json!({
+                    "source": edge.source().index(),
+                    "edge_type": edge.weight()
+                })
+            })
+            .collect();
+        
+        serde_json::json!({
+            "pkm_id": pkm_id,
+            "node_index": node_idx.index(),
+            "node_data": node,
+            "edges_out": edges_out,
+            "edges_in": edges_in
+        })
+    }
+    
+    /// Archive nodes by their indices
+    pub fn archive_nodes(&mut self, nodes: Vec<(String, NodeIndex)>) -> GraphResult<String> {
+        if nodes.is_empty() {
+            return Ok("No nodes to archive".to_string());
+        }
+        
+        // Build archive data
+        let mut archived_pages = 0;
+        let mut archived_blocks = 0;
+        let mut archive_nodes = Vec::new();
+        
+        for (pkm_id, node_idx) in &nodes {
+            if let Some(node) = self.graph.node_weight(*node_idx) {
+                let node_json = self.build_node_archive_json(pkm_id, *node_idx, node);
+                archive_nodes.push(node_json);
+                
+                match node.node_type {
+                    NodeType::Page => archived_pages += 1,
+                    NodeType::Block => archived_blocks += 1,
+                }
+            }
+        }
+        
         let archive_data = serde_json::json!({
             "timestamp": Utc::now().to_rfc3339(),
             "archived_pages": archived_pages,
             "archived_blocks": archived_blocks,
-            "nodes": nodes_to_archive.iter().map(|(pkm_id, idx, node)| {
-                let edges_out: Vec<_> = self.graph.edges(*idx)
-                    .map(|edge| {
-                        serde_json::json!({
-                            "target": edge.target().index(),
-                            "edge_type": edge.weight()
-                        })
-                    })
-                    .collect();
-                    
-                let edges_in: Vec<_> = self.graph.edges_directed(*idx, petgraph::Direction::Incoming)
-                    .map(|edge| {
-                        serde_json::json!({
-                            "source": edge.source().index(),
-                            "edge_type": edge.weight()
-                        })
-                    })
-                    .collect();
-                
-                serde_json::json!({
-                    "pkm_id": pkm_id,
-                    "node_index": idx.index(),
-                    "node_data": node,
-                    "edges_out": edges_out,
-                    "edges_in": edges_in
-                })
-            }).collect::<Vec<_>>()
+            "nodes": archive_nodes
         });
         
         // Save archive file
@@ -615,7 +669,7 @@ impl GraphManager {
         std::fs::write(&archive_path, serde_json::to_string_pretty(&archive_data)?)?;
         
         // Remove nodes from graph
-        for (pkm_id, node_idx, _) in &nodes_to_archive {
+        for (pkm_id, node_idx) in &nodes {
             self.graph.remove_node(*node_idx);
             self.pkm_to_node.remove(pkm_id);
         }
@@ -623,9 +677,8 @@ impl GraphManager {
         // Save updated graph
         self.save_graph()?;
         
-        let message = format!("Archived {} pages and {} blocks to {}", 
-            archived_pages, archived_blocks, archive_filename);
-        Ok((nodes_to_archive.len(), message))
+        Ok(format!("Archived {} pages and {} blocks to {}", 
+            archived_pages, archived_blocks, archive_filename))
     }
     
     /// Create or update a node from PKM block data

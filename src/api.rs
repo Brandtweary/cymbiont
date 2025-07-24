@@ -7,6 +7,20 @@
  * the JavaScript Logseq plugin and the Rust backend server, handling all data ingestion,
  * synchronization, and logging operations.
  * 
+ * ## Multi-Graph Support Limitations
+ * 
+ * While the API accepts graph identification headers (X-Cymbiont-Graph-ID, 
+ * X-Cymbiont-Graph-Name, X-Cymbiont-Graph-Path) with every request, the current
+ * implementation assumes only ONE graph is active at a time. The graph headers
+ * are used solely for:
+ * - Detecting when the user switches to a different graph
+ * - Registering new graphs as they connect
+ * 
+ * The system does NOT support parallel graph operations. All handlers operate on
+ * the single active GraphManager instance in AppState. Future versions may support
+ * true multi-graph parallelism, but the current architecture is designed for
+ * sequential graph switching only.
+ * 
  * ## API Types
  * 
  * - `ApiResponse`: Standard JSON response format
@@ -104,6 +118,7 @@
  */
 
 use axum::{extract::State, Json, Router, routing::{get, post, patch, any}};
+use axum::http::HeaderMap;
 use std::sync::Arc;
 use tracing::{info, warn, error, debug, trace};
 use serde::{Deserialize, Serialize};
@@ -118,19 +133,43 @@ use crate::websocket::websocket_handler;
 
 // ===== API Types =====
 
+// Graph context extracted from headers
+#[derive(Debug, Clone)]
+pub struct GraphContext {
+    pub graph_id: Option<String>,
+    pub graph_name: Option<String>,
+    pub graph_path: Option<String>,
+}
+
+impl GraphContext {
+    pub fn from_headers(headers: &HeaderMap) -> Self {
+        Self {
+            graph_id: headers.get("x-cymbiont-graph-id")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string()),
+            graph_name: headers.get("x-cymbiont-graph-name")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string()),
+            graph_path: headers.get("x-cymbiont-graph-path")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string()),
+        }
+    }
+}
+
 // Basic response for API calls
 #[derive(Serialize)]
 pub struct ApiResponse {
     pub success: bool,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub graph_id: Option<String>,
 }
 
 // Incoming data from the PKM plugin
 #[derive(Deserialize, Debug)]
 pub struct PKMData {
     pub source: String,
-    // #[serde(rename = "graphName")]
-    // graph_name: String,
     #[serde(default)]
     pub type_: Option<String>,
     pub payload: String,
@@ -234,6 +273,7 @@ pub async fn update_sync_timestamp(
             return Json(ApiResponse {
                 success: false,
                 message: format!("Invalid sync type: {}. Expected 'incremental' or 'full'", request.sync_type),
+                graph_id: None,
             });
         }
     };
@@ -244,6 +284,7 @@ pub async fn update_sync_timestamp(
             Json(ApiResponse {
                 success: true,
                 message: format!("{} sync timestamp updated successfully", request.sync_type),
+                graph_id: None,
             })
         },
         Err(e) => {
@@ -251,6 +292,7 @@ pub async fn update_sync_timestamp(
             Json(ApiResponse {
                 success: false,
                 message: format!("Error updating {} sync timestamp: {e:?}", request.sync_type),
+                graph_id: None,
             })
         }
     }
@@ -313,6 +355,7 @@ pub async fn receive_log(
     Json(ApiResponse {
         success: true,
         message: "Log received".to_string(),
+        graph_id: None,
     })
 }
 
@@ -336,6 +379,7 @@ pub async fn verify_pkm_ids(
             Json(ApiResponse {
                 success: true,
                 message,
+                graph_id: None,
             })
         },
         Err(e) => {
@@ -343,6 +387,7 @@ pub async fn verify_pkm_ids(
             Json(ApiResponse {
                 success: false,
                 message: format!("Error during verification: {}", e),
+                graph_id: None,
             })
         }
     }
@@ -361,12 +406,14 @@ pub async fn receive_data(
                     Json(ApiResponse {
                         success: true,
                         message,
+                        graph_id: None,
                     })
                 },
                 Err(message) => {
                     Json(ApiResponse {
                         success: false,
                         message,
+                        graph_id: None,
                     })
                 }
             }
@@ -377,12 +424,14 @@ pub async fn receive_data(
                     Json(ApiResponse {
                         success: true,
                         message,
+                        graph_id: None,
                     })
                 },
                 Err(message) => {
                     Json(ApiResponse {
                         success: false,
                         message,
+                        graph_id: None,
                     })
                 }
             }
@@ -393,12 +442,14 @@ pub async fn receive_data(
                     Json(ApiResponse {
                         success: true,
                         message,
+                        graph_id: None,
                     })
                 },
                 Err(message) => {
                     Json(ApiResponse {
                         success: false,
                         message,
+                        graph_id: None,
                     })
                 }
             }
@@ -409,18 +460,24 @@ pub async fn receive_data(
                     Json(ApiResponse {
                         success: true,
                         message,
+                        graph_id: None,
                     })
                 },
                 Err(message) => {
                     Json(ApiResponse {
                         success: false,
                         message,
+                        graph_id: None,
                     })
                 }
             }
         },
         Some("plugin_initialized") => {
             info!("🔌 Plugin initialization confirmed");
+            
+            // TODO: Extract graph context from headers and register/validate graph
+            // For now, just acknowledge the initialization
+            
             // Signal plugin initialization if we have a waiting channel
             if let Ok(mut tx_guard) = state.plugin_init_tx.lock() {
                 if let Some(tx) = tx_guard.take() {
@@ -431,6 +488,7 @@ pub async fn receive_data(
             Json(ApiResponse {
                 success: true,
                 message: "Plugin initialization acknowledged".to_string(),
+                graph_id: None,
             })
         },
         Some("sync_complete") => {
@@ -445,6 +503,7 @@ pub async fn receive_data(
             Json(ApiResponse {
                 success: true,
                 message: "Sync completion acknowledged".to_string(),
+                graph_id: None,
             })
         },
         // For DB change events and other unspecified types
@@ -454,12 +513,14 @@ pub async fn receive_data(
                     Json(ApiResponse {
                         success: true,
                         message,
+                        graph_id: None,
                     })
                 },
                 Err(message) => {
                     Json(ApiResponse {
                         success: false,
                         message,
+                        graph_id: None,
                     })
                 }
             }
@@ -689,6 +750,7 @@ mod tests {
         let response = ApiResponse {
             success: true,
             message: "Test message".to_string(),
+            graph_id: None,
         };
         
         let json = serde_json::to_string(&response).unwrap();

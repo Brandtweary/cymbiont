@@ -41,6 +41,7 @@ RUST_LOG=debug cargo run         # Run backend server with debug logging (do not
 
 ## Codebase Guidelines
 - Rust backend: use `error!()`, `warn!()`, `info!()`, `debug!()`, `trace!()` macros for logging (tracing crate)
+- Error handling: use `thiserror` for custom error types, define module-specific `Error` enums and `type Result<T>` aliases
 - Don't make live LLM calls during tests
 
 ### Log Level Guidelines

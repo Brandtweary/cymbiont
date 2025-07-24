@@ -23,7 +23,7 @@ use crate::transaction_log::{Operation, Transaction, TransactionLog, Transaction
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use std::collections::HashMap;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -103,7 +103,6 @@ impl TransactionCoordinator {
     
     pub async fn wait_for_acknowledgment(&self, tx_id: &str) -> Result<()> {
         self.log.update_transaction_state(tx_id, TransactionState::WaitingForAck)?;
-        debug!("Transaction {} waiting for acknowledgment", tx_id);
         Ok(())
     }
     

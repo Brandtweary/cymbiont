@@ -253,9 +253,7 @@
       try {
         const response = await fetch(await KnowledgeGraphAPI.getBackendUrl('/sync/verify'), {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: KnowledgeGraphAPI.buildHeaders(),
           body: JSON.stringify({
             pages: allPkmIds.pages,
             blocks: allPkmIds.blocks

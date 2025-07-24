@@ -58,8 +58,10 @@ mod transaction_log;
 mod transaction;
 mod saga;
 mod kg_api;
+mod graph_registry;
 
 use graph_manager::GraphManager;
+use graph_registry::GraphRegistry;
 use config::{load_config, validate_js_plugin_config, Config};
 use logging::init_logging;
 use api::create_router;
@@ -93,6 +95,7 @@ struct Args {
 // Application state that will be shared between handlers
 pub struct AppState {
     pub graph_manager: Mutex<GraphManager>,
+    pub graph_registry: Arc<Mutex<GraphRegistry>>,
     pub logseq_child: Mutex<Option<std::process::Child>>,
     pub plugin_init_tx: Mutex<Option<oneshot::Sender<()>>>,
     pub sync_complete_tx: Mutex<Option<oneshot::Sender<()>>>,
@@ -112,8 +115,19 @@ fn cleanup_and_exit(app_state: Option<Arc<AppState>>, start_time: Instant) {
     let total_runtime = start_time.elapsed();
     info!("🧹 Cleaning up... (total runtime: {:.2}s)", total_runtime.as_secs_f64());
     
-    // Terminate Logseq if it was launched by us
+    // Save graph registry and terminate Logseq if launched
     if let Some(state) = app_state {
+        // Save graph registry
+        if let Ok(registry_guard) = state.graph_registry.lock() {
+            let registry_path = PathBuf::from("data").join("graph_registry.json");
+            if let Err(e) = registry_guard.save(&registry_path) {
+                error!("Failed to save graph registry: {}", e);
+            } else {
+                info!("✅ Graph registry saved");
+            }
+        }
+        
+        // Terminate Logseq if it was launched by us
         if let Ok(mut child_guard) = state.logseq_child.lock() {
             if let Some(mut child) = child_guard.take() {
                 match child.kill() {
@@ -159,6 +173,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let graph_manager = GraphManager::new(data_dir.clone())
         .map_err(|e| Box::<dyn Error>::from(format!("Graph manager error: {e:?}")))?;
     
+    // Initialize graph registry
+    let registry_path = data_dir.join("graph_registry.json");
+    let graph_registry = Arc::new(Mutex::new(
+        GraphRegistry::load_or_create(&registry_path)
+            .map_err(|e| Box::<dyn Error>::from(format!("Graph registry error: {e:?}")))?
+    ));
+    
     // Initialize transaction log
     let transaction_log_dir = data_dir.join("transaction_log");
     fs::create_dir_all(&transaction_log_dir)
@@ -192,6 +213,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Create shared application state
     let app_state = Arc::new(AppState {
         graph_manager: Mutex::new(graph_manager),
+        graph_registry: graph_registry.clone(),
         logseq_child: Mutex::new(None),
         plugin_init_tx: Mutex::new(None),
         sync_complete_tx: Mutex::new(None),

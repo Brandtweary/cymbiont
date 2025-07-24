@@ -285,13 +285,6 @@ async function handleDBChanges(changesData) {
     return;
   }
   
-  // Debug logging to track if WebSocket commands trigger real-time sync
-  KnowledgeGraphAPI.log.debug('DB changes detected', {
-    blocks: changesData.blocks?.length || 0,
-    pages: changesData.pages?.length || 0,
-    firstBlock: changesData.blocks?.[0]?.uuid,
-    firstPage: changesData.pages?.[0]?.name
-  });
   
   
   // Queue blocks for timestamp updates (avoids race conditions)
@@ -424,18 +417,70 @@ async function main() {
     }
   });
   
-  // Send initialization signal to backend first
+  // Get current graph info first
+  const graphInfo = await logseq.App.getCurrentGraph();
+  if (!graphInfo) {
+    KnowledgeGraphAPI.log.error('Failed to get current graph info');
+    return;
+  }
+
+  // Check if this graph has a Cymbiont ID
+  let cymbiontGraphId = null;
   try {
-    const result = await KnowledgeGraphAPI.sendToBackend({
-      source: 'PKM Plugin Startup',
-      timestamp: Date.now().toString(),
-      type_: 'plugin_initialized',
-      payload: JSON.stringify({ message: 'PKM Knowledge Graph Plugin initialized successfully' })
+    const graphConfigs = await logseq.App.getCurrentGraphConfigs();
+    cymbiontGraphId = graphConfigs['cymbiont/graph-id'];
+    
+    if (cymbiontGraphId) {
+      KnowledgeGraphAPI.log.info(`Found existing Cymbiont graph ID: ${cymbiontGraphId}`);
+    }
+  } catch (error) {
+    KnowledgeGraphAPI.log.error('Failed to check Cymbiont graph ID', {error: error.message});
+  }
+
+  // Store graph context globally for use in all API calls
+  window.cymbiontGraphContext = {
+    name: graphInfo.name,
+    path: graphInfo.path,
+    cymbiont_id: cymbiontGraphId
+  };
+
+  // Send initialization signal to backend with graph info
+  try {
+    const response = await fetch(await KnowledgeGraphAPI.getBackendUrl('/data'), {
+      method: 'POST',
+      headers: KnowledgeGraphAPI.buildHeaders(),
+      body: JSON.stringify({
+        source: 'PKM Plugin Startup',
+        timestamp: Date.now().toString(),
+        type_: 'plugin_initialized',
+        payload: JSON.stringify({ 
+          message: 'PKM Knowledge Graph Plugin initialized successfully'
+        })
+      })
     });
     
-    // Show single UI notification for successful plugin load
-    if (result) {
+    if (response.ok) {
+      const responseData = await response.json();
+      
+      // If backend provided a new graph ID, save it
+      if (responseData.graph_id && !cymbiontGraphId) {
+        try {
+          const graphConfigs = await logseq.App.getCurrentGraphConfigs();
+          const newConfigs = {...graphConfigs, 'cymbiont/graph-id': responseData.graph_id};
+          await logseq.App.setCurrentGraphConfigs(newConfigs);
+          
+          // Update our global context
+          window.cymbiontGraphContext.cymbiont_id = responseData.graph_id;
+          
+          KnowledgeGraphAPI.log.info(`Saved new Cymbiont graph ID from backend: ${responseData.graph_id}`);
+        } catch (configError) {
+          KnowledgeGraphAPI.log.error('Failed to save Cymbiont graph ID to config', {error: configError.message});
+        }
+      }
+      
       logseq.App.showMsg('Cymbiont initialized', 'success');
+    } else {
+      KnowledgeGraphAPI.log.error(`Backend responded with status: ${response.status}`);
     }
   } catch (error) {
     KnowledgeGraphAPI.log.error('Failed to send plugin initialization signal', {error: error.message});

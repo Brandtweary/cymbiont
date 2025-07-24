@@ -14,6 +14,21 @@
  * - Use the HTTP logging API (KnowledgeGraphAPI.log.*) from other modules
  * - This module can't use HTTP logging for its own errors (chicken-egg problem)
  * 
+ * MULTI-GRAPH SUPPORT LIMITATIONS:
+ * ================================
+ * While this module sends graph identification headers (X-Cymbiont-Graph-ID,
+ * X-Cymbiont-Graph-Name, X-Cymbiont-Graph-Path) with every request via buildHeaders(),
+ * the Cymbiont backend assumes only ONE graph is active at a time. These headers are
+ * used solely for detecting graph switches, not for parallel graph operations.
+ * 
+ * The current architecture does NOT support:
+ * - Multiple graphs open simultaneously
+ * - Parallel operations on different graphs
+ * - Graph-specific API routing
+ * 
+ * All operations affect the single active graph on the backend. Future versions may
+ * support true multi-graph parallelism, but would require significant API changes.
+ * 
  * This module provides a comprehensive API for all communication between the Logseq frontend
  * and the Rust backend server. It handles constructing API endpoints, sending data, checking
  * server availability, and managing sync operations.
@@ -132,6 +147,32 @@ window.KnowledgeGraphAPI.getBackendUrl = async function(endpoint) {
 };
 
 /**
+ * Build headers with graph context
+ * @param {Object} additionalHeaders - Additional headers to include
+ * @returns {Object} - Headers object with graph context
+ */
+window.KnowledgeGraphAPI.buildHeaders = function(additionalHeaders = {}) {
+  const headers = {
+    'Content-Type': 'application/json',
+    ...additionalHeaders
+  };
+  
+  if (window.cymbiontGraphContext) {
+    if (window.cymbiontGraphContext.cymbiont_id) {
+      headers['X-Cymbiont-Graph-ID'] = window.cymbiontGraphContext.cymbiont_id;
+    }
+    if (window.cymbiontGraphContext.name) {
+      headers['X-Cymbiont-Graph-Name'] = window.cymbiontGraphContext.name;
+    }
+    if (window.cymbiontGraphContext.path) {
+      headers['X-Cymbiont-Graph-Path'] = window.cymbiontGraphContext.path;
+    }
+  }
+  
+  return headers;
+};
+
+/**
  * Send data to the backend server
  * @param {Object} data - Data to send to the backend
  * @returns {Promise<boolean>} - Whether the data was sent successfully
@@ -142,9 +183,7 @@ window.KnowledgeGraphAPI.sendToBackend = async function(data) {
   try {
     const response = await fetch(backendUrl, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: window.KnowledgeGraphAPI.buildHeaders(),
       body: JSON.stringify(data),
     });
 
@@ -179,9 +218,7 @@ window.KnowledgeGraphAPI.log = {
     try {
       const response = await fetch(logUrl, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: window.KnowledgeGraphAPI.buildHeaders(),
         body: JSON.stringify({
           level,
           message,
@@ -265,9 +302,7 @@ window.KnowledgeGraphAPI.checkBackendAvailability = async function() {
   try {
     const response = await fetch(await window.KnowledgeGraphAPI.getBackendUrl('/'), {
       method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: window.KnowledgeGraphAPI.buildHeaders(),
     });
     
     return response.ok;
@@ -314,9 +349,7 @@ window.KnowledgeGraphAPI.checkIfFullSyncNeeded = async function() {
     // Query the backend for sync status
     const response = await fetch(await window.KnowledgeGraphAPI.getBackendUrl('/sync/status'), {
       method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: window.KnowledgeGraphAPI.buildHeaders(),
     });
     
     if (!response.ok) {
@@ -347,9 +380,7 @@ window.KnowledgeGraphAPI.updateSyncTimestamp = async function(syncType = 'increm
   try {
     const response = await fetch(await window.KnowledgeGraphAPI.getBackendUrl('/sync'), {
       method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: window.KnowledgeGraphAPI.buildHeaders(),
       body: JSON.stringify({
         sync_type: syncType
       })

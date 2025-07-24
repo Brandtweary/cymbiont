@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
-use tracing::{debug, error, info};
+use tracing::{error, info};
 use uuid::Uuid;
 
 #[derive(Error, Debug)]
@@ -126,7 +126,6 @@ impl TransactionLog {
         // Add to pending index
         self.pending_index.insert(tx_id.as_bytes(), b"")?;
         
-        debug!("Appended transaction: {} with state {:?}", tx_id, transaction.state);
         Ok(tx_id)
     }
     
@@ -167,7 +166,6 @@ impl TransactionLog {
             self.pending_index.remove(id.as_bytes())?;
         }
         
-        debug!("Updated transaction {} to state {:?}", id, new_state);
         Ok(())
     }
     

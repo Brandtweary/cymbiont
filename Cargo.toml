@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["Brandt Weary"]
 description = "A knowledge graph-enhanced AI agent for personal knowledge management"
 repository = "https://github.com/Brandtweary/cymbiont"
-license = "MIT OR Apache-2.0"
+license = "AGPL-3.0"
 
 [[bin]]
 name = "cymbiont"

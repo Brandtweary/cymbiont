@@ -108,6 +108,11 @@ See `CLAUDE.md` for detailed development guidelines and `cymbiont_architecture.m
 
 Copyright (c) 2025 Cymbiont developers.
 
-Cymbiont is made available under the terms of either the MIT License or the Apache License 2.0, at your option.
+Cymbiont is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
 
-See the [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE) files for license details.
+This means that if you use Cymbiont in your software (including as a web service), you must:
+- Make your entire application's source code available under AGPL-3.0
+- Provide the source code to all users, including those accessing it over a network
+- Preserve all copyright and license notices
+
+See the [LICENSE](LICENSE) file for the complete license text.

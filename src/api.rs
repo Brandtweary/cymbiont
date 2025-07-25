@@ -144,6 +144,7 @@ use crate::AppState;
 use crate::pkm_data::{PKMBlockData, PKMPageData};
 use crate::utils::parse_json_data;
 use crate::websocket::websocket_handler;
+use crate::edn;
 
 // ===== API Types =====
 
@@ -207,6 +208,16 @@ pub struct PkmIdVerification {
     pub blocks: Vec<String>,
 }
 
+// Config validation request - sent by plugin to ensure properties are set
+#[derive(Debug, Deserialize)]
+pub struct ConfigValidationRequest {
+    pub graph_id: String,
+    #[allow(dead_code)]
+    pub has_hidden_property: bool,
+    #[allow(dead_code)]
+    pub has_graph_id: bool,
+}
+
 
 // ===== Route Configuration =====
 
@@ -219,6 +230,7 @@ pub fn create_router(app_state: Arc<AppState>) -> Router {
         .route("/sync/status", get(get_sync_status))
         .route("/sync", patch(update_sync_timestamp))
         .route("/sync/verify", post(verify_pkm_ids))
+        .route("/config/validate", post(validate_config))
         .route("/log", post(receive_log))
         .route("/ws", any(websocket_handler))
         .layer(middleware::from_fn_with_state(
@@ -525,6 +537,81 @@ pub async fn verify_pkm_ids(
             Json(ApiResponse {
                 success: false,
                 message: format!("Error during verification: {}", e),
+                graph_id: None,
+            })
+        }
+    }
+}
+
+// Endpoint to validate and fix config.edn properties
+pub async fn validate_config(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<ConfigValidationRequest>,
+) -> Json<ApiResponse> {
+    // Get active graph
+    let active_graph_id = state.get_active_graph_manager().await;
+    if active_graph_id.is_none() {
+        return Json(ApiResponse {
+            success: false,
+            message: "No active graph".to_string(),
+            graph_id: None,
+        });
+    }
+    let graph_id = active_graph_id.unwrap();
+    
+    // Verify the request graph ID matches the active graph (security check)
+    if request.graph_id != graph_id {
+        error!("Config validation request for wrong graph: {} vs active {}", request.graph_id, graph_id);
+        return Json(ApiResponse {
+            success: false,
+            message: "Graph ID mismatch".to_string(),
+            graph_id: None,
+        });
+    }
+    
+    // Get graph info from registry
+    let graph_path = {
+        let registry = state.graph_registry.lock().unwrap();
+        match registry.get_graph(&graph_id) {
+            Some(info) => info.path.clone(),
+            None => {
+                return Json(ApiResponse {
+                    success: false,
+                    message: "Graph not found in registry".to_string(),
+                    graph_id: None,
+                });
+            }
+        }
+    };
+    
+    // Build path to config.edn
+    let config_path = std::path::PathBuf::from(&graph_path)
+        .join("logseq")
+        .join("config.edn");
+    
+    // Update config if needed
+    match edn::update_config_file(&config_path, &graph_id) {
+        Ok(()) => {
+            // Mark config as updated in registry
+            {
+                let mut registry = state.graph_registry.lock().unwrap();
+                if let Err(e) = registry.mark_config_updated(&graph_id) {
+                    warn!("Failed to mark config as updated in registry: {}", e);
+                }
+            }
+            
+            info!("✅ Config validation successful for graph {}", graph_id);
+            Json(ApiResponse {
+                success: true,
+                message: "Config validated and updated".to_string(),
+                graph_id: None,
+            })
+        }
+        Err(e) => {
+            error!("Failed to validate/update config for graph {}: {}", graph_id, e);
+            Json(ApiResponse {
+                success: false,
+                message: format!("Config validation failed: {}", e),
                 graph_id: None,
             })
         }

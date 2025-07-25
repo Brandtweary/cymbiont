@@ -368,6 +368,64 @@ window.sendBatchToBackend = sendBatchToBackend;
 
 
 //=============================================================================
+// CONFIG VALIDATION
+//=============================================================================
+
+// Validate and fix config properties via backend
+async function validateConfigProperties() {
+  try {
+    // Check for hidden property in config
+    const graphConfigs = await logseq.App.getCurrentGraphConfigs();
+    const hiddenProps = graphConfigs['block-hidden-properties'];
+    const hasHiddenProperty = hiddenProps && 
+      (Array.isArray(hiddenProps) ? hiddenProps.includes(':cymbiont-updated-ms') : 
+       typeof hiddenProps === 'string' && hiddenProps.includes(':cymbiont-updated-ms'));
+    
+    // Check for graph ID
+    const graphId = graphConfigs['cymbiont/graph-id'];
+    const hasGraphId = !!graphId;
+    
+    // If either is missing, request backend validation
+    if (!hasHiddenProperty || !hasGraphId) {
+      KnowledgeGraphAPI.log.warn('Config validation needed', {
+        hasHiddenProperty,
+        hasGraphId
+      });
+      
+      const response = await fetch(await KnowledgeGraphAPI.getBackendUrl('/config/validate'), {
+        method: 'POST',
+        headers: KnowledgeGraphAPI.buildHeaders(),
+        body: JSON.stringify({
+          graph_id: window.cymbiontGraphContext.cymbiont_id || '',
+          has_hidden_property: hasHiddenProperty,
+          has_graph_id: hasGraphId
+        })
+      });
+      
+      if (response.ok) {
+        KnowledgeGraphAPI.log.info('Config validated and updated by backend');
+        
+        // If we didn't have a graph ID before, we might have one now
+        if (!hasGraphId) {
+          const newConfigs = await logseq.App.getCurrentGraphConfigs();
+          const newGraphId = newConfigs['cymbiont/graph-id'];
+          if (newGraphId && !window.cymbiontGraphContext.cymbiont_id) {
+            window.cymbiontGraphContext.cymbiont_id = newGraphId;
+            KnowledgeGraphAPI.log.info('Updated graph context with new ID from config');
+          }
+        }
+      } else {
+        KnowledgeGraphAPI.log.error('Config validation failed', {status: response.status});
+      }
+    } else {
+      KnowledgeGraphAPI.log.debug('Config properties already valid');
+    }
+  } catch (error) {
+    KnowledgeGraphAPI.log.error('Failed to validate config properties', {error: error.message});
+  }
+}
+
+//=============================================================================
 // PLUGIN INITIALIZATION
 //=============================================================================
 
@@ -474,6 +532,9 @@ async function main() {
           KnowledgeGraphAPI.log.error('Failed to save Cymbiont graph ID to config', {error: configError.message});
         }
       }
+      
+      // Validate config properties after initialization
+      await validateConfigProperties();
       
       logseq.App.showMsg('Cymbiont initialized', 'success');
     } else {

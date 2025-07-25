@@ -36,6 +36,12 @@ RUST_LOG=debug cargo run         # Run backend server with debug logging (do not
   - **logging.rs**: Custom formatter (file:line only for ERROR/WARN)
   - **pkm_data.rs**: Shared data structures (PKMBlockData, PKMPageData)
   - **websocket.rs**: WebSocket server for bidirectional communication
+  - **transaction_log.rs**: Write-ahead logging with sled database
+  - **transaction.rs**: Transaction coordinator and state management
+  - **saga.rs**: Saga pattern for multi-step workflows
+  - **kg_api.rs**: Public API for knowledge graph operations
+  - **graph_registry.rs**: Multi-graph identification and management
+  - **edn.rs**: EDN format manipulation for config.edn
 - **tests/**: Integration tests
 - **Cargo.toml**: Dependencies and metadata
 

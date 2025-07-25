@@ -161,7 +161,6 @@ Enable Cymbiont to support multiple Logseq graphs (PKM databases) by allowing ru
 
 **Why Priority #1**: Session management is the foundation that enables:
 - **Integration Testing**: Cannot test multi-graph functionality without targeting specific graphs
-- **Config Optimization**: Need to know graph ID before launch to check `config_updated` flag
 - **WebSocket Multi-Graph**: WebSocket connections need graph context from session state
 - **AIChat-Agent Integration**: Agents need session context to operate on correct graphs
 
@@ -190,12 +189,6 @@ Enable Cymbiont to support multiple Logseq graphs (PKM databases) by allowing ru
   - [ ] If no graph specified, use last active graph from persistence
   - [ ] If no last active graph, prompt user or use default (dummy_graph for testing)
 
-#### Config Optimization Integration
-- [ ] **Pre-launch config optimization**:
-  - [ ] Check `GraphRegistry.is_config_updated(graph_id)` before launch
-  - [ ] Skip expensive config.edn update (0.5-1s) if already updated
-  - [ ] Mark config as updated after successful property hiding
-  - [ ] Handle race condition: config update vs Logseq loading
 
 #### API Endpoints
 - [ ] **Create session switching API endpoints**:
@@ -233,22 +226,19 @@ Enable Cymbiont to support multiple Logseq graphs (PKM databases) by allowing ru
 - [ ] **Enable integration testing**:
   - [ ] Test session switching between dummy_graph and dummy_graph_2
   - [ ] Validate that each graph maintains isolation after switches
-  - [ ] Test config optimization (skip updates for already-updated graphs)
   - [ ] Test CLI commands work correctly with test graphs
 
 **Implementation Order**:
 1. Core SessionManager module with state management
 2. Platform-specific URL opening and Logseq launch overhaul  
-3. Config optimization integration (check `config_updated` before launch)
-4. API endpoints for programmatic session control
-5. CLI commands for user-friendly session management
-6. WebSocket coordination and integration testing
+3. API endpoints for programmatic session control
+4. CLI commands for user-friendly session management
+5. WebSocket coordination and integration testing
 
 **Blocking Dependencies**: None - this is the foundational component that unblocks everything else
 
 **Success Criteria**: 
 - Can programmatically launch specific graphs via CLI/API
-- Config updates are optimized (skip expensive writes when possible)
 - Integration tests can target specific graphs with clean isolation
 - Session state persists across Cymbiont restarts
 
@@ -348,23 +338,22 @@ The core parallel multi-graph architecture has been successfully implemented:
 - ✅ Added `.gitkeep` for data directory with proper gitignore exclusions
 - ✅ Removed obsolete single-graph `knowledge_graph.json` file
 
-**Config Update Optimization Structure**:
+**Config Update System**:
 - ✅ Added `config_updated: bool` field to `GraphInfo` struct with `#[serde(default)]`
 - ✅ Added methods `mark_config_updated()` and `is_config_updated()` to `GraphRegistry`
-- ⚠️ **Timing Issue Identified**: Config must be updated BEFORE Logseq loads, but graph ID only known AFTER plugin connects
+- ✅ Runtime config validation via `/config/validate` endpoint handles missing properties
 
 ### Still Pending
 
 1. **Session Management System** (PRIORITY #1 - Foundation for All Testing):
    - **Status**: Not Started - Critical foundational component
-   - **Blocking**: Integration testing, config optimization, WebSocket multi-graph, AIChat-Agent
+   - **Blocking**: Integration testing, WebSocket multi-graph, AIChat-Agent
    - **Why First**: Cannot do proper integration testing without targeting specific graphs
    - **Components Needed**:
      - SessionManager component in `src/session_manager.rs`
      - Platform-specific URL opening for `logseq://graph/{name}`
      - CLI commands for graph management (`cymbiont switch-graph`, `cymbiont list-graphs`)
      - Pre-launch graph selection (know graph ID before launching Logseq)
-     - **Config Update State Tracking**: Check `config_updated` flag to skip expensive config.edn write (0.5-1s)
    - **Dependencies**: None (foundational component)
    - **Implementation Priority**: #1 - Start immediately
 
@@ -389,8 +378,5 @@ The core parallel multi-graph architecture has been successfully implemented:
    - **Components**: Multi-graph support, session awareness, timeouts
    - **Dependencies**: Session Management for graph context
 
-5. **Performance Optimizations** (PRIORITY #5 - Polish):
-   - Config update optimization (requires session management)
-   - Other performance improvements
 
 The system is now capable of handling multiple Logseq graphs with proper isolation and can switch between them based on request headers. Each graph has its own GraphManager and TransactionCoordinator for complete isolation. Property hiding is working correctly with proper deduplication.

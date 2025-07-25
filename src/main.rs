@@ -59,6 +59,7 @@ mod transaction;
 mod saga;
 mod kg_api;
 mod graph_registry;
+mod edn;
 
 use graph_manager::GraphManager;
 use graph_registry::GraphRegistry;
@@ -327,9 +328,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     info!("🚀 Backend server listening on {}", addr);
     
     // Update config.edn if graph path is configured
-    if let Some(ref graph_path) = config.logseq.graph_path {
-        update_graph_config_before_launch(graph_path);
-    }
+    // Commented out to test runtime validation
+    // if let Some(ref graph_path) = config.logseq.graph_path {
+    //     update_graph_config_before_launch(graph_path);
+    // }
     
     // Launch Logseq after server is ready
     let logseq_child = launch_logseq(&config.logseq)?;
@@ -555,75 +557,3 @@ async fn run_server_with_timeout(
     Ok(())
 }
 
-// Update graph's config.edn to hide cymbiont properties before launching Logseq
-fn update_graph_config_before_launch(graph_path: &str) {
-    let config_path = PathBuf::from(graph_path).join("logseq").join("config.edn");
-    
-    if !config_path.exists() {
-        warn!("Config.edn not found at {:?} - skipping property hiding", config_path);
-        return;
-    }
-    
-    match fs::read_to_string(&config_path) {
-        Ok(content) => {
-            // Use regex to find actual :block-hidden-properties lines (not comments)
-            let re = regex::Regex::new(r"(?m)^(\s*):block-hidden-properties\s*#\{([^}]*)\}").unwrap();
-            
-            // Check if there's already an actual property line
-            if let Some(captures) = re.captures(&content) {
-                let existing_props = captures.get(2).map_or("", |m| m.as_str().trim());
-                
-                // Check if :cymbiont-updated-ms is already there
-                if existing_props.contains(":cymbiont-updated-ms") {
-                    return;
-                }
-                
-                // Add to existing properties
-                let new_props = if existing_props.is_empty() {
-                    ":cymbiont-updated-ms".to_string()
-                } else {
-                    format!("{} :cymbiont-updated-ms", existing_props)
-                };
-                
-                // Replace the existing line
-                let indent = captures.get(1).map_or("", |m| m.as_str());
-                let new_line = format!("{}:block-hidden-properties #{{{}}}", indent, new_props);
-                let updated_content = content.replace(&captures[0], &new_line);
-                
-                // Write the updated content back
-                match fs::write(&config_path, &updated_content) {
-                    Ok(_) => info!("✅ Updated config.edn to hide :cymbiont-updated-ms property"),
-                    Err(e) => error!("Failed to write updated config.edn: {}", e),
-                }
-                return;
-            }
-            
-            // No existing property line found, add it after the comment section
-            if let Some(comment_pos) = content.find(";; :block-hidden-properties #{:public :icon}") {
-                // Find the end of this comment line
-                if let Some(newline_pos) = content[comment_pos..].find('\n') {
-                    let insert_pos = comment_pos + newline_pos + 1;
-                    let before = &content[..insert_pos];
-                    let after = &content[insert_pos..];
-                    
-                    // Insert the new property line
-                    let updated_content = format!("{}:block-hidden-properties #{{:cymbiont-updated-ms}}\n{}", before, after);
-                    
-                    // Write the updated content back
-                    match fs::write(&config_path, &updated_content) {
-                        Ok(_) => info!("✅ Updated config.edn to hide :cymbiont-updated-ms property"),
-                        Err(e) => error!("Failed to write updated config.edn: {}", e),
-                    }
-                    return;
-                } else {
-                    warn!("Could not find newline after block-hidden-properties comment");
-                    return;
-                }
-            } else {
-                warn!("Could not find block-hidden-properties comment section to insert after");
-                return;
-            }
-        }
-        Err(e) => error!("Failed to read config.edn: {}", e),
-    }
-}

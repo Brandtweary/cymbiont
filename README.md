@@ -91,6 +91,15 @@ sync:
    cargo run -- --duration 300
    ```
 
+## Configuration Details
+
+Cymbiont automatically manages two properties in your graph's config.edn:
+
+- **`:block-hidden-properties`** - Includes `:cymbiont-updated-ms` to hide sync timestamps from the UI
+- **`:cymbiont/graph-id`** - Unique identifier for multi-graph support and data isolation
+
+These properties are automatically maintained and will be restored if removed. The validation system ensures Cymbiont functionality remains stable even if configurations are manually edited.
+
 ## Development
 
 See `CLAUDE.md` for detailed development guidelines and `cymbiont_architecture.md` for architectural documentation.

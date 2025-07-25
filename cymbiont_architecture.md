@@ -4,30 +4,26 @@ A guide to core modules, system design, and data flow for developers.
 
 ## Recent Updates
 
-### Multi-Graph Architecture with Transaction Log (Latest)
-**Status**: Core infrastructure complete, session management planned
-- **Multi-Graph Support**: Cymbiont now supports multiple Logseq graphs with complete isolation
-  - Graph registry system automatically identifies and manages multiple graphs  
-  - Per-graph GraphManagers and TransactionCoordinators for parallel processing
-  - Graph validation middleware for automatic switching based on request headers
-  - UUID stamping in config.edn for graph identification (`:cymbiont/graph-id`)
-- **Transaction Log System**: Complete WAL implementation using sled embedded database
-  - ACID guarantees for all knowledge graph operations with write-ahead logging
-  - Saga pattern for multi-step workflows with automatic compensation
-  - Content hash deduplication prevents race conditions between real-time sync and API operations
-  - Crash recovery and automatic retry of incomplete transactions
-- **WebSocket Bidirectional Communication**: Full bidirectional command system with acknowledgments
-  - Command protocol for creating/updating/deleting blocks and pages in Logseq
-  - Correlation ID system with acknowledgment flow for UUID mapping
-  - Transaction-safe graph mutations via `kg_api` module
-  - Deadlock-proof connection management with authentication
-- **Property Hiding**: Automatic config.edn updates to hide `cymbiont-updated-ms` timestamp property
-  - Idempotent regex-based insertion with proper deduplication
-  - Fixed multiline regex patterns to prevent duplicate entries
+### Config Validation and EDN Manipulation (2025-07-25)
+**Status**: Runtime config validation complete, pre-launch update disabled
+- **EDN Manipulation Module**: Created `edn.rs` for centralized EDN format handling
+  - Regex-based property manipulation with comprehensive test coverage
+  - Functions for updating `:block-hidden-properties` and `:cymbiont/graph-id`
+  - Validation functions to check current config state
+  - Error handling for malformed configs with detailed error messages
+- **Runtime Config Validation**: Self-healing configuration system
+  - New `/config/validate` endpoint for runtime property validation
+  - Plugin validates config after initialization and requests fixes if needed
+  - Automatic restoration of removed properties without pre-launch delays
+  - Works even if Logseq API changes or properties are manually removed
+- **Config Update Optimization**: Pre-launch update disabled for performance
+  - Runtime validation handles all cases without 0.5-1s startup delay
+  - Config properties self-heal on first connection if missing
+  - System resilient to user modifications and API changes
 
 ## System Overview
 
-Cymbiont is a self-organizing knowledge graph agent that transforms personal knowledge management systems into queryable, intelligent networks. It provides a Rust backend server with multi-graph support, transaction logging, and bidirectional WebSocket communication. The JavaScript plugin enables real-time Logseq synchronization across multiple graphs with automatic graph identification and switching. The system uses a transaction log with write-ahead logging to provide ACID guarantees and prevent race conditions between AI-generated content and manual edits. Session management is planned to enable programmatic graph switching and optimization of config.edn updates.
+Cymbiont is a self-organizing knowledge graph agent that transforms personal knowledge management systems into queryable, intelligent networks. It provides a Rust backend server with multi-graph support, transaction logging, and bidirectional WebSocket communication. The JavaScript plugin enables real-time Logseq synchronization across multiple graphs with automatic graph identification and switching. The system uses a transaction log with write-ahead logging to provide ACID guarantees and prevent race conditions between AI-generated content and manual edits. Configuration validation ensures required properties are maintained even if users modify their config.edn files. Session management is planned to enable programmatic graph switching.
 
 ## Repository Layout
 
@@ -46,7 +42,8 @@ cymbiont/
 │   ├── kg_api.rs                  # Public API for knowledge graph operations
 │   ├── transaction_log.rs         # Write-ahead logging with sled database
 │   ├── transaction.rs             # Transaction coordinator and state management
-│   └── saga.rs                    # Saga pattern for multi-step workflows
+│   ├── saga.rs                    # Saga pattern for multi-step workflows
+│   └── edn.rs                     # EDN format manipulation for config.edn
 ├── logseq_plugin/                 # JavaScript Logseq plugin
 │   ├── index.js                   # Plugin entry point with graph identification
 │   ├── sync.js                    # Database synchronization module
@@ -87,6 +84,7 @@ The core server provides HTTP API endpoints, multi-graph management with automat
   - Monitors DB changes via `logseq.DB.onChanged` for real-time sync
   - Automatically identifies current graph and sends headers to backend
   - Manages UUID stamping in config.edn via `setCurrentGraphConfigs`
+  - Validates config properties after initialization via `/config/validate`
   - Handles route changes and plugin initialization with graph context
   - Exposes helper functions to other modules via window globals
   - Manages timestamp queue for block property updates
@@ -134,7 +132,7 @@ The core server provides HTTP API endpoints, multi-graph management with automat
   - Manages server lifecycle, AppState with multiple GraphManagers
   - Coordinates multi-graph operations and transaction recovery
   - Handles Logseq launching and process termination
-  - Config.edn updates for property hiding before graph launch
+  - Pre-launch config.edn updates disabled (handled by runtime validation)
 - **config.rs**: Configuration management module
   - Loads configuration from `config.yaml` with fallback to defaults
   - Validates JavaScript plugin configuration matches Rust settings
@@ -182,8 +180,16 @@ The core server provides HTTP API endpoints, multi-graph management with automat
   - Process management: port checking, server info file, previous instance termination
   - DateTime parsing with multiple format support (RFC3339, ISO 8601, Unix timestamps)
   - JSON utilities: generic deserialization, JSON-to-HashMap conversion
+- **edn.rs**: EDN (Extensible Data Notation) manipulation module
+  - Regex-based property manipulation with multiline support
+  - `update_block_hidden_properties()`: Add properties to :block-hidden-properties set
+  - `update_graph_id()`: Add or update :cymbiont/graph-id property
+  - `validate_config_properties()`: Check presence of required properties
+  - `update_config_file()`: Main function for config validation and updates
+  - Comprehensive error handling for malformed configs
+  - Test coverage for edge cases and multiline regex behavior
 
-**API Endpoints** (unchanged):
+**API Endpoints**:
   
   **Endpoints:**
   - `GET /` - Health check endpoint
@@ -245,6 +251,19 @@ The core server provides HTTP API endpoints, multi-graph management with automat
       - `blocks`: Array of all current block UUIDs in PKM
     - Archives nodes that no longer exist to `archived_nodes/` directory
     - Returns: `ApiResponse` with archived count and details
+  
+  - `POST /config/validate` - Config validation endpoint
+    - Called by plugin after initialization to ensure required properties exist
+    - Accepts: JSON object with:
+      - `graph_id`: String UUID of the current graph
+      - `has_hidden_property`: Boolean indicating if :block-hidden-properties contains :cymbiont-updated-ms
+      - `has_graph_id`: Boolean indicating if :cymbiont/graph-id exists
+    - Updates config.edn file to add missing properties
+    - Security: Validates graph_id matches active graph
+    - Returns: `ApiResponse` with success status
+    - Side effects:
+      - Updates config.edn via edn module functions
+      - Marks graph as config_updated in registry
   
   - `POST /log` - Logging endpoint for JavaScript plugin
     - Accepts: `LogMessage` JSON object with:
@@ -405,10 +424,10 @@ Operation Request → Begin Transaction → Content Hash Check → Apply to Grap
 
 ### Session Management (Next Priority)
 - **SessionManager Component**: Manage graph sessions and programmatic graph switching
-- **Pre-launch Graph Selection**: Know graph ID before launching Logseq for config optimization
+- **Pre-launch Graph Selection**: Target specific graphs before launching Logseq
 - **Platform-specific URL Opening**: Use `logseq://graph/{name}` for direct graph launches
 - **CLI Commands**: `cymbiont switch-graph`, `cymbiont list-graphs`, `cymbiont current-graph`
-- **Config Optimization**: Skip expensive config.edn writes (0.5-1s) for already-updated graphs
+- **Graph Persistence**: Save/restore last active graph across restarts
 
 ### Integration Testing Framework
 - **Dedicated Test Graphs**: Clean test isolation with dedicated graphs (not dummy_graph)

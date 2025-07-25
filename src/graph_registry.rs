@@ -1,3 +1,97 @@
+//! Graph Registry: Multi-Graph Identification and Management
+//!
+//! This module provides the core infrastructure for Cymbiont's multi-graph architecture,
+//! enabling automatic identification, registration, and management of multiple Logseq graphs
+//! with complete isolation between them.
+//!
+//! ## Overview
+//!
+//! The graph registry system allows Cymbiont to work with multiple Logseq graphs simultaneously
+//! by automatically identifying each graph through name and path information sent by the plugin.
+//! Each graph receives a unique UUID that remains stable across sessions, enabling consistent
+//! tracking and isolation of graph-specific data.
+//!
+//! ## Key Components
+//!
+//! ### GraphInfo
+//! Represents metadata for a single registered graph:
+//! - **id**: Internal Cymbiont UUID (stable identifier)
+//! - **name**: Human-readable graph name from Logseq
+//! - **path**: File system path to the graph directory
+//! - **kg_path**: Where Cymbiont stores knowledge graph data for this graph
+//! - **last_seen**: Timestamp of last interaction with this graph
+//! - **config_updated**: Whether config.edn has been modified for property hiding
+//!
+//! ### GraphRegistry
+//! Central coordinator that manages the collection of graphs:
+//! - Maintains mapping from UUID to GraphInfo
+//! - Tracks which graph is currently active
+//! - Provides automatic graph creation and registration
+//! - Handles graph switching and validation
+//! - Persists registry state to `data/graph_registry.json`
+//!
+//! ## Graph Identification Strategy
+//!
+//! Graphs are identified using a multi-layered approach:
+//! 1. **Primary**: UUID from config.edn (`:cymbiont/graph-id` property)
+//! 2. **Recovery**: Forgiving name/path matching for graphs missing UUIDs
+//! 3. **Creation**: Automatic UUID generation for new graphs
+//!
+//! This strategy ensures that graphs maintain their identity even if the UUID is lost
+//! or not yet stamped, while preventing duplicate registrations.
+//!
+//! ## Multi-Graph Architecture
+//!
+//! The registry enables Cymbiont's parallel multi-graph architecture:
+//! - **Complete Isolation**: Each graph gets its own GraphManager and TransactionCoordinator
+//! - **Automatic Switching**: Request middleware validates headers and switches active graph
+//! - **Lazy Creation**: Graph infrastructure is created only when first accessed
+//! - **Persistent Identity**: UUIDs are stamped in config.edn for permanent identification
+//!
+//! ## Usage Patterns
+//!
+//! ### Plugin Initialization
+//! ```rust
+//! // Plugin sends graph context via headers
+//! let headers = extract_graph_headers(&request)?;
+//! let (graph_info, is_new) = registry.validate_and_switch_graph(
+//!     headers.graph_id.as_deref(),
+//!     &headers.graph_name,
+//!     &headers.graph_path
+//! )?;
+//! ```
+//!
+//! ### Graph Management
+//! ```rust
+//! // Register new graph
+//! let graph_info = registry.register_graph(
+//!     "My Knowledge Base".to_string(),
+//!     "/path/to/graph".to_string(),
+//!     None  // Auto-generate UUID
+//! )?;
+//!
+//! // Get active graph
+//! if let Some(active_id) = registry.get_active_graph_id() {
+//!     let graph_info = registry.get_graph(&active_id)?;
+//! }
+//! ```
+//!
+//! ## Persistence and Recovery
+//!
+//! The registry automatically persists to `data/graph_registry.json` and implements
+//! recovery logic for resilience:
+//! - **Startup**: Loads existing registry or creates new one
+//! - **Graph Recovery**: Matches graphs by name+path if UUID is missing
+//! - **Forgiving Matching**: Handles renamed graphs and moved directories
+//! - **Automatic Save**: Persists changes immediately for durability
+//!
+//! ## Configuration Integration
+//!
+//! The registry tracks whether each graph's config.edn has been updated for property hiding:
+//! - **config_updated Flag**: Prevents redundant config.edn modifications
+//! - **Performance Optimization**: Skips expensive EDN writes for already-updated graphs
+//! - **Session Integration**: Future session management will use this for optimization
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::fs;
@@ -38,6 +132,9 @@ pub struct GraphInfo {
     pub kg_path: PathBuf,
     /// Last time we saw this graph
     pub last_seen: DateTime<Utc>,
+    /// Whether config.edn has been updated with property hiding
+    #[serde(default)]
+    pub config_updated: bool,
 }
 
 /// Registry of all known graphs
@@ -99,8 +196,15 @@ impl GraphRegistry {
                 }
                 existing
             },
-            // Graph exists but client doesn't know the ID
-            (Some(existing), None) => existing,
+            // Graph exists but client doesn't know the ID - RECOVERY MODE
+            (Some(existing), None) => {
+                warn!(
+                    "🔧 UUID Recovery: Graph '{}' at '{}' is missing its UUID. \
+                    Recovering with existing ID: {} (matched by name AND path)",
+                    name, path, existing
+                );
+                existing
+            },
             // New graph with provided ID
             (None, Some(provided)) => provided,
             // New graph, generate ID
@@ -116,6 +220,7 @@ impl GraphRegistry {
             path,
             kg_path,
             last_seen: Utc::now(),
+            config_updated: false,
         };
 
         self.graphs.insert(graph_id.clone(), graph_info.clone());
@@ -129,9 +234,10 @@ impl GraphRegistry {
     }
 
     /// Find a graph ID by name and path
+    /// Returns a match only if BOTH name AND path match (safe recovery)
     fn find_graph_id(&self, name: &str, path: &str) -> Option<String> {
         self.graphs.iter()
-            .find(|(_, info)| info.name == name || info.path == path)
+            .find(|(_, info)| info.name == name && info.path == path)
             .map(|(id, _)| id.clone())
     }
 
@@ -205,6 +311,23 @@ impl GraphRegistry {
 
         Ok((graph_info, is_new))
     }
+
+    /// Mark a graph's config.edn as having been updated with property hiding
+    pub fn mark_config_updated(&mut self, graph_id: &str) -> Result<()> {
+        if let Some(graph_info) = self.graphs.get_mut(graph_id) {
+            graph_info.config_updated = true;
+            Ok(())
+        } else {
+            Err(GraphRegistryError::GraphNotFound(graph_id.to_string()))
+        }
+    }
+
+    /// Check if a graph's config.edn has been updated
+    pub fn is_config_updated(&self, graph_id: &str) -> bool {
+        self.graphs.get(graph_id)
+            .map(|info| info.config_updated)
+            .unwrap_or(false)
+    }
 }
 
 #[cfg(test)]
@@ -266,14 +389,24 @@ mod tests {
             None
         ).unwrap();
 
-        // Register again with same name
+        // Register again with same name AND same path
         let info2 = registry.register_graph(
             "TestGraph".to_string(),
-            "/different/path".to_string(),
+            "/path/to/test".to_string(),
             None
         ).unwrap();
 
         // Should get the same ID
         assert_eq!(info1.id, info2.id);
+        
+        // Register with same name but different path
+        let info3 = registry.register_graph(
+            "TestGraph".to_string(),
+            "/different/path".to_string(),
+            None
+        ).unwrap();
+        
+        // Should get a different ID (AND logic for safety)
+        assert_ne!(info1.id, info3.id);
     }
 }

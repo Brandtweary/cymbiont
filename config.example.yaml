@@ -16,6 +16,10 @@ logseq:
   auto_launch: true
   # Optional: Path to Logseq executable (if not provided, will search common locations)
   # executable_path: /path/to/logseq
+  # Optional: Path to the graph directory to update config.edn before launch
+  # This is a temporary workaround until proper session management is implemented
+  # WARNING: Assumes this is the graph that Logseq will open by default
+  # graph_path: /path/to/your/graph
 
 # Development-only settings (DO NOT USE IN PRODUCTION)
 development:

@@ -82,6 +82,12 @@
  * ```
  * Archives deleted nodes to timestamped JSON files in archived_nodes/
  * 
+ * ### POST /plugin/initialized
+ * Plugin initialization endpoint called when the Logseq plugin starts up.
+ * - Validates and registers the graph using headers (X-Cymbiont-Graph-ID, etc.)
+ * - Returns the graph ID for the plugin to store in Logseq config
+ * - Updates config.edn to hide the cymbiont-updated-ms property
+ * 
  * ### POST /log
  * Receives log messages from JavaScript plugin and routes to Rust tracing system.
  * Maps JavaScript log levels to appropriate tracing macros. Source defaults to
@@ -117,8 +123,16 @@
  * Result<String, String> for success/error messages.
  */
 
-use axum::{extract::State, Json, Router, routing::{get, post, patch, any}};
-use axum::http::HeaderMap;
+use axum::{
+    extract::{State, Request}, 
+    Json, 
+    Router, 
+    routing::{get, post, patch, any},
+    http::{HeaderMap, StatusCode},
+    middleware::{self, Next},
+    response::Response,
+    body::Body,
+};
 use std::sync::Arc;
 use tracing::{info, warn, error, debug, trace};
 use serde::{Deserialize, Serialize};
@@ -193,18 +207,24 @@ pub struct PkmIdVerification {
     pub blocks: Vec<String>,
 }
 
+
 // ===== Route Configuration =====
 
-/// Create and configure the API router
+/// Create and configure the API router with graph validation middleware
 pub fn create_router(app_state: Arc<AppState>) -> Router {
     Router::new()
         .route("/", get(root))
         .route("/data", post(receive_data))
+        .route("/plugin/initialized", post(plugin_initialized))
         .route("/sync/status", get(get_sync_status))
         .route("/sync", patch(update_sync_timestamp))
         .route("/sync/verify", post(verify_pkm_ids))
         .route("/log", post(receive_log))
         .route("/ws", any(websocket_handler))
+        .layer(middleware::from_fn_with_state(
+            app_state.clone(),
+            graph_validation_middleware,
+        ))
         .with_state(app_state)
 }
 
@@ -219,9 +239,30 @@ pub async fn root() -> &'static str {
 pub async fn get_sync_status(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
-    let graph_manager = state.graph_manager.lock().unwrap();
+    // Get active graph
+    let active_graph_id = state.get_active_graph_manager().await;
+    if active_graph_id.is_none() {
+        return Json(serde_json::json!({
+            "error": "No active graph"
+        }));
+    }
+    let graph_id = active_graph_id.unwrap();
+    
+    // Get the graph manager for active graph
+    let managers = state.graph_managers.read().await;
+    let manager_lock = match managers.get(&graph_id) {
+        Some(m) => m,
+        None => {
+            return Json(serde_json::json!({
+                "error": "Graph manager not found"
+            }));
+        }
+    };
+    
+    let graph_manager = manager_lock.read().await;
     let mut status = graph_manager.get_sync_status(&state.config.sync);
     drop(graph_manager);
+    drop(managers);
     
     // Add force sync flags to the response
     if let Some(obj) = status.as_object_mut() {
@@ -257,7 +298,31 @@ pub async fn update_sync_timestamp(
     State(state): State<Arc<AppState>>,
     Json(request): Json<UpdateSyncRequest>,
 ) -> Json<ApiResponse> {
-    let mut graph_manager = state.graph_manager.lock().unwrap();
+    // Get active graph
+    let active_graph_id = state.get_active_graph_manager().await;
+    if active_graph_id.is_none() {
+        return Json(ApiResponse {
+            success: false,
+            message: "No active graph".to_string(),
+            graph_id: None,
+        });
+    }
+    let graph_id = active_graph_id.unwrap();
+    
+    // Get the graph manager for active graph
+    let managers = state.graph_managers.read().await;
+    let manager_lock = match managers.get(&graph_id) {
+        Some(m) => m,
+        None => {
+            return Json(ApiResponse {
+                success: false,
+                message: "Graph manager not found".to_string(),
+                graph_id: None,
+            });
+        }
+    };
+    
+    let mut graph_manager = manager_lock.write().await;
     
     let result = match request.sync_type.as_str() {
         "incremental" => {
@@ -296,6 +361,55 @@ pub async fn update_sync_timestamp(
             })
         }
     }
+}
+
+// Endpoint for plugin initialization
+#[axum::debug_handler]
+pub async fn plugin_initialized(
+    State(state): State<Arc<AppState>>,
+) -> Json<ApiResponse> {
+    info!("🔌 Plugin initialization confirmed");
+    
+    // Get the active graph ID that was set by middleware
+    let graph_id = state.get_active_graph_manager().await;
+    
+    // Check if the actual graph path matches the configured graph path
+    if let Some(ref configured_path) = state.config.logseq.graph_path {
+        if let Some(ref active_id) = graph_id {
+            let actual_path = {
+                let registry = state.graph_registry.lock().unwrap();
+                registry.get_graph(active_id).map(|info| info.path.clone())
+            };
+            
+            if let Some(actual) = actual_path {
+                // Normalize paths for comparison
+                let configured_abs = std::path::Path::new(configured_path).canonicalize().ok();
+                let actual_abs = std::path::Path::new(&actual).canonicalize().ok();
+                
+                match (configured_abs, actual_abs) {
+                    (Some(conf), Some(act)) if conf != act => {
+                        warn!("⚠️ Graph path mismatch: configured '{}' but actual graph is '{}'", 
+                              configured_path, actual);
+                        warn!("This may cause config.edn updates to apply to the wrong graph");
+                    },
+                    _ => debug!("✅ Graph path matches configured path"),
+                }
+            }
+        }
+    }
+    
+    // Signal plugin initialization if we have a waiting channel
+    if let Ok(mut tx_guard) = state.plugin_init_tx.lock() {
+        if let Some(tx) = tx_guard.take() {
+            let _ = tx.send(());
+        }
+    }
+    
+    Json(ApiResponse {
+        success: true,
+        message: "Plugin initialization acknowledged".to_string(),
+        graph_id,
+    })
 }
 
 // Endpoint to receive log messages from the frontend
@@ -364,7 +478,31 @@ pub async fn verify_pkm_ids(
     State(state): State<Arc<AppState>>,
     Json(verification): Json<PkmIdVerification>,
 ) -> Json<ApiResponse> {
-    let mut graph_manager = state.graph_manager.lock().unwrap();
+    // Get active graph
+    let active_graph_id = state.get_active_graph_manager().await;
+    if active_graph_id.is_none() {
+        return Json(ApiResponse {
+            success: false,
+            message: "No active graph".to_string(),
+            graph_id: None,
+        });
+    }
+    let graph_id = active_graph_id.unwrap();
+    
+    // Get the graph manager for active graph
+    let managers = state.graph_managers.read().await;
+    let manager_lock = match managers.get(&graph_id) {
+        Some(m) => m,
+        None => {
+            return Json(ApiResponse {
+                success: false,
+                message: "Graph manager not found".to_string(),
+                graph_id: None,
+            });
+        }
+    };
+    
+    let mut graph_manager = manager_lock.write().await;
     
     match graph_manager.verify_and_archive_missing_nodes(&verification.pages, &verification.blocks) {
         Ok((archived_count, message)) => {
@@ -401,7 +539,7 @@ pub async fn receive_data(
     // Process based on the type of data
     match data.type_.as_deref() {
         Some("block") => {
-            match handle_block_data(state, &data.payload) {
+            match handle_block_data(state, &data.payload).await {
                 Ok(message) => {
                     Json(ApiResponse {
                         success: true,
@@ -419,7 +557,7 @@ pub async fn receive_data(
             }
         },
         Some("block_batch") | Some("blocks") => {
-            match handle_batch_blocks(state, &data.payload) {
+            match handle_batch_blocks(state, &data.payload).await {
                 Ok(message) => {
                     Json(ApiResponse {
                         success: true,
@@ -437,7 +575,7 @@ pub async fn receive_data(
             }
         },
         Some("page") => {
-            match handle_page_data(state, &data.payload) {
+            match handle_page_data(state, &data.payload).await {
                 Ok(message) => {
                     Json(ApiResponse {
                         success: true,
@@ -455,7 +593,7 @@ pub async fn receive_data(
             }
         },
         Some("page_batch") | Some("pages") => {
-            match handle_batch_pages(state, &data.payload) {
+            match handle_batch_pages(state, &data.payload).await {
                 Ok(message) => {
                     Json(ApiResponse {
                         success: true,
@@ -471,25 +609,6 @@ pub async fn receive_data(
                     })
                 }
             }
-        },
-        Some("plugin_initialized") => {
-            info!("🔌 Plugin initialization confirmed");
-            
-            // TODO: Extract graph context from headers and register/validate graph
-            // For now, just acknowledge the initialization
-            
-            // Signal plugin initialization if we have a waiting channel
-            if let Ok(mut tx_guard) = state.plugin_init_tx.lock() {
-                if let Some(tx) = tx_guard.take() {
-                    let _ = tx.send(());
-                }
-            }
-            
-            Json(ApiResponse {
-                success: true,
-                message: "Plugin initialization acknowledged".to_string(),
-                graph_id: None,
-            })
         },
         Some("sync_complete") => {
             // Signal sync completion if we have a waiting channel
@@ -540,7 +659,7 @@ fn parse_page_data(payload: &str) -> Result<PKMPageData, serde_json::Error> {
 }
 
 // Helper function for handling block data
-fn handle_block_data(state: Arc<AppState>, payload: &str) -> Result<String, String> {
+async fn handle_block_data(state: Arc<AppState>, payload: &str) -> Result<String, String> {
     // Parse the payload as a PKMBlockData
     let block_data = parse_block_data(payload)
         .map_err(|e| format!("Could not parse block data: {e}"))?;
@@ -550,24 +669,32 @@ fn handle_block_data(state: Arc<AppState>, payload: &str) -> Result<String, Stri
         return Err("Block ID is empty".to_string());
     }
     
-    // Check if this content is already being processed by a transaction
-    // This prevents race conditions where LLM creates content, sends to Logseq,
-    // and then we receive it back via real-time sync
-    let content_hash = compute_content_hash(&block_data.content);
-    let is_pending = tokio::task::block_in_place(|| {
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(async {
-            state.transaction_coordinator.is_content_pending(&content_hash).await
-        })
-    });
-    
-    if is_pending {
-        trace!("Skipping block {} - content already being processed by transaction", block_data.id);
-        return Ok("Block skipped - duplicate content".to_string());
+    // Get active graph
+    let active_graph_id = state.get_active_graph_manager().await;
+    if active_graph_id.is_none() {
+        return Err("No active graph".to_string());
     }
+    let graph_id = active_graph_id.unwrap();
     
-    // Process the block data
-    let mut graph_manager = state.graph_manager.lock().unwrap();
+    // Check if this content is already being processed by a transaction
+    let content_hash = compute_content_hash(&block_data.content);
+    let coordinators = state.transaction_coordinators.read().await;
+    if let Some(coordinator) = coordinators.get(&graph_id) {
+        if coordinator.is_content_pending(&content_hash).await {
+            trace!("Skipping block {} - content already being processed by transaction", block_data.id);
+            return Ok("Block skipped - duplicate content".to_string());
+        }
+    }
+    drop(coordinators);
+    
+    // Get the graph manager for active graph
+    let managers = state.graph_managers.read().await;
+    let manager_lock = match managers.get(&graph_id) {
+        Some(m) => m,
+        None => return Err("Graph manager not found".to_string()),
+    };
+    
+    let mut graph_manager = manager_lock.write().await;
     
     match graph_manager.create_or_update_node_from_pkm_block(&block_data) {
         Ok(_node_idx) => {
@@ -584,7 +711,7 @@ fn handle_block_data(state: Arc<AppState>, payload: &str) -> Result<String, Stri
 }
 
 // Helper function for handling page data
-fn handle_page_data(state: Arc<AppState>, payload: &str) -> Result<String, String> {
+async fn handle_page_data(state: Arc<AppState>, payload: &str) -> Result<String, String> {
     // Parse the payload as a PKMPageData
     let page_data = parse_page_data(payload)
         .map_err(|e| format!("Could not parse page data: {e}"))?;
@@ -594,8 +721,21 @@ fn handle_page_data(state: Arc<AppState>, payload: &str) -> Result<String, Strin
         return Err("Page name is empty".to_string());
     }
     
-    // Process the page data
-    let mut graph_manager = state.graph_manager.lock().unwrap();
+    // Get active graph
+    let active_graph_id = state.get_active_graph_manager().await;
+    if active_graph_id.is_none() {
+        return Err("No active graph".to_string());
+    }
+    let graph_id = active_graph_id.unwrap();
+    
+    // Get the graph manager for active graph
+    let managers = state.graph_managers.read().await;
+    let manager_lock = match managers.get(&graph_id) {
+        Some(m) => m,
+        None => return Err("Graph manager not found".to_string()),
+    };
+    
+    let mut graph_manager = manager_lock.write().await;
     
     match graph_manager.create_or_update_node_from_pkm_page(&page_data) {
         Ok(_node_idx) => {
@@ -625,19 +765,32 @@ fn handle_default_data(source: &str) -> Result<String, String> {
 }
 
 // Helper function for handling batch block data
-fn handle_batch_blocks(state: Arc<AppState>, payload: &str) -> Result<String, String> {
+async fn handle_batch_blocks(state: Arc<AppState>, payload: &str) -> Result<String, String> {
     // Parse the payload as an array of PKMBlockData
     let blocks: Vec<PKMBlockData> = parse_json_data(payload)
         .map_err(|e| format!("Could not parse batch blocks: {e}"))?;
     
     debug!("📦 Processing batch of {} blocks", blocks.len());
     
+    // Get active graph
+    let active_graph_id = state.get_active_graph_manager().await;
+    if active_graph_id.is_none() {
+        return Err("No active graph".to_string());
+    }
+    let graph_id = active_graph_id.unwrap();
+    
     let mut success_count = 0;
     let mut error_count = 0;
     let total_blocks = blocks.len();
     
-    // Get a single lock on the graph for the entire batch
-    let mut graph_manager = state.graph_manager.lock().unwrap();
+    // Get the graph manager for active graph
+    let managers = state.graph_managers.read().await;
+    let manager_lock = match managers.get(&graph_id) {
+        Some(m) => m,
+        None => return Err("Graph manager not found".to_string()),
+    };
+    
+    let mut graph_manager = manager_lock.write().await;
     
     // Disable auto-save during batch processing to avoid interleaved saves
     graph_manager.disable_auto_save();
@@ -680,19 +833,32 @@ fn handle_batch_blocks(state: Arc<AppState>, payload: &str) -> Result<String, St
 }
 
 // Helper function for handling batch page data
-fn handle_batch_pages(state: Arc<AppState>, payload: &str) -> Result<String, String> {
+async fn handle_batch_pages(state: Arc<AppState>, payload: &str) -> Result<String, String> {
     // Parse the payload as an array of PKMPageData
     let pages: Vec<PKMPageData> = parse_json_data(payload)
         .map_err(|e| format!("Could not parse batch pages: {e}"))?;
     
     debug!("📦 Processing batch of {} pages", pages.len());
     
+    // Get active graph
+    let active_graph_id = state.get_active_graph_manager().await;
+    if active_graph_id.is_none() {
+        return Err("No active graph".to_string());
+    }
+    let graph_id = active_graph_id.unwrap();
+    
     let mut success_count = 0;
     let mut error_count = 0;
     let total_pages = pages.len();
     
-    // Get a single lock on the graph for the entire batch
-    let mut graph_manager = state.graph_manager.lock().unwrap();
+    // Get the graph manager for active graph
+    let managers = state.graph_managers.read().await;
+    let manager_lock = match managers.get(&graph_id) {
+        Some(m) => m,
+        None => return Err("Graph manager not found".to_string()),
+    };
+    
+    let mut graph_manager = manager_lock.write().await;
     
     // Disable auto-save during batch processing to avoid interleaved saves
     graph_manager.disable_auto_save();
@@ -740,6 +906,81 @@ fn compute_content_hash(content: &str) -> String {
     content.hash(&mut hasher);
     format!("{:x}", hasher.finish())
 }
+
+/// Middleware to validate and switch graphs based on request headers
+async fn graph_validation_middleware(
+    State(state): State<Arc<AppState>>,
+    req: Request,
+    next: Next,
+) -> Response {
+    // Extract graph context from headers and path before any await
+    let graph_context = GraphContext::from_headers(req.headers());
+    let path = req.uri().path().to_string();
+    
+    // Skip validation for certain endpoints
+    if path == "/" || path == "/ws" || path == "/log" {
+        return next.run(req).await;
+    }
+    
+    // If we have graph information, validate and switch
+    if graph_context.graph_name.is_some() || graph_context.graph_path.is_some() || graph_context.graph_id.is_some() {
+        // Validate and switch graph
+        let (graph_info, is_new) = {
+            let mut registry = state.graph_registry.lock().unwrap();
+            match registry.validate_and_switch(
+                graph_context.graph_name.as_deref(),
+                graph_context.graph_path.as_deref(),
+                graph_context.graph_id.as_deref(),
+            ) {
+                Ok(result) => result,
+                Err(e) => {
+                    error!("Graph validation failed: {}", e);
+                    return Response::builder()
+                        .status(StatusCode::BAD_REQUEST)
+                        .body(Body::empty())
+                        .unwrap();
+                }
+            }
+        }; // Drop the lock here before any await
+        
+        if is_new {
+            info!("🆕 Registered new graph: {} ({})", graph_info.name, graph_info.id);
+        }
+        
+        // Check if we need to switch active graph
+        let current_active = state.get_active_graph_manager().await;
+                if current_active.as_ref() != Some(&graph_info.id) {
+                    // Save current graph if switching
+                    if let Some(current_id) = current_active {
+                        let managers = state.graph_managers.read().await;
+                        if let Some(manager_lock) = managers.get(&current_id) {
+                            let mut manager = manager_lock.write().await;
+                            if let Err(e) = manager.save_graph() {
+                                error!("Failed to save graph {} before switching: {}", current_id, e);
+                            }
+                        }
+                    }
+                    
+                    // TODO: Create SessionManager to handle graph switching
+                    info!("📊 Switching to graph: {} ({})", graph_info.name, graph_info.id);
+                    
+                    // Ensure graph manager exists
+                    if let Err(e) = state.get_or_create_graph_manager(&graph_info.id).await {
+                        error!("Failed to create graph manager: {}", e);
+                        return Response::builder()
+                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                            .body(Body::empty())
+                            .unwrap();
+                    }
+                    
+                    // Set active graph
+                    state.set_active_graph(graph_info.id.clone()).await;
+                }
+    }
+    
+    next.run(req).await
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -811,5 +1052,54 @@ mod tests {
         assert_eq!(log.message, "Error occurred");
         assert_eq!(log.source, None);
         assert_eq!(log.details, None);
+    }
+
+    #[test]
+    fn test_graph_context_from_headers() {
+        use axum::http::HeaderMap;
+        
+        let mut headers = HeaderMap::new();
+        headers.insert("x-cymbiont-graph-id", "test-id-123".parse().unwrap());
+        headers.insert("x-cymbiont-graph-name", "TestGraph".parse().unwrap());
+        headers.insert("x-cymbiont-graph-path", "/path/to/graph".parse().unwrap());
+        
+        let context = GraphContext::from_headers(&headers);
+        assert_eq!(context.graph_id, Some("test-id-123".to_string()));
+        assert_eq!(context.graph_name, Some("TestGraph".to_string()));
+        assert_eq!(context.graph_path, Some("/path/to/graph".to_string()));
+    }
+
+    #[test]
+    fn test_graph_context_partial_headers() {
+        use axum::http::HeaderMap;
+        
+        let mut headers = HeaderMap::new();
+        headers.insert("x-cymbiont-graph-name", "TestGraph".parse().unwrap());
+        
+        let context = GraphContext::from_headers(&headers);
+        assert_eq!(context.graph_id, None);
+        assert_eq!(context.graph_name, Some("TestGraph".to_string()));
+        assert_eq!(context.graph_path, None);
+    }
+
+    #[test]
+    fn test_update_sync_request_default() {
+        let json = r#"{}"#;
+        let request: UpdateSyncRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.sync_type, "incremental");
+    }
+
+    #[test]
+    fn test_pkm_id_verification_deserialization() {
+        let json = r#"{
+            "pages": ["Page1", "Page2"],
+            "blocks": ["block-123", "block-456"]
+        }"#;
+        
+        let verification: PkmIdVerification = serde_json::from_str(json).unwrap();
+        assert_eq!(verification.pages.len(), 2);
+        assert_eq!(verification.blocks.len(), 2);
+        assert_eq!(verification.pages[0], "Page1");
+        assert_eq!(verification.blocks[1], "block-456");
     }
 }

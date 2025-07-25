@@ -112,6 +112,8 @@ pub struct LogseqConfig {
     pub auto_launch: bool,
     #[serde(default)]
     pub executable_path: Option<String>,
+    #[serde(default)]
+    pub graph_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -157,6 +159,7 @@ impl Default for Config {
             logseq: LogseqConfig {
                 auto_launch: false,
                 executable_path: None,
+                graph_path: None,
             },
             development: DevelopmentConfig {
                 default_duration: None,
@@ -171,6 +174,7 @@ impl Default for LogseqConfig {
         LogseqConfig {
             auto_launch: false,
             executable_path: None,
+            graph_path: None,
         }
     }
 }
@@ -333,6 +337,7 @@ mod tests {
         assert_eq!(config.backend.max_port_attempts, 10);
         assert_eq!(config.logseq.auto_launch, false);
         assert_eq!(config.logseq.executable_path, None);
+        assert_eq!(config.logseq.graph_path, None);
         assert_eq!(config.development.default_duration, None);
         assert_eq!(config.sync.incremental_interval_hours, 2);
         assert_eq!(config.sync.full_interval_hours, 168);
@@ -349,6 +354,7 @@ mod tests {
         let config = LogseqConfig::default();
         assert_eq!(config.auto_launch, false);
         assert_eq!(config.executable_path, None);
+        assert_eq!(config.graph_path, None);
     }
 
     #[test]

@@ -242,6 +242,9 @@ pub struct GraphManager {
     /// Base directory for storing data
     data_dir: PathBuf,
     
+    /// Graph ID for multi-graph support
+    graph_id: Option<String>,
+    
     /// The knowledge graph
     pub graph: KnowledgeGraph,
     
@@ -276,8 +279,18 @@ impl GraphManager {
         let archive_dir = data_dir.join("archived_nodes");
         fs::create_dir_all(&archive_dir)?;
         
+        // Extract graph ID from data directory path
+        let graph_id = data_dir.parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .filter(|s| *s == "graphs")
+            .and_then(|_| data_dir.file_name())
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_string());
+        
         let mut manager = Self {
             data_dir,
+            graph_id,
             graph: StableGraph::new(),
             pkm_to_node: HashMap::new(),
             last_incremental_sync: None,
@@ -343,6 +356,17 @@ impl GraphManager {
         self.pkm_to_node = serialized.pkm_to_node;
         self.last_incremental_sync = serialized.last_incremental_sync;
         self.last_full_sync = serialized.last_full_sync;
+        
+        // Restore graph_id if it wasn't already set
+        if self.graph_id.is_none() {
+            self.graph_id = self.data_dir.parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .filter(|s| *s == "graphs")
+                .and_then(|_| self.data_dir.file_name())
+                .and_then(|n| n.to_str())
+                .map(|s| s.to_string());
+        }
         
         // Transaction-aware: Pending transactions are recovered separately
         // by the TransactionCoordinator during startup in main.rs
@@ -654,12 +678,17 @@ impl GraphManager {
             }
         }
         
-        let archive_data = serde_json::json!({
+        let mut archive_data = serde_json::json!({
             "timestamp": Utc::now().to_rfc3339(),
             "archived_pages": archived_pages,
             "archived_blocks": archived_blocks,
             "nodes": archive_nodes
         });
+        
+        // Add graph metadata if available
+        if let Some(graph_id) = &self.graph_id {
+            archive_data["graph_id"] = serde_json::json!(graph_id);
+        }
         
         // Save archive file
         let archive_filename = format!("archive_{}.json", Utc::now().format("%Y%m%d_%H%M%S"));

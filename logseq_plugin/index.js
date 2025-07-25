@@ -47,7 +47,6 @@
  * - type_: 'blocks' - Batch of block data
  * - type_: 'page' - Individual page data
  * - type_: 'pages' - Batch of page data
- * - type_: 'plugin_initialized' - Plugin startup notification
  * 
  * The plugin automatically:
  * - Monitors database changes via logseq.DB.onChanged
@@ -437,6 +436,11 @@ async function main() {
     KnowledgeGraphAPI.log.error('Failed to check Cymbiont graph ID', {error: error.message});
   }
 
+  // TODO: Property hiding via setCurrentGraphConfigs is causing EDN format errors
+  // Logseq expects EDN set format but JavaScript arrays don't map cleanly
+  // Users must manually add to config.edn:
+  // :block-hidden-properties #{:cymbiont-updated-ms}
+
   // Store graph context globally for use in all API calls
   window.cymbiontGraphContext = {
     name: graphInfo.name,
@@ -446,17 +450,10 @@ async function main() {
 
   // Send initialization signal to backend with graph info
   try {
-    const response = await fetch(await KnowledgeGraphAPI.getBackendUrl('/data'), {
+    const response = await fetch(await KnowledgeGraphAPI.getBackendUrl('/plugin/initialized'), {
       method: 'POST',
       headers: KnowledgeGraphAPI.buildHeaders(),
-      body: JSON.stringify({
-        source: 'PKM Plugin Startup',
-        timestamp: Date.now().toString(),
-        type_: 'plugin_initialized',
-        payload: JSON.stringify({ 
-          message: 'PKM Knowledge Graph Plugin initialized successfully'
-        })
-      })
+      body: JSON.stringify({})
     });
     
     if (response.ok) {

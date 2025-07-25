@@ -66,13 +66,30 @@ Implement real-time bidirectional communication between Cymbiont backend and Log
 - [ ] Add command deduplication to prevent double-execution
 
 ### 4. Integration with Graph Manager
-- [ ] Create kg_api module for high-level graph operations
-- [ ] Add WebSocket command emission to graph mutations
+- [x] Create kg_api module for high-level graph operations
+- [x] Add WebSocket command emission to graph mutations
 - [ ] Implement operation batching for efficiency
 - [ ] Add transaction-like semantics (all-or-nothing for related operations)
-- [ ] Use existing pkm_to_node mapping (pkm_id is the Logseq UUID for blocks)
+- [x] Use existing pkm_to_node mapping (pkm_id is the Logseq UUID for blocks)
 
-### 5. Developer Experience
+### 5. Multi-Graph Support
+- [ ] Modify `ConnectionState` struct to include `graph_id: Option<String>` field
+- [ ] Update `auth` command to accept graph identification from plugin headers
+- [ ] Modify `broadcast_command()` to filter by graph_id before sending
+- [ ] Add `get_authenticated_senders_for_graph(graph_id)` helper function
+- [ ] Update plugin WebSocket client to send graph context during authentication
+- [ ] Coordinate with SessionManager when graphs are switched
+- [ ] Maintain WebSocket connections across graph switches (don't disconnect)
+- [ ] Update active graph context for existing connections when user switches graphs
+- [ ] Handle scenario where connection was established for Graph A but user switches to Graph B
+
+### 6. Timeout and Correlation
+- [ ] Add acknowledgment timeouts (30s default)
+- [ ] Extend correlation tracking to update_block operations
+- [ ] Extend correlation tracking to delete_block operations  
+- [ ] Extend correlation tracking to create_page operations
+
+### 7. Developer Experience
 - [x] Add WebSocket connection status to backend logs
 - [x] Create temporary CLI command for injecting test WebSocket messages (via --test-websocket flag)
 - [ ] Document WebSocket protocol in architecture.md
@@ -139,33 +156,33 @@ Implement real-time bidirectional communication between Cymbiont backend and Log
 - Plugin-side command validation before sending
 - Connection status UI indicators in plugin
 
-## Implementation Status (Paused for Transaction Log)
+## Implementation Status (READY TO RESUME - Transaction Log Complete)
 
-### What's Complete
-- ✅ WebSocket infrastructure (server and client)
-- ✅ Command protocol and handlers
-- ✅ Bidirectional communication working
-- ✅ Test commands successfully create pages/blocks
-- ✅ Deadlock-proof connection management
+**Status**: Core WebSocket infrastructure is complete. Multi-graph support and session management integration needed.
 
-### What's Missing
-- ❌ Command acknowledgment system (blocks return UUIDs)
-- ❌ Integration with graph mutations
-- ❌ Proper coordination to prevent race conditions
-- ❌ kg_api module (deleted - needs transaction log first)
+**What's Complete**:
+- WebSocket infrastructure (server and client)
+- Command protocol and handlers working
+- Bidirectional communication functional
+- Test commands successfully create pages/blocks
+- Deadlock-proof connection management
+- **Transaction Log System**: WAL with sled, ACID guarantees, recovery (2025-07-25)
+- **Command Acknowledgment System**: Correlation IDs, acknowledgment flow complete
+- **kg_api Module**: Full public API with transaction support and WebSocket sync
 
-### Why We Paused
-Discovered fundamental race condition when LLM agents create content:
-1. Can't pre-generate Logseq UUIDs
-2. Temporary UUIDs create stranded nodes
-3. Real-time sync competes with API-created content
-4. Need transaction log for proper distributed coordination
+**What's Missing**:
+- **Multi-Graph WebSocket Support**: Connection-to-graph mapping, scoped broadcasts
+- **Session Management Integration**: Handle graph switching in WebSocket context
+- **Timeout Handling**: Missing acknowledgment timeouts (30s default)
+- **Correlation for All Operations**: Only create_block has full correlation flow
 
-### Next Steps
-1. Implement transaction log and WAL
-2. Add command acknowledgments with correlation
-3. Rebuild kg_api with transaction support
-4. Complete graph mutation integration
+**Priority**: #4 in the development sequence (after Session Management + Integration Testing)
+
+**Why Fourth**: The fundamental race conditions have been solved with transaction log, content hash deduplication, acknowledgment system, and kg_api module. May already be functionally complete, just needs integration and multi-graph support.
+
+**Dependencies**: Session Management (for graph context), Integration Testing (for validation)
+
+**Implementation Notes**: Remove `#![allow(dead_code)]` from kg_api when ready to integrate
 
 ## Final Implementation
 {To be completed when the feature is finished - will contain authoritative summary of what was built}

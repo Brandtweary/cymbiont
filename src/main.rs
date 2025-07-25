@@ -94,8 +94,9 @@ struct Args {
 
 // Application state that will be shared between handlers
 pub struct AppState {
-    pub graph_manager: Mutex<GraphManager>,
+    pub graph_managers: Arc<RwLock<HashMap<String, RwLock<GraphManager>>>>,
     pub graph_registry: Arc<Mutex<GraphRegistry>>,
+    pub active_graph_id: Arc<RwLock<Option<String>>>,
     pub logseq_child: Mutex<Option<std::process::Child>>,
     pub plugin_init_tx: Mutex<Option<oneshot::Sender<()>>>,
     pub sync_complete_tx: Mutex<Option<oneshot::Sender<()>>>,
@@ -104,10 +105,70 @@ pub struct AppState {
     pub force_incremental_sync: bool,
     pub config: Config,
     pub ws_connections: Option<Arc<RwLock<HashMap<String, websocket::WsConnection>>>>,
-    pub transaction_coordinator: Arc<TransactionCoordinator>,
+    pub transaction_coordinators: Arc<RwLock<HashMap<String, Arc<TransactionCoordinator>>>>,
     pub saga_coordinator: Arc<SagaCoordinator>,
     pub workflow_sagas: Arc<WorkflowSagas>,
     pub correlation_to_saga: Arc<RwLock<HashMap<String, String>>>,
+}
+
+impl AppState {
+    /// Get or create a GraphManager for the given graph ID
+    pub async fn get_or_create_graph_manager(&self, graph_id: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let managers = self.graph_managers.read().await;
+        
+        // Check if manager already exists
+        if managers.contains_key(graph_id) {
+            return Ok(());
+        }
+        
+        // Drop read lock before acquiring write lock
+        drop(managers);
+        
+        // Acquire write lock to create new manager
+        let mut managers = self.graph_managers.write().await;
+        
+        // Double-check pattern - another thread may have created it
+        if managers.contains_key(graph_id) {
+            return Ok(());
+        }
+        
+        // Create new GraphManager (absolute path)
+        let data_dir = std::env::current_dir()
+            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to get current directory: {e}")))?
+            .join("data").join("graphs").join(graph_id);
+        fs::create_dir_all(&data_dir)?;
+        
+        let graph_manager = GraphManager::new(data_dir.clone())
+            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to create graph manager for {}: {:?}", graph_id, e)))?;
+        
+        managers.insert(graph_id.to_string(), RwLock::new(graph_manager));
+        
+        // Create transaction coordinator for this graph
+        let transaction_log_dir = data_dir.join("transaction_log");
+        fs::create_dir_all(&transaction_log_dir)?;
+        let transaction_log = Arc::new(TransactionLog::new(transaction_log_dir)
+            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to create transaction log for {}: {:?}", graph_id, e)))?);
+        
+        let transaction_coordinator = Arc::new(TransactionCoordinator::new(transaction_log));
+        
+        // Store the coordinator
+        let mut coordinators = self.transaction_coordinators.write().await;
+        coordinators.insert(graph_id.to_string(), transaction_coordinator);
+        
+        info!("Created new GraphManager and TransactionCoordinator for graph: {}", graph_id);
+        Ok(())
+    }
+    
+    /// Get the active graph manager (returns None if no active graph)
+    pub async fn get_active_graph_manager(&self) -> Option<String> {
+        self.active_graph_id.read().await.clone()
+    }
+    
+    /// Set the active graph ID
+    pub async fn set_active_graph(&self, graph_id: String) {
+        let mut active = self.active_graph_id.write().await;
+        *active = Some(graph_id);
+    }
 }
 
 // Cleanup function to handle graceful shutdown
@@ -115,8 +176,25 @@ fn cleanup_and_exit(app_state: Option<Arc<AppState>>, start_time: Instant) {
     let total_runtime = start_time.elapsed();
     info!("🧹 Cleaning up... (total runtime: {:.2}s)", total_runtime.as_secs_f64());
     
-    // Save graph registry and terminate Logseq if launched
+    // Save graph registry and all loaded graphs
     if let Some(state) = app_state {
+        // Use tokio::task::block_in_place for blocking operations in async context
+        tokio::task::block_in_place(|| {
+            // Create a new runtime handle for the cleanup
+            let handle = tokio::runtime::Handle::current();
+            
+            // Save all loaded graphs
+            handle.block_on(async {
+                let managers = state.graph_managers.read().await;
+                for (graph_id, manager_lock) in managers.iter() {
+                    match manager_lock.write().await.save_graph() {
+                        Ok(_) => info!("✅ Saved graph: {}", graph_id),
+                        Err(e) => error!("Failed to save graph {}: {}", graph_id, e),
+                    }
+                }
+            });
+        });
+        
         // Save graph registry
         if let Ok(registry_guard) = state.graph_registry.lock() {
             let registry_path = PathBuf::from("data").join("graph_registry.json");
@@ -168,10 +246,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let _ = fs::remove_file(SERVER_INFO_FILE);
     }
     
-    // Initialize the graph manager
-    let data_dir = PathBuf::from("data");
-    let graph_manager = GraphManager::new(data_dir.clone())
-        .map_err(|e| Box::<dyn Error>::from(format!("Graph manager error: {e:?}")))?;
+    // Initialize data directory (absolute path from executable location)
+    let data_dir = std::env::current_dir()
+        .map_err(|e| Box::<dyn Error>::from(format!("Failed to get current directory: {e}")))?
+        .join("data");
+    fs::create_dir_all(&data_dir)
+        .map_err(|e| Box::<dyn Error>::from(format!("Failed to create data directory: {e}")))?;
     
     // Initialize graph registry
     let registry_path = data_dir.join("graph_registry.json");
@@ -180,27 +260,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .map_err(|e| Box::<dyn Error>::from(format!("Graph registry error: {e:?}")))?
     ));
     
-    // Initialize transaction log
-    let transaction_log_dir = data_dir.join("transaction_log");
-    fs::create_dir_all(&transaction_log_dir)
-        .map_err(|e| Box::<dyn Error>::from(format!("Failed to create transaction log directory: {e}")))?;
-    let transaction_log = Arc::new(TransactionLog::new(transaction_log_dir)
-        .map_err(|e| Box::<dyn Error>::from(format!("Transaction log error: {e:?}")))?);
+    // Initialize multi-graph managers and coordinators
+    let graph_managers = Arc::new(RwLock::new(HashMap::new()));
+    let transaction_coordinators = Arc::new(RwLock::new(HashMap::new()));
     
-    // Initialize coordinators
-    let transaction_coordinator = Arc::new(TransactionCoordinator::new(transaction_log.clone()));
-    let saga_coordinator = Arc::new(SagaCoordinator::new(transaction_coordinator.clone()));
+    // Initialize saga coordinator (shared across all graphs for now)
+    // TODO: Consider per-graph saga coordinators in the future
+    let dummy_transaction_log = Arc::new(TransactionLog::new(data_dir.join("saga_transaction_log"))
+        .map_err(|e| Box::<dyn Error>::from(format!("Saga transaction log error: {e:?}")))?);
+    let dummy_coordinator = Arc::new(TransactionCoordinator::new(dummy_transaction_log));
+    let saga_coordinator = Arc::new(SagaCoordinator::new(dummy_coordinator.clone()));
     let workflow_sagas = Arc::new(WorkflowSagas::new(
         saga_coordinator.clone(),
-        transaction_coordinator.clone(),
+        dummy_coordinator.clone(),
     ));
-    
-    // Recover pending transactions
-    let recovered = transaction_coordinator.recover_pending_transactions().await
-        .map_err(|e| Box::<dyn Error>::from(format!("Failed to recover transactions: {e}")))?;
-    if !recovered.is_empty() {
-        info!("Recovered {} pending transactions from previous run", recovered.len());
-    }
     
     // Log if force sync is enabled
     if args.force_full_sync {
@@ -212,8 +285,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     
     // Create shared application state
     let app_state = Arc::new(AppState {
-        graph_manager: Mutex::new(graph_manager),
+        graph_managers: graph_managers.clone(),
         graph_registry: graph_registry.clone(),
+        active_graph_id: Arc::new(RwLock::new(None)),
         logseq_child: Mutex::new(None),
         plugin_init_tx: Mutex::new(None),
         sync_complete_tx: Mutex::new(None),
@@ -222,7 +296,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         force_incremental_sync: args.force_incremental_sync,
         config: config.clone(),
         ws_connections: Some(Arc::new(RwLock::new(HashMap::new()))),
-        transaction_coordinator: transaction_coordinator.clone(),
+        transaction_coordinators: transaction_coordinators.clone(),
         saga_coordinator: saga_coordinator.clone(),
         workflow_sagas: workflow_sagas.clone(),
         correlation_to_saga: Arc::new(RwLock::new(HashMap::new())),
@@ -251,6 +325,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .map_err(|e| Box::<dyn Error>::from(format!("Listener error: {e}")))?;
     
     info!("🚀 Backend server listening on {}", addr);
+    
+    // Update config.edn if graph path is configured
+    if let Some(ref graph_path) = config.logseq.graph_path {
+        update_graph_config_before_launch(graph_path);
+    }
     
     // Launch Logseq after server is ready
     let logseq_child = launch_logseq(&config.logseq)?;
@@ -474,4 +553,77 @@ async fn run_server_with_timeout(
     }
     
     Ok(())
+}
+
+// Update graph's config.edn to hide cymbiont properties before launching Logseq
+fn update_graph_config_before_launch(graph_path: &str) {
+    let config_path = PathBuf::from(graph_path).join("logseq").join("config.edn");
+    
+    if !config_path.exists() {
+        warn!("Config.edn not found at {:?} - skipping property hiding", config_path);
+        return;
+    }
+    
+    match fs::read_to_string(&config_path) {
+        Ok(content) => {
+            // Use regex to find actual :block-hidden-properties lines (not comments)
+            let re = regex::Regex::new(r"(?m)^(\s*):block-hidden-properties\s*#\{([^}]*)\}").unwrap();
+            
+            // Check if there's already an actual property line
+            if let Some(captures) = re.captures(&content) {
+                let existing_props = captures.get(2).map_or("", |m| m.as_str().trim());
+                
+                // Check if :cymbiont-updated-ms is already there
+                if existing_props.contains(":cymbiont-updated-ms") {
+                    return;
+                }
+                
+                // Add to existing properties
+                let new_props = if existing_props.is_empty() {
+                    ":cymbiont-updated-ms".to_string()
+                } else {
+                    format!("{} :cymbiont-updated-ms", existing_props)
+                };
+                
+                // Replace the existing line
+                let indent = captures.get(1).map_or("", |m| m.as_str());
+                let new_line = format!("{}:block-hidden-properties #{{{}}}", indent, new_props);
+                let updated_content = content.replace(&captures[0], &new_line);
+                
+                // Write the updated content back
+                match fs::write(&config_path, &updated_content) {
+                    Ok(_) => info!("✅ Updated config.edn to hide :cymbiont-updated-ms property"),
+                    Err(e) => error!("Failed to write updated config.edn: {}", e),
+                }
+                return;
+            }
+            
+            // No existing property line found, add it after the comment section
+            if let Some(comment_pos) = content.find(";; :block-hidden-properties #{:public :icon}") {
+                // Find the end of this comment line
+                if let Some(newline_pos) = content[comment_pos..].find('\n') {
+                    let insert_pos = comment_pos + newline_pos + 1;
+                    let before = &content[..insert_pos];
+                    let after = &content[insert_pos..];
+                    
+                    // Insert the new property line
+                    let updated_content = format!("{}:block-hidden-properties #{{:cymbiont-updated-ms}}\n{}", before, after);
+                    
+                    // Write the updated content back
+                    match fs::write(&config_path, &updated_content) {
+                        Ok(_) => info!("✅ Updated config.edn to hide :cymbiont-updated-ms property"),
+                        Err(e) => error!("Failed to write updated config.edn: {}", e),
+                    }
+                    return;
+                } else {
+                    warn!("Could not find newline after block-hidden-properties comment");
+                    return;
+                }
+            } else {
+                warn!("Could not find block-hidden-properties comment section to insert after");
+                return;
+            }
+        }
+        Err(e) => error!("Failed to read config.edn: {}", e),
+    }
 }

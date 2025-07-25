@@ -1,3 +1,75 @@
+//! Transaction Log: Write-Ahead Logging with ACID Guarantees
+//!
+//! This module provides persistent transaction logging using the sled embedded database
+//! to ensure ACID guarantees for all knowledge graph operations. It serves as the foundation
+//! for coordinating between AI-generated content and real-time synchronization from Logseq.
+//!
+//! ## Overview
+//!
+//! The transaction log system prevents race conditions and data corruption by logging all
+//! operations before they are applied to the knowledge graph. This enables:
+//! - **Crash Recovery**: Replay incomplete transactions after system restart
+//! - **Deduplication**: Prevent duplicate processing of echoed operations
+//! - **Coordination**: Synchronize between WebSocket commands and real-time sync
+//! - **Audit Trail**: Complete history of all graph mutations
+//!
+//! ## Architecture
+//!
+//! The transaction log uses sled's ACID-compliant embedded database with three logical trees:
+//!
+//! ### 1. Transactions Tree
+//! - **Key**: Transaction UUID (16 bytes)
+//! - **Value**: Serialized Transaction struct
+//! - **Purpose**: Primary storage for all transaction data
+//!
+//! ### 2. Content Hash Index
+//! - **Key**: SHA-256 content hash (32 bytes)
+//! - **Value**: Transaction UUID (16 bytes)  
+//! - **Purpose**: Fast lookup to prevent duplicate processing of identical content
+//!
+//! ### 3. Pending Index
+//! - **Key**: Transaction UUID (16 bytes)
+//! - **Value**: Empty (presence indicates pending)
+//! - **Purpose**: Efficient enumeration of incomplete transactions for recovery
+//!
+//! ## Transaction Lifecycle
+//!
+//! ```text
+//! 1. append_transaction() → Active (logged to WAL)
+//! 2. WebSocket broadcast → WaitingForAck
+//! 3. Acknowledgment received → Committed
+//! 4. Cleanup → Remove from pending index
+//! ```
+//!
+//! ## Performance Characteristics
+//!
+//! - **Write Performance**: Sequential log writes optimized by sled
+//! - **Read Performance**: Hash-indexed lookups for O(1) content deduplication
+//! - **Durability**: Configurable fsync frequency (100ms default)
+//! - **Overhead Target**: <5ms per transaction (achieved through batching)
+//!
+//! ## Recovery and Cleanup
+//!
+//! On startup, the transaction coordinator:
+//! 1. Scans pending index for incomplete transactions
+//! 2. Retries Active transactions (apply to graph)
+//! 3. Times out WaitingForAck transactions (30s default)
+//! 4. Marks Committed transactions as complete
+//!
+//! ## Content Hash Deduplication
+//!
+//! The content hash index prevents duplicate processing:
+//! ```rust
+//! // Check if content already processed
+//! if let Some(existing_tx_id) = log.get_transaction_by_content_hash(&content_hash)? {
+//!     // Skip duplicate operation
+//!     return Ok(existing_tx_id);
+//! }
+//! ```
+//!
+//! This is critical for preventing echoed operations when real-time sync processes
+//! content that was originally created via WebSocket commands.
+
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};

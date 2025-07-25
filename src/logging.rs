@@ -120,11 +120,15 @@ where
 
 /// Initialize the tracing subscriber with custom formatting
 pub fn init_logging() {
+    // Build the env filter, suppressing sled's debug output
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
+        // Suppress sled's verbose debug output
+        .add_directive("sled=warn".parse().unwrap())
+        .add_directive("pagecache=warn".parse().unwrap());
+    
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
-        )
+        .with_env_filter(env_filter)
         .event_format(ConditionalLocationFormatter)
         .init();
 }

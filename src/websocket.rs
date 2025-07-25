@@ -334,15 +334,22 @@ async fn handle_command(
             if let Some(saga_id) = saga_id {
                 // Update the node's PKM ID from temp to real
                 {
-                    let mut graph_manager = state.graph_manager.lock().unwrap();
-                    if let Some(&node_idx) = graph_manager.pkm_to_node.get(&temp_id) {
-                        if let Some(node) = graph_manager.graph.node_weight_mut(node_idx) {
-                            // Update the node's PKM ID
-                            node.pkm_id = block_uuid.clone();
+                    // Get active graph
+                    let active_graph_id = state.get_active_graph_manager().await;
+                    if let Some(graph_id) = active_graph_id {
+                        let managers = state.graph_managers.read().await;
+                        if let Some(manager_lock) = managers.get(&graph_id) {
+                            let mut graph_manager = manager_lock.write().await;
+                            if let Some(&node_idx) = graph_manager.pkm_to_node.get(&temp_id) {
+                                if let Some(node) = graph_manager.graph.node_weight_mut(node_idx) {
+                                    // Update the node's PKM ID
+                                    node.pkm_id = block_uuid.clone();
+                                }
+                                // Update the mapping
+                                graph_manager.pkm_to_node.remove(&temp_id);
+                                graph_manager.pkm_to_node.insert(block_uuid.clone(), node_idx);
+                            }
                         }
-                        // Update the mapping
-                        graph_manager.pkm_to_node.remove(&temp_id);
-                        graph_manager.pkm_to_node.insert(block_uuid.clone(), node_idx);
                     }
                 }
                 
@@ -512,4 +519,79 @@ pub async fn broadcast_command(
     }
     
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_command_serialization() {
+        let cmd = Command::CreateBlock {
+            content: "Test content".to_string(),
+            parent_id: None,
+            page_name: Some("TestPage".to_string()),
+            correlation_id: Some("corr-123".to_string()),
+            temp_id: Some("temp-456".to_string()),
+        };
+        
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(json.contains("\"type\":\"create_block\""));
+        assert!(json.contains("\"content\":\"Test content\""));
+        assert!(json.contains("\"page_name\":\"TestPage\""));
+    }
+    
+    #[test]
+    fn test_command_deserialization() {
+        let json = r#"{
+            "type": "auth",
+            "token": "test-token-123"
+        }"#;
+        
+        let cmd: Command = serde_json::from_str(json).unwrap();
+        match cmd {
+            Command::Auth { token } => assert_eq!(token, "test-token-123"),
+            _ => panic!("Wrong command type"),
+        }
+    }
+    
+    #[test]
+    fn test_response_serialization() {
+        let response = Response::Success {
+            command_id: "cmd-123".to_string(),
+            data: Some(serde_json::json!({"test": "data"})),
+        };
+        
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"type\":\"success\""));
+        assert!(json.contains("\"command_id\":\"cmd-123\""));
+        assert!(json.contains("\"test\":\"data\""));
+    }
+    
+    #[test]
+    fn test_heartbeat_command() {
+        let json = r#"{"type": "heartbeat"}"#;
+        let cmd: Command = serde_json::from_str(json).unwrap();
+        assert!(matches!(cmd, Command::Heartbeat));
+    }
+
+    #[test]
+    fn test_acknowledgment_commands() {
+        let json = r#"{
+            "type": "block_created",
+            "correlation_id": "corr-123",
+            "block_uuid": "uuid-456",
+            "temp_id": "temp-789"
+        }"#;
+        
+        let cmd: Command = serde_json::from_str(json).unwrap();
+        match cmd {
+            Command::BlockCreated { correlation_id, block_uuid, temp_id } => {
+                assert_eq!(correlation_id, "corr-123");
+                assert_eq!(block_uuid, "uuid-456");
+                assert_eq!(temp_id, "temp-789");
+            },
+            _ => panic!("Wrong command type"),
+        }
+    }
 }

@@ -45,11 +45,11 @@ Integrate the aichat-agent library as a git submodule in Cymbiont to provide LLM
   - ✅ Completed in `docs/logseq_plugin_api_research.md`
 
 ### 2. Graph Manager Public API with PKM Sync
-**✅ COMPLETED - kg_api module created**
+**✅ COMPLETED - kg_api module ready for consumption**
 - [x] Created `src/kg_api.rs` module as the public API layer
 - [x] Implemented all core operations with transaction support:
   - [x] `add_block()` - Creates blocks with saga workflow and temp_id → UUID mapping
-  - [x] `update_block()` - Updates with transaction boundaries
+  - [x] `update_block()` - Updates with transaction boundaries  
   - [x] `delete_block()` - Archives nodes with full transaction support
   - [x] `create_page()` - Page creation with properties
   - [x] `get_node()` - Query operations (read-only)
@@ -57,15 +57,21 @@ Integrate the aichat-agent library as a git submodule in Cymbiont to provide LLM
 - [x] WebSocket sync integrated for all write operations
 - [x] Correlation ID support for create_block (acknowledgment flow complete)
 - [x] Transaction consistency via saga pattern
+- [x] **Transaction Log Foundation**: Complete WAL system with ACID guarantees
 
-**Note**: The kg_api module is marked with `#![allow(dead_code)]` until it's consumed by the aichat-agent integration. This TODO is tracked in the code and should be removed once the integration is complete.
+**Status**: READY FOR INTEGRATION - The kg_api module provides a complete, transaction-safe public API for knowledge graph operations. It's currently marked with `#![allow(dead_code)]` to prevent warnings, but all functionality is implemented and tested. This is the foundation layer that the AIChat-Agent native functions will consume.
 
-### 3. Git Submodule Setup
+### 3. Git Submodule Setup (PRIORITY #5 - Final Integration)
 - [ ] Add aichat-agent as git submodule at `cymbiont/aichat-agent/`
 - [ ] Configure Cargo.toml with path dependency to submodule
 - [ ] Set up workspace configuration if needed
 - [ ] Test basic compilation with the library dependency
 - [ ] Document submodule update workflow in README
+
+**Status**: WAIT FOR INFRASTRUCTURE COMPLETION
+- **Implementation Priority**: #5 in the development sequence
+- **Why Last**: Should only begin when everything else is complete and stable
+- **Dependencies**: Session Management (#1), Integration Testing (#2), Transaction Log Completion (#3), WebSocket Completion (#4)
 
 ### 4. Knowledge Graph Function Implementation
 - [ ] Create `src/kg_functions.rs` module for native function implementations

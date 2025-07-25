@@ -6,9 +6,9 @@
 /logseq_plugin/node_modules
 /logseq_plugin/package-lock.json
 
-# Data files
-/data/knowledge_graph.json
-/data/archived_nodes/
+# Data files (but keep .gitkeep)
+data/*
+!data/.gitkeep
 
 # Configuration (keep example)
 /config.yaml

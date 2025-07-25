@@ -161,3 +161,8 @@ Integrate the aichat-agent library as a git submodule in Cymbiont to provide LLM
 
 ## Final Implementation
 {To be completed when the integration is finished - will contain authoritative summary of what was built}
+
+## Branch Completion Process
+When feature branch `aichat-integration` is merged to main:
+1. Archive this taskpad to `/archive/feature_taskpad_aichat_agent_integration.md`
+2. Update `CLAUDE.local.md` to remove the branch mapping

@@ -57,35 +57,6 @@ RUST_LOG=debug cargo run         # Run backend server with debug logging (do not
 - **ERROR**: Use for any true software bugs - when in doubt whether something should be warn vs error, choose error
 - **TRACE**: Low-level implementation details worth preserving (e.g. "Entering function X", "Cache hit for key Y", "Parsed N bytes")
 
-## Development Best Practices
-
-### Read Files Completely
-
-- When working with a file for the first time in a conversation, read it in its entirety before making changes
-- Avoid hunting through large files with grep when a full read would provide helpful context
-
-### Clean Console Output
-
-- **Before committing**: Remove all debug logs (grep for `debug!` to find them)
-- Do not add logging inside hot paths which will flood the console
-- Optimize logging levels if output becomes overwhelming
-- When reviewing logs, make sure to point out ANY warnings or errors. The user is NOT reading these logs, it is your responsibility to report issues
-
-### Fail-Fast During Feature Development
-
-- **Prototype without fallbacks**: When developing new features, avoid default values or fallback mechanisms that mask underlying issues.
-- **Explicit error handling**: Let failures be loud and visible during initial implementation - don't silently continue on errors.
-- **No backwards compatibility**: Keeping deprecated code creates confusion and adds developer burden. Remove old code paths decisively.
-
-### Eliminate Dead Code
-
-- **Case-by-case evaluation**: Never blindly remove dead code without understanding its context in the larger codebase.
-- **Consider multiple scenarios**: For each dead code instance, evaluate possible underlying causes (e.g., planned features that were forgotten, logic that got inlined elsewhere, or remains of deleted features requiring git history investigation).
-- **YAGNI Principle**: "You Ain't Gonna Need It" - Only keep what you actually need right now. Avoid building for imagined future requirements.
-- **Use `#[allow(dead_code)]` sparingly**: Only when the user explicitly confirms code is kept for forward-compatibility.
-- **Use `#[cfg(test)]` for test code**: If appropriate, silence warnings for production code that is authentically only currently used in tests. But generally, test code need not be caught by the dead code checker. Consider if there is a cleaner solution, such as using a test fixture.
-- **NEVER prefix unused variables with underscores**: This makes it impossible to locate dead code later. Always use compiler flags instead. 
-
 ## Continuous Documentation
 
 - Keep the architecture document (`cymbiont_architecture.md`) up to date

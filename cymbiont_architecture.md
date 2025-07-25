@@ -1,448 +1,338 @@
 # Cymbiont Architecture
 
-A guide to core modules, system design, and data flow for developers.
-
-## Recent Updates
-
-### Config Validation and EDN Manipulation (2025-07-25)
-**Status**: Runtime config validation complete, pre-launch update disabled
-- **EDN Manipulation Module**: Created `edn.rs` for centralized EDN format handling
-  - Regex-based property manipulation with comprehensive test coverage
-  - Functions for updating `:block-hidden-properties` and `:cymbiont/graph-id`
-  - Validation functions to check current config state
-  - Error handling for malformed configs with detailed error messages
-- **Runtime Config Validation**: Self-healing configuration system
-  - New `/config/validate` endpoint for runtime property validation
-  - Plugin validates config after initialization and requests fixes if needed
-  - Automatic restoration of removed properties without pre-launch delays
-  - Works even if Logseq API changes or properties are manually removed
-- **Config Update Optimization**: Pre-launch update disabled for performance
-  - Runtime validation handles all cases without 0.5-1s startup delay
-  - Config properties self-heal on first connection if missing
-  - System resilient to user modifications and API changes
-
-## System Overview
-
-Cymbiont is a self-organizing knowledge graph agent that transforms personal knowledge management systems into queryable, intelligent networks. It provides a Rust backend server with multi-graph support, transaction logging, and bidirectional WebSocket communication. The JavaScript plugin enables real-time Logseq synchronization across multiple graphs with automatic graph identification and switching. The system uses a transaction log with write-ahead logging to provide ACID guarantees and prevent race conditions between AI-generated content and manual edits. Configuration validation ensures required properties are maintained even if users modify their config.edn files. Session management is planned to enable programmatic graph switching.
-
-## Repository Layout
-
+## Repository Structure
 ```
 cymbiont/
-├── src/                           # Rust backend server
-│   ├── main.rs                    # HTTP server orchestration and multi-graph coordination
-│   ├── config.rs                  # Configuration management
-│   ├── logging.rs                 # Custom tracing formatter
-│   ├── api.rs                     # API types, handlers, routes with graph validation
-│   ├── utils.rs                   # Utility functions
-│   ├── graph_manager.rs           # Petgraph-based knowledge graph storage
-│   ├── graph_registry.rs          # Multi-graph identification and management
-│   ├── pkm_data.rs                # Data structures and validation
-│   ├── websocket.rs               # WebSocket server and command protocol
-│   ├── kg_api.rs                  # Public API for knowledge graph operations
-│   ├── transaction_log.rs         # Write-ahead logging with sled database
-│   ├── transaction.rs             # Transaction coordinator and state management
-│   ├── saga.rs                    # Saga pattern for multi-step workflows
+├── src/                           # Backend server modules
+│   ├── main.rs                    # Entry point, server lifecycle, graph orchestration
+│   ├── config.rs                  # YAML config loading and validation
+│   ├── logging.rs                 # Tracing formatter (file:line for ERROR/WARN only)
+│   ├── api.rs                     # HTTP endpoints, request/response types
+│   ├── utils.rs                   # Process management, datetime parsing, JSON helpers
+│   ├── graph_manager.rs           # Petgraph storage, node/edge operations
+│   ├── graph_registry.rs          # Multi-graph UUID tracking and switching
+│   ├── pkm_data.rs                # PKMBlockData, PKMPageData structures
+│   ├── websocket.rs               # WebSocket server, command protocol
+│   ├── kg_api.rs                  # Transaction-safe graph operations
+│   ├── transaction_log.rs         # WAL with sled, content hash indexing
+│   ├── transaction.rs             # Transaction lifecycle and state machine
+│   ├── saga.rs                    # Multi-step workflow coordination
 │   └── edn.rs                     # EDN format manipulation for config.edn
-├── logseq_plugin/                 # JavaScript Logseq plugin
-│   ├── index.js                   # Plugin entry point with graph identification
-│   ├── sync.js                    # Database synchronization module
-│   ├── api.js                     # Backend communication layer
-│   ├── data_processor.js          # Data validation and processing
-│   ├── websocket.js               # WebSocket command handlers with acknowledgments
-│   ├── package.json               # Plugin metadata and dependencies
-│   └── index.html                 # Plugin loader
-├── logseq_databases/              # Test graphs and multi-graph support
-│   ├── dummy_graph/               # Primary test data
-│   └── dummy_graph_2/             # Secondary test graph
-├── data/                          # Knowledge graph persistence
-│   ├── .gitkeep                   # Keep data directory in git
-│   ├── graph_registry.json        # Graph identification registry
-│   ├── graphs/                    # Per-graph storage
-│   │   └── {graph-id}/            # Individual graph directories
-│   │       ├── knowledge_graph.json  # Graph data
-│   │       ├── archived_nodes/    # Deleted node archives
-│   │       └── transaction_log/   # Per-graph transaction logs
+├── logseq_plugin/
+│   ├── index.js                   # Plugin lifecycle, graph identification, DB monitoring
+│   ├── sync.js                    # Incremental/full sync orchestration
+│   ├── api.js                     # HTTP/WebSocket client (window.KnowledgeGraphAPI)
+│   ├── data_processor.js          # Data validation and normalization
+│   └── websocket.js               # Command handlers (window.KnowledgeGraphWebSocket)
+├── logseq_databases/              # Test graphs
+├── data/                          # Persistence layer
+│   ├── graph_registry.json        # Graph UUID mappings
+│   ├── graphs/{graph-id}/         # Per-graph storage
 │   └── saga_transaction_log/      # Global saga coordination
-├── tests/                         # Integration tests
-├── Cargo.toml                     # Rust project configuration
-├── config.yaml                    # Backend configuration
-├── config.example.yaml            # Example configuration
-└── CLAUDE.md                      # Development guidelines
+└── tests/                         # Integration tests
 ```
 
-## Core Components
+## Module Requirements and Data Flow
 
-### Rust Backend Server (src/)
-The core server provides HTTP API endpoints, multi-graph management with automatic identification, transaction logging with ACID guarantees, and bidirectional WebSocket communication. It maintains multiple persistent knowledge graphs with complete isolation, supports automatic graph switching based on request headers, and provides transaction-safe operations for AI-generated content.
-
-### Logseq Plugin (logseq_plugin/)
-
-**JavaScript Frontend (Logseq Plugin)**
-- **index.js**: Plugin lifecycle management and graph identification
-  - Initializes plugin and verifies module dependencies
-  - Monitors DB changes via `logseq.DB.onChanged` for real-time sync
-  - Automatically identifies current graph and sends headers to backend
-  - Manages UUID stamping in config.edn via `setCurrentGraphConfigs`
-  - Validates config properties after initialization via `/config/validate`
-  - Handles route changes and plugin initialization with graph context
-  - Exposes helper functions to other modules via window globals
-  - Manages timestamp queue for block property updates
-  - Coordinates between sync operations and real-time changes
-- **sync.js**: Database synchronization orchestration module
-  - Implements 3-tiered sync system with configurable intervals:
-    - Real-time: Individual changes synced immediately (handled by index.js)
-    - Incremental: Every 2 hours (default), syncs only modified content
-    - Full: Every 7 days (default, disabled), re-indexes entire PKM
-  - Filters pages by built-in `updatedAt` field, blocks by custom `cymbiont-updated-ms` property
-  - Manages sync status checking and timestamp updates
-  - Handles tree traversal for block counting and ID collection
-  - Sends all PKM IDs to /sync/verify for deletion detection
-- **api.js**: HTTP and WebSocket communication layer (exposed as `window.KnowledgeGraphAPI`)
-  - HTTP functions:
-    - `sendToBackend(data)`: Sends data to POST /data endpoint, returns boolean
-    - `sendBatchToBackend(type, batch, graphName)`: Wrapper for batch operations, formats as `${type}_batch`
-    - `log.error/warn/info/debug/trace(message, details, source)`: Sends logs to POST /log endpoint
-    - `checkBackendAvailabilityWithRetry(maxRetries, delayMs)`: Health check with retries (used before sync)
-    - Port discovery (tries 3000-3010), sync status queries
-  - WebSocket functions (exposed as `window.KnowledgeGraphAPI.websocket`):
-    - `connect()`: Establish WebSocket connection with reconnection logic
-    - `disconnect()`: Close WebSocket connection
-    - `send(command)`: Send command to backend (queued if offline)
-    - `registerHandler(type, handler)`: Register command handler
-    - Automatic exponential backoff reconnection (1s → 30s max)
-    - Command queueing for offline resilience
-- **data_processor.js**: Validates and transforms Logseq data before transmission
-  - Processes blocks and pages into standardized format
-  - Adds normalized_name (lowercase) to pages for consistent lookups
-  - Extracts references (page refs, block refs, tags)
-- **websocket.js**: WebSocket command handlers with acknowledgments (exposed as `window.KnowledgeGraphWebSocket`)
-  - `registerHandlers()`: Sets up handlers for all command types
-  - Command handlers with correlation ID support:
-    - `create_block`: Creates blocks with optional parent/page placement, returns UUID acknowledgment
-    - `update_block`: Updates block content while preserving properties
-    - `delete_block`: Removes blocks from the graph
-    - `create_page`: Creates new pages with optional properties
-  - Handles Logseq API quirks (e.g., updateBlock destroying properties)
-  - Sends acknowledgments back to backend with correlation IDs
-  - All operations include error handling and logging
-
-**Rust Backend Server**
-- **main.rs**: HTTP server orchestration and multi-graph coordination
-  - Manages server lifecycle, AppState with multiple GraphManagers
-  - Coordinates multi-graph operations and transaction recovery
-  - Handles Logseq launching and process termination
-  - Pre-launch config.edn updates disabled (handled by runtime validation)
-- **config.rs**: Configuration management module
-  - Loads configuration from `config.yaml` with fallback to defaults
-  - Validates JavaScript plugin configuration matches Rust settings
-  - Provides Config, BackendConfig, LogseqConfig, DevelopmentConfig, SyncConfig structs
-  - Uses `CARGO_MANIFEST_DIR` to reliably locate api.js for validation
-- **logging.rs**: Custom logging configuration
-  - Implements ConditionalLocationFormatter for cleaner log output
-  - Shows file:line information only for ERROR and WARN levels
-- **api.rs**: Consolidated API implementation with graph validation
-  - API types: ApiResponse, PKMData, LogMessage
-  - All endpoint handlers: root, receive_data, sync operations, logging, plugin_initialized
-  - Graph validation middleware for automatic graph switching
-  - Router configuration via create_router()
-  - Helper functions for data processing and batch operations
-  - Content hash deduplication for transaction correlation
-- **graph_registry.rs**: Multi-graph identification and management
-  - GraphRegistry for tracking multiple graphs with UUIDs
-  - Graph validation and switching based on name/path
-  - Automatic graph creation and registration
-  - Graph recovery logic with forgiving name/path matching
-  - Per-graph metadata and configuration tracking
-- **kg_api.rs**: Public API for knowledge graph operations
-  - Transaction-safe operations: add_block, update_block, delete_block, create_page
-  - WebSocket sync integration for bidirectional communication
-  - Saga workflow coordination for multi-step operations
-  - Correlation ID support for acknowledgment tracking
-  - Content hash generation for deduplication
-- **transaction_log.rs**: Write-ahead logging with sled database
-  - ACID-compliant transaction persistence
-  - Content hash indexing for deduplication
-  - Pending transaction tracking and recovery
-  - Log compaction and performance optimization
-- **transaction.rs**: Transaction coordinator and state management
-  - Transaction lifecycle management (Active → WaitingForAck → Committed)
-  - Automatic recovery and retry logic
-  - Acknowledgment correlation and UUID mapping
-  - Pending operation tracking by content hash
-- **saga.rs**: Saga pattern for multi-step workflows
-  - WorkflowSaga for create_block operations
-  - Compensation logic for rollbacks
-  - Multi-step transaction coordination
-  - Saga state tracking and recovery
-- **utils.rs**: Cross-cutting utility functions
-  - Logseq executable discovery (Windows/macOS/Linux) and process launching
-  - Process management: port checking, server info file, previous instance termination
-  - DateTime parsing with multiple format support (RFC3339, ISO 8601, Unix timestamps)
-  - JSON utilities: generic deserialization, JSON-to-HashMap conversion
-- **edn.rs**: EDN (Extensible Data Notation) manipulation module
-  - Regex-based property manipulation with multiline support
-  - `update_block_hidden_properties()`: Add properties to :block-hidden-properties set
-  - `update_graph_id()`: Add or update :cymbiont/graph-id property
-  - `validate_config_properties()`: Check presence of required properties
-  - `update_config_file()`: Main function for config validation and updates
-  - Comprehensive error handling for malformed configs
-  - Test coverage for edge cases and multiline regex behavior
-
-**API Endpoints**:
-  
-  **Endpoints:**
-  - `GET /` - Health check endpoint
-    - Returns: `"PKM Knowledge Graph Backend Server"`
-    - Used by JavaScript plugin to verify server availability
-  
-  - `POST /data` - Main data ingestion endpoint
-    - Accepts: `PKMData` JSON object with fields:
-      - `source`: String identifying data origin
-      - `timestamp`: String timestamp
-      - `type_`: Optional string determining processing logic
-      - `payload`: String containing the actual data (usually stringified JSON)
-    - Type values and their payloads:
-      - `"block"` - Single PKMBlockData object
-      - `"blocks"` or `"block_batch"` - Array of PKMBlockData objects
-      - `"page"` - Single PKMPageData object  
-      - `"pages"` or `"page_batch"` - Array of PKMPageData objects
-      - `null/other` - Generic acknowledgment (used for real-time sync)
-    - Returns: `ApiResponse` with `success: bool` and `message: string`
-  
-  - `POST /plugin/initialized` - Plugin initialization and graph registration
-    - Called when the Logseq plugin starts up
-    - Validates and registers the graph using headers:
-      - `X-Cymbiont-Graph-ID`: Existing graph UUID if available
-      - `X-Cymbiont-Graph-Name`: Graph name from Logseq
-      - `X-Cymbiont-Graph-Path`: Graph path from Logseq
-    - Returns: `ApiResponse` with graph_id field containing the UUID
-    - Side effects:
-      - Registers graph in the graph registry with automatic UUID generation
-      - Switches active graph context for subsequent operations
-      - Creates per-graph GraphManager and TransactionCoordinator if needed
-  
-  - `GET /sync/status` - Sync status and graph statistics
-    - Returns: JSON object with:
-      - `last_incremental_sync`: Unix timestamp in milliseconds or null
-      - `last_incremental_sync_iso`: ISO timestamp string or null
-      - `hours_since_incremental`: Float hours since last incremental sync
-      - `incremental_sync_needed`: Boolean (based on config interval)
-      - `last_full_sync`: Unix timestamp in milliseconds or null
-      - `last_full_sync_iso`: ISO timestamp string or null
-      - `hours_since_full`: Float hours since last full sync
-      - `true_full_sync_needed`: Boolean (based on config interval)
-      - `force_incremental_sync`: Boolean (true if --force-incremental-sync flag was used)
-      - `force_full_sync`: Boolean (true if --force-full-sync flag was used)
-      - `sync_config`: Object with sync configuration (intervals and enable_full_sync)
-      - `node_count`: Total nodes in graph
-      - `edge_count`: Total edges in graph
-  
-  - `PATCH /sync` - Update sync timestamp
-    - Called after successful sync completion
-    - Accepts: JSON object with optional `sync_type` field ("incremental" or "full", defaults to "incremental")
-    - Updates internal timestamp for the specified sync type
-    - Returns: `ApiResponse` with success status
-  
-  - `POST /sync/verify` - Verify PKM IDs and archive deleted nodes
-    - Called after full sync to detect deletions
-    - Accepts: JSON object with:
-      - `pages`: Array of all current page names in PKM
-      - `blocks`: Array of all current block UUIDs in PKM
-    - Archives nodes that no longer exist to `archived_nodes/` directory
-    - Returns: `ApiResponse` with archived count and details
-  
-  - `POST /config/validate` - Config validation endpoint
-    - Called by plugin after initialization to ensure required properties exist
-    - Accepts: JSON object with:
-      - `graph_id`: String UUID of the current graph
-      - `has_hidden_property`: Boolean indicating if :block-hidden-properties contains :cymbiont-updated-ms
-      - `has_graph_id`: Boolean indicating if :cymbiont/graph-id exists
-    - Updates config.edn file to add missing properties
-    - Security: Validates graph_id matches active graph
-    - Returns: `ApiResponse` with success status
-    - Side effects:
-      - Updates config.edn via edn module functions
-      - Marks graph as config_updated in registry
-  
-  - `POST /log` - Logging endpoint for JavaScript plugin
-    - Accepts: `LogMessage` JSON object with:
-      - `level`: String ("error", "warn", "info", "debug", "trace")
-      - `message`: String log message
-      - `source`: Optional string identifying log source
-      - `details`: Optional JSON value with additional context
-    - Maps JavaScript log levels to Rust tracing macros
-    - Returns: `ApiResponse` confirming receipt
-  
-  - `GET /ws` - WebSocket upgrade endpoint
-    - Upgrades HTTP connection to WebSocket
-    - Authentication via `auth` command after connection
-    - Command protocol (JSON):
-      - Client → Server: `auth`, `heartbeat`, `test`, acknowledgments
-      - Server → Client: `create_block`, `update_block`, `delete_block`, `create_page` (all with correlation_id)
-    - Acknowledgment system:
-      - `BlockCreated`: Returns Logseq UUID for correlation with temp_id
-      - `BlockUpdated`, `BlockDeleted`, `PageCreated`: Success/error status
-    - Heartbeat mechanism: Server sends heartbeat every 30s
-    - Connection management with authenticated/unauthenticated states
-    - Transaction-safe operations via kg_api integration
-- **graph_manager.rs**: Per-graph storage using petgraph:
-  - StableGraph structure maintains consistent node indices across modifications
-  - Node types: Page and Block with full metadata (content, properties, timestamps)
-  - Edge types: PageRef, BlockRef, Tag, Property, ParentChild, PageToBlock
-  - HashMap for O(1) PKM ID → NodeIndex lookups (uses normalized lowercase names for pages)
-  - Separate sync timestamps: `last_incremental_sync` and `last_full_sync`
-  - Sync status methods: `is_incremental_sync_needed()` and `is_true_full_sync_needed()`
-  - Automatic saves: time-based (5 min) or operation-based (10 ops), disabled during batches
-  - Graph persistence to per-graph `knowledge_graph.json` with full serialization
-  - Node archival: Deleted nodes saved to per-graph `archived_nodes/archive_YYYYMMDD_HHMMSS.json`
-  - Deletion detection via `verify_and_archive_missing_nodes()` after sync
-  - Graph ID tracking for multi-graph isolation and archive metadata
-- **pkm_data.rs**: Shared data structures and validation logic
-- **Logging**: Uses tracing crate with conditional formatter (file:line only for WARN/ERROR)
-- **websocket.rs**: WebSocket server implementation:
-  - Connection management with UUID-based tracking
-  - Command protocol enum with bidirectional message types
-  - Authentication state tracking per connection
-  - Broadcast mechanism for sending commands to authenticated clients (future: scope to specific graphs)
-  - Heartbeat/ping mechanism for connection health
-  - Deadlock-proof helper functions for safe concurrent access
-  - Integration with AppState for WebSocket connection tracking
-
-**Operation Notes**
-- Backend server must be running before loading the Logseq plugin
-- Empty blocks are intentionally skipped during sync (not treated as errors)
-- Individual changes sync immediately; full sync runs every 2 hours to catch offline edits
-
-**Process Management**
-The backend server automatically manages its lifecycle:
-- On startup, checks for `cymbiont_server.json` file
-- If found, reads the PID and sends SIGTERM to terminate the previous instance
-- Writes new server info (PID, host, port) to the JSON file
-- On shutdown (Ctrl+C or normal exit), removes the server info file
-- If the configured port is busy, automatically tries alternative ports (3001, 3002, etc.)
-- The JavaScript plugin reads the server info file to discover the actual port in use
-- No manual process management needed - just run `cargo run` to start fresh
-- **Logseq Auto-Launch**: If `auto_launch: true` in config.yaml, the server will:
-  - Search for Logseq executable in common locations (Linux/macOS/Windows support)
-  - Launch Logseq after server starts and wait for plugin initialization
-  - Filter Electron/xdg-mime logs to trace level to keep console clean
-  - Terminate Logseq gracefully on server shutdown
-  - Custom executable path can be specified via `executable_path` config option
-
-## Data Flow
-
-### Real-time Sync (Multi-Graph Aware)
+### main.rs
+**Purpose**: Server entry point and lifecycle orchestration  
+**Manages**: AppState, server runtime, graph coordination  
+**Requires**: All modules via AppState injection  
+**Data flow**:
 ```
-Logseq DB Change → onChanged Event → Extract Graph Context → Validate Data → Content Hash Check → Batch Queue → HTTP POST with Graph Headers → Backend Graph Validation → Active Graph Processing
+CLI args → Config loading → AppState init → HTTP server → Graph registry → Active graph selection
+```
+**Key types**: `AppState { graph_managers: HashMap<String, RwLock<GraphManager>>, websocket, active_graph_id }`
+
+### config.rs
+**Purpose**: Configuration management  
+**Manages**: Config struct hierarchy  
+**Requires**: serde, config crate  
+**Data flow**:
+```
+config.yaml → Config struct → Validation → AppState.config
+```
+**Key types**: `Config`, `BackendConfig`, `LogseqConfig`, `SyncConfig`
+
+### api.rs
+**Purpose**: HTTP endpoint handlers  
+**Manages**: Router configuration, endpoint logic  
+**Requires**: GraphManager, TransactionCoordinator, EDN module  
+**Data flow**:
+```
+HTTP request → Graph validation (headers) → Handler → Graph operation → Response
+```
+**Endpoints**:
+- `GET /` - Health check
+- `POST /data` - PKMData ingestion (type-based routing)
+- `POST /plugin/initialized` - Graph registration with UUID
+- `GET /sync/status` - Sync timing and graph stats
+- `PATCH /sync` - Update sync timestamps
+- `POST /sync/verify` - Deletion detection
+- `POST /config/validate` - EDN property validation
+- `POST /log` - Plugin logging
+- `GET /ws` - WebSocket upgrade
+
+### graph_manager.rs
+**Purpose**: Per-graph petgraph storage  
+**Manages**: StableGraph, node/edge operations, persistence  
+**Requires**: petgraph, serde_json  
+**Data flow**:
+```
+PKM operation → NodeIndex lookup → Graph mutation → Auto-save trigger → JSON persistence
+```
+**Key structures**:
+- Nodes: `Page { name, properties }`, `Block { uuid, content, properties }`
+- Edges: `PageRef`, `BlockRef`, `Tag`, `Property`, `ParentChild`, `PageToBlock`
+- Indexes: `HashMap<String, NodeIndex>` for O(1) lookups
+
+### graph_registry.rs
+**Purpose**: Multi-graph identification  
+**Manages**: Graph UUID mappings, active graph tracking  
+**Requires**: File I/O for registry persistence  
+**Data flow**:
+```
+Plugin headers → Registry lookup → Graph creation/validation → Active graph switch
+```
+**Key operations**: `get_or_create_graph()`, `validate_and_switch_graph()`
+
+### kg_api.rs
+**Purpose**: Public API for graph mutations  
+**Manages**: Transaction-safe operation wrappers  
+**Requires**: GraphManager, TransactionCoordinator, WebSocket  
+**Data flow**:
+```
+Operation request → Transaction begin → Content hash → Graph mutation → WAL → WebSocket broadcast → Ack wait → Commit
+```
+**Operations**: `add_block()`, `update_block()`, `delete_block()`, `create_page()`
+
+### transaction_log.rs
+**Purpose**: Write-ahead logging  
+**Manages**: Sled database, content hash index  
+**Requires**: sled, sha2  
+**Data flow**:
+```
+Transaction → Serialize → WAL append → Content hash index → Pending queue
+```
+**Key types**: `TransactionLog`, `TransactionEntry`, `ContentHashIndex`
+
+### transaction.rs
+**Purpose**: Transaction state machine  
+**Manages**: Transaction lifecycle, acknowledgment correlation  
+**Requires**: TransactionLog integration  
+**States**: `Active` → `WaitingForAck` → `Committed`
+
+### websocket.rs
+**Purpose**: Bidirectional communication  
+**Manages**: Connection management, command routing  
+**Requires**: tokio, authentication state  
+**Data flow**:
+```
+Client connect → Auth command → Authenticated state → Command dispatch → Broadcast to clients
+```
+**Commands**:
+- Client→Server: `auth`, `heartbeat`, `test`, acknowledgments
+- Server→Client: `create_block`, `update_block`, `delete_block`, `create_page`
+
+### edn.rs
+**Purpose**: EDN format manipulation  
+**Manages**: Regex-based property updates  
+**Requires**: regex crate  
+**Key functions**:
+- `update_block_hidden_properties()` - Add to #{} set
+- `update_graph_id()` - Set UUID property
+- `validate_config_properties()` - Check required properties
+- `update_config_file()` - Apply changes with validation
+
+### Plugin: index.js
+**Purpose**: Logseq plugin lifecycle  
+**Manages**: Plugin initialization, DB change monitoring  
+**Requires**: logseq API, other plugin modules  
+**Data flow**:
+```
+Plugin load → Graph identification → Backend registration → DB.onChanged → Batch queue → Backend sync
+```
+**Key operations**: Graph UUID stamping, config validation, timestamp updates
+
+### Plugin: sync.js
+**Purpose**: Sync orchestration  
+**Manages**: Incremental/full sync logic  
+**Requires**: api.js, data_processor.js  
+**Data flow**:
+```
+Sync timer → Status check → Page/block query → Filter by timestamp → Batch send → Deletion verify
+```
+**Sync types**: Real-time (immediate), Incremental (2hr), Full (7d, disabled)
+
+### Plugin: api.js (window.KnowledgeGraphAPI)
+**Purpose**: Backend communication  
+**Manages**: HTTP client, WebSocket client  
+**Requires**: Port discovery, retry logic  
+**Key functions**:
+- `sendToBackend()` - POST to /data
+- `checkBackendAvailabilityWithRetry()` - Health checks
+- `websocket.connect/send/registerHandler()` - WebSocket ops
+
+### Plugin: websocket.js (window.KnowledgeGraphWebSocket)
+**Purpose**: Command handlers  
+**Manages**: Logseq API command execution  
+**Requires**: logseq API, correlation tracking  
+**Handlers**: `create_block`, `update_block`, `delete_block`, `create_page`
+
+## Data Structures
+
+### PKMBlockData
+```rust
+{
+    uuid: String,
+    content: String,
+    properties: HashMap<String, Value>,
+    parent: Option<String>,
+    page: String,
+    left: Option<String>,
+    format: String,
+    created_at: i64,
+    updated_at: i64
+}
 ```
 
-### Incremental Sync (Per-Graph)
+### PKMPageData
+```rust
+{
+    name: String,
+    original_name: String,
+    properties: HashMap<String, Value>,
+    created_at: i64,
+    updated_at: i64,
+    journal_day: Option<i64>
+}
 ```
-Check Last Incremental Sync → Query All Pages/Blocks → Filter by Modified Date → Process in Batches → Send PKM IDs for Deletion Detection → Update Active Graph → Update Incremental Sync Timestamp
+
+### Graph Headers (HTTP)
+- `X-Cymbiont-Graph-ID`: UUID string
+- `X-Cymbiont-Graph-Name`: Graph name
+- `X-Cymbiont-Graph-Path`: Filesystem path
+
+### WebSocket Protocol
+```json
+// Client → Server
+{"type": "auth", "token": "dummy"}
+{"type": "heartbeat"}
+{"type": "BlockCreated", "correlation_id": "...", "uuid": "..."}
+
+// Server → Client
+{"type": "create_block", "correlation_id": "...", "temp_id": "...", "content": "..."}
+{"type": "update_block", "correlation_id": "...", "uuid": "...", "content": "..."}
 ```
-- **Graph Context**: All operations target the active graph identified by headers
-- **Timestamp Filtering**: Pages use built-in `updatedAt` field; blocks use custom `cymbiont-updated-ms` property
-- **Efficient**: Only processes content modified since last incremental sync
 
-### Full Database Sync (Per-Graph, disabled by default)
+## Persistence Layout
+
+### Per-Graph Storage
 ```
-Check Last Full Sync → Query All Pages/Blocks → Process ALL Content (No Filtering) → Send PKM IDs for Deletion Detection → Update Active Graph → Update Full Sync Timestamp
+data/graphs/{graph-id}/
+├── knowledge_graph.json          # Full graph serialization
+├── archived_nodes/               # Deletion archives
+│   └── archive_YYYYMMDD_HHMMSS.json
+└── transaction_log/              # Per-graph WAL
+    ├── data.mdb
+    └── lock.mdb
 ```
-- **Complete Re-index**: Processes entire PKM without timestamp filtering
-- **Use Cases**: Recovers from external file modifications, ensures data integrity
-- **Deletion Detection**: After both sync types, sends all current PKM IDs to verify endpoint
-- **Archival**: Deleted nodes are preserved in per-graph timestamped JSON files
 
-### Transaction Processing
+### Graph Registry
+```json
+{
+  "graphs": [
+    {
+      "id": "uuid",
+      "name": "graph-name",
+      "path": "/path/to/graph",
+      "created_at": "2025-01-20T10:00:00Z",
+      "last_accessed": "2025-01-20T10:00:00Z",
+      "config_updated": true
+    }
+  ]
+}
 ```
-Operation Request → Begin Transaction → Content Hash Check → Apply to Graph → Log to WAL → WebSocket Broadcast → Wait for Acknowledgment → Commit Transaction
+
+## Configuration Schema
+
+### config.yaml
+```yaml
+backend:
+  host: "localhost"
+  port: 3000
+  max_port_attempts: 10
+
+sync:
+  incremental_interval_hours: 2
+  full_interval_hours: 168
+  enable_full_sync: false
+
+logseq:
+  auto_launch: false
+  executable_path: null
+
+development:
+  default_duration: null
 ```
-- **ACID Guarantees**: All operations logged to write-ahead log before applying
-- **Deduplication**: Content hash prevents duplicate processing of echoed operations
-- **Race Prevention**: Transaction coordination prevents conflicts between real-time sync and API operations
 
-### Graph Structure
-**Nodes** (petgraph vertices):
-- **Page Nodes**: Created from Logseq pages (name, properties, timestamps)
-- **Block Nodes**: Created from Logseq blocks (content, properties, parent reference)
-- **Tag Nodes**: Automatically created pages from #tags (without # prefix)
+## CLI Interface
+```bash
+cargo run [OPTIONS]
+  --duration <SECONDS>           Run for specific duration
+  --force-incremental-sync       Force incremental sync
+  --force-full-sync             Force full sync
+  --test-websocket <COMMAND>    Test WebSocket commands
+```
 
-**Edges** (typed relationships):
-- **PageRef**: Block/page references another page via [[Page Name]]
-- **BlockRef**: Block references another block via ((block-id))
-- **Tag**: Block/page uses a #tag
-- **Property**: Block/page has property key (key:: value creates edge to key page)
-- **ParentChild**: Hierarchical relationship between blocks
-- **PageToBlock**: Links page to its root-level blocks
+## Testing Entry Points
+- `cargo test` - Rust unit tests
+- `npm test` (in logseq_plugin/) - JavaScript tests
+- `RUST_LOG=debug cargo run` - Debug logging
+- Test graphs in `logseq_databases/`
 
-## Configuration
+## Transaction Flow
+```
+1. Operation requested (HTTP/WebSocket)
+2. Transaction created with content hash
+3. Check pending operations by hash
+4. Apply to graph (mutation)
+5. Log to WAL
+6. Broadcast via WebSocket
+7. Wait for acknowledgment (timeout: 30s)
+8. Commit or rollback
+```
 
-**Configuration** (`config.yaml`):
-- Backend server configuration (port, max port attempts)
-- Sync intervals and configuration:
-  - `incremental_interval_hours`: Hours between incremental syncs (default: 2)
-  - `full_interval_hours`: Hours between full database syncs (default: 168/7 days)
-  - `enable_full_sync`: Whether to perform full syncs (default: false)
-- Logseq auto-launch settings
-- Development duration for auto-shutdown
-- Server always binds to localhost for security
+## Graph Update Flow
+```
+1. PKMData received with graph headers
+2. Validate graph ID/name/path
+3. Switch active graph if needed
+4. Parse payload by type
+5. Update graph nodes/edges
+6. Trigger auto-save if threshold met
+```
 
-## Testing
+## Sync Status Tracking
+- Incremental: `last_incremental_sync` timestamp
+- Full: `last_full_sync` timestamp
+- Force flags override time-based checks
+- Per-graph isolation of sync state
 
-- **JavaScript Plugin**: `npm test` (in logseq_plugin/) - Jest test suite with comprehensive coverage:
-  - `data_processor.test.js`: Tests for reference extraction and data validation
-  - `sync.test.js`: Tests for sync status logic, tree traversal utilities
-  - Browser environment mocking for Logseq plugin testing
-- **Code Quality**: `npx eslint *.js` - ESLint configured for browser, Jest, and Node.js environments
-- **Rust Backend**: `cargo test` (in cymbiont root) - Unit tests for core modules (quiet by default)
-- **Development**: `RUST_LOG=debug cargo run` - Run backend server with default 3-second duration for testing
-- **Force Incremental Sync**: `cargo run -- --force-incremental-sync` - Override sync status to force an incremental sync on next plugin connection
-- **Force Full Sync**: `cargo run -- --force-full-sync` - Override sync status to force a full database sync on next plugin connection
-- **Test WebSocket**: `cargo run -- --test-websocket <command>` - Test WebSocket commands with transaction logging:
-  - `test` or `echo`: Send test message and receive echo response
-  - `page` or `create-page`: Create a test page named "test-websocket"
-  - `block` or `create-block`: Create a test block on the "test-websocket" page
-  - All commands use transaction log and acknowledgment system
+## Error Handling Patterns
+- Module-specific `Error` enums with thiserror
+- `type Result<T> = std::result::Result<T, Error>` aliases
+- HTTP errors return `ApiResponse { success: false, message }`
+- WebSocket errors trigger reconnection with backoff
 
-## Development Features
+## Process Management
+- Server info written to `cymbiont_server.json`
+- Previous instance terminated via PID
+- Port discovery on conflict (3000-3010)
+- Graceful shutdown with 10s timeout
 
-**Graceful Shutdown System:**
-- Server waits for sync operations to complete before shutting down
-- Protects against data corruption from interrupted batch operations
-- Uses Axum's graceful shutdown to handle in-flight HTTP requests
-- 10-second timeout prevents indefinite hangs
-
-**Development Duration Configuration:**
-- `development.default_duration: 3` in config.yaml sets automatic exit timer
-- Prevents servers from running indefinitely during development workflows
-- CLI `--duration X` overrides config default when needed
-- Production builds warn if `default_duration` is not null (should be null for production)
-- Graceful shutdown ensures sync operations complete before timer expires
-
-## Planned Architecture Changes
-
-### Session Management (Next Priority)
-- **SessionManager Component**: Manage graph sessions and programmatic graph switching
-- **Pre-launch Graph Selection**: Target specific graphs before launching Logseq
-- **Platform-specific URL Opening**: Use `logseq://graph/{name}` for direct graph launches
-- **CLI Commands**: `cymbiont switch-graph`, `cymbiont list-graphs`, `cymbiont current-graph`
-- **Graph Persistence**: Save/restore last active graph across restarts
-
-### Integration Testing Framework
-- **Dedicated Test Graphs**: Clean test isolation with dedicated graphs (not dummy_graph)
-- **E2E Sync Testing**: Comprehensive testing of real-time, incremental, and full sync
-- **Multi-graph Switching Tests**: Validate graph isolation and switching capabilities
-- **Transaction Testing**: Crash recovery, timeout scenarios, race conditions
-
-### Performance Optimizations
-- **Memory Management**: Document that all graphs stay in RAM (modern machines can handle it)
-- **LRU Cache**: Future optimization for inactive graphs in large multi-graph setups
-- **WebSocket Scoping**: Broadcast commands only to connections for relevant graphs
-- **Configuration in YAML**: Transaction log timeouts and performance settings
-
-### AI Agent Integration (Final Phase)
-- **AIChat-Agent Submodule**: Import aichat-agent library for LLM capabilities
-- **Knowledge Graph Functions**: Native Rust functions for graph queries and mutations
-- **Agent Definitions**: Specialized agents with KG-aware context and tools
-- **REPL Integration**: Conversational interface for knowledge graph exploration
+## Development Constraints
+- No debug logs in production code
+- Dead code must be removed (no `_` prefixes)
+- Tests run with default 3s duration
+- Plugin requires backend running first

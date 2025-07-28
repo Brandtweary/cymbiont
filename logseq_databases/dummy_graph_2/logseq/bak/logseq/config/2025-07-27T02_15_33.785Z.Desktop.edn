@@ -172,7 +172,7 @@
  ;;  :editor/down            ["ctrl+j" "down"]
  ;;  :editor/left            ["ctrl+h" "left"]
  ;;  :editor/right           ["ctrl+l" "right"]}
- :shortcuts {:go/home ["alt+s"]}
+ :shortcuts {}
 
  ;; Configure the behavior of pressing Enter in document mode.
  ;; if set to true, pressing Enter will create a new block.
@@ -194,18 +194,51 @@
 
  ;; Pre-defined :view function to use with advanced queries.
  :query/views
- {:pprint ["fn" ["r"] ["pre.code" ["pprint" "r"]]]}
+ {:pprint
+  (fn [r] [:pre.code (pprint r)])}
 
  ;; Advanced queries `:result-transform` function.
  ;; Transform the query result before displaying it.
  :query/result-transforms
- {:sort-by-priority ["fn" ["result"] ["sort-by" ["fn" ["h"] ["get" "h" "block/priority" "Z"]] "result"]]}
+ {:sort-by-priority
+  (fn [result] (sort-by (fn [h] (get h :block/priority "Z")) result))}
 
  ;; The following queries will be displayed at the bottom of today's journal page.
  ;; The "NOW" query returns tasks with "NOW" or "DOING" status.
  ;; The "NEXT" query returns tasks with "NOW", "LATER", or "TODO" status.
  :default-queries
- {:journals [{:title "🔨 NOW", :query ["find" ["pull" "?h" ["*"]] "in" "$" "?start" "?today" "where" ["?h" "block/marker" "?marker"] [["contains?" ["NOW" "DOING"] "?marker"]] ["?h" "block/page" "?p"] ["?p" "block/journal?" true] ["?p" "block/journal-day" "?d"] [[">=" "?d" "?start"]] [["<=" "?d" "?today"]]], :inputs ["14d" "today"], :result-transform ["fn" ["result"] ["sort-by" ["fn" ["h"] ["get" "h" "block/priority" "Z"]] "result"]], :group-by-page? false, :collapsed? false} {:title "📅 NEXT", :query ["find" ["pull" "?h" ["*"]] "in" "$" "?start" "?next" "where" ["?h" "block/marker" "?marker"] [["contains?" ["NOW" "LATER" "TODO"] "?marker"]] ["?h" "block/page" "?p"] ["?p" "block/journal?" true] ["?p" "block/journal-day" "?d"] [[">" "?d" "?start"]] [["<" "?d" "?next"]]], :inputs ["today" "7d-after"], :group-by-page? false, :collapsed? false}]}
+ {:journals
+  [{:title "🔨 NOW"
+    :query [:find (pull ?h [*])
+            :in $ ?start ?today
+            :where
+            [?h :block/marker ?marker]
+            [(contains? #{"NOW" "DOING"} ?marker)]
+            [?h :block/page ?p]
+            [?p :block/journal? true]
+            [?p :block/journal-day ?d]
+            [(>= ?d ?start)]
+            [(<= ?d ?today)]]
+    :inputs [:14d :today]
+    :result-transform (fn [result]
+                        (sort-by (fn [h]
+                                   (get h :block/priority "Z")) result))
+    :group-by-page? false
+    :collapsed? false}
+   {:title "📅 NEXT"
+    :query [:find (pull ?h [*])
+            :in $ ?start ?next
+            :where
+            [?h :block/marker ?marker]
+            [(contains? #{"NOW" "LATER" "TODO"} ?marker)]
+            [?h :block/page ?p]
+            [?p :block/journal? true]
+            [?p :block/journal-day ?d]
+            [(> ?d ?start)]
+            [(< ?d ?next)]]
+    :inputs [:today :7d-after]
+    :group-by-page? false
+    :collapsed? false}]}
 
  ;; Add custom commands to the command palette
  ;; Example usage:
@@ -282,7 +315,6 @@
  ;; Hide specific block properties.
  ;; Example usage:
  ;; :block-hidden-properties #{:public :icon}
-:block-hidden-properties #{:cymbiont-updated-ms}
 
  ;; Create a page for all properties.
  ;; Default value: true
@@ -386,6 +418,4 @@
  ;;   - :triple-lowbar (default)
  ;;      ;use triple underscore `___` for slash `/` in page title
  ;;      ;use Percent-encoding for other invalid characters
- :file/name-format :triple-lowbar
- :default-arweave-gateway "https://arweave.net"
- :cymbiont/graph-id "d2d6f3e7-a331-4b59-a69e-e2caeee4104e"}
+ :file/name-format :triple-lowbar}

@@ -33,6 +33,7 @@
  * - Terminates Logseq gracefully on shutdown
  */
 
+use async_trait::async_trait;
 use axum::Router;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -60,13 +61,15 @@ mod saga;
 mod kg_api;
 mod graph_registry;
 mod edn;
+mod session_manager;
 
 use graph_manager::GraphManager;
 use graph_registry::GraphRegistry;
+use session_manager::{SessionManager, DbIdentifier};
 use config::{load_config, validate_js_plugin_config, Config};
 use logging::init_logging;
 use api::create_router;
-use utils::{launch_logseq, SERVER_INFO_FILE, terminate_previous_instance, write_server_info, find_available_port};
+use utils::{SERVER_INFO_FILE, terminate_previous_instance, write_server_info, find_available_port};
 use transaction_log::TransactionLog;
 use transaction::TransactionCoordinator;
 use saga::{SagaCoordinator, WorkflowSagas};
@@ -91,6 +94,13 @@ struct Args {
     #[arg(long)]
     test_websocket: Option<String>,
     
+    /// Launch with specific Logseq database by name
+    #[arg(long, conflicts_with = "graph_path")]
+    graph: Option<String>,
+    
+    /// Launch with specific Logseq database by path
+    #[arg(long)]
+    graph_path: Option<String>,
 }
 
 // Application state that will be shared between handlers
@@ -98,6 +108,7 @@ pub struct AppState {
     pub graph_managers: Arc<RwLock<HashMap<String, RwLock<GraphManager>>>>,
     pub graph_registry: Arc<Mutex<GraphRegistry>>,
     pub active_graph_id: Arc<RwLock<Option<String>>>,
+    pub session_manager: Arc<SessionManager>,
     pub logseq_child: Mutex<Option<std::process::Child>>,
     pub plugin_init_tx: Mutex<Option<oneshot::Sender<()>>>,
     pub sync_complete_tx: Mutex<Option<oneshot::Sender<()>>>,
@@ -169,6 +180,19 @@ impl AppState {
     pub async fn set_active_graph(&self, graph_id: String) {
         let mut active = self.active_graph_id.write().await;
         *active = Some(graph_id);
+    }
+}
+
+// Implement GraphSwitchNotifier for Arc<AppState>
+#[async_trait]
+impl session_manager::GraphSwitchNotifier for Arc<AppState> {
+    async fn notify_graph_switch(&self, target_graph_id: &str, target_graph_name: &str, target_graph_path: &str) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let command = websocket::Command::GraphSwitchRequested {
+            target_graph_id: target_graph_id.to_string(),
+            target_graph_name: target_graph_name.to_string(),
+            target_graph_path: target_graph_path.to_string(),
+        };
+        websocket::broadcast_command(self, command).await
     }
 }
 
@@ -261,6 +285,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .map_err(|e| Box::<dyn Error>::from(format!("Graph registry error: {e:?}")))?
     ));
     
+    // Initialize session manager
+    let session_manager = Arc::new(SessionManager::new(
+        graph_registry.clone(),
+        config.logseq.clone(),
+    ));
+    
     // Initialize multi-graph managers and coordinators
     let graph_managers = Arc::new(RwLock::new(HashMap::new()));
     let transaction_coordinators = Arc::new(RwLock::new(HashMap::new()));
@@ -289,6 +319,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         graph_managers: graph_managers.clone(),
         graph_registry: graph_registry.clone(),
         active_graph_id: Arc::new(RwLock::new(None)),
+        session_manager: session_manager.clone(),
         logseq_child: Mutex::new(None),
         plugin_init_tx: Mutex::new(None),
         sync_complete_tx: Mutex::new(None),
@@ -327,20 +358,35 @@ async fn main() -> Result<(), Box<dyn Error>> {
     
     info!("🚀 Backend server listening on {}", addr);
     
-    // Update config.edn if graph path is configured
-    // Commented out to test runtime validation
-    // if let Some(ref graph_path) = config.logseq.graph_path {
-    //     update_graph_config_before_launch(graph_path);
-    // }
-    
-    // Launch Logseq after server is ready
-    let logseq_child = launch_logseq(&config.logseq)?;
-    
-    // Create channel for plugin initialization if we launched Logseq
-    let plugin_init_rx = if let Some(child) = logseq_child {
-        // Store child process
-        if let Ok(mut child_guard) = app_state.logseq_child.lock() {
-            *child_guard = Some(child);
+    // Launch Logseq with session manager
+    let plugin_init_rx = if config.logseq.auto_launch {
+        // Determine CLI target database
+        let cli_target = if let Some(name) = args.graph {
+            Some(DbIdentifier::Name(name))
+        } else if let Some(path) = args.graph_path {
+            Some(DbIdentifier::Path(path))
+        } else {
+            None
+        };
+        
+        // Launch Logseq (this is async, but we'll handle it synchronously for now)
+        let logseq_child = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                match session_manager.launch_logseq(cli_target).await {
+                    Ok(child) => child,
+                    Err(e) => {
+                        error!("Failed to launch Logseq: {}", e);
+                        None
+                    }
+                }
+            })
+        });
+        
+        // Store the child process handle if we got one
+        if let Some(child) = logseq_child {
+            if let Ok(mut child_guard) = app_state.logseq_child.lock() {
+                *child_guard = Some(child);
+            }
         }
         
         // Create initialization channel

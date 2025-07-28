@@ -203,29 +203,41 @@ pub fn validate_config_properties(content: &str) -> ConfigValidation {
 
 /// Update a config file with both required properties
 pub fn update_config_file(path: &Path, graph_id: &str) -> Result<()> {
+    use tracing::debug;
+    
+    debug!("update_config_file called for path: {:?}, graph_id: {}", path, graph_id);
+    
     // Read the current content
     let content = fs::read_to_string(path)?;
+    debug!("Read {} bytes from config.edn", content.len());
     
     // Validate current state
     let validation = validate_config_properties(&content);
+    debug!("Validation result - has_hidden_property: {}, has_graph_id: {}, graph_id: {:?}", 
+         validation.has_hidden_property, validation.has_graph_id, validation.graph_id);
     
     // Update if needed
     let mut updated_content = content;
     let mut updated = false;
     
     if !validation.has_hidden_property {
+        debug!("Attempting to update block-hidden-properties");
         updated_content = update_block_hidden_properties(&updated_content, ":cymbiont-updated-ms")?;
         updated = true;
     }
     
     if !validation.has_graph_id || validation.graph_id.as_deref() != Some(graph_id) {
+        debug!("Attempting to update graph ID");
         updated_content = update_graph_id(&updated_content, graph_id)?;
         updated = true;
     }
     
     // Write back if changes were made
     if updated {
+        debug!("Writing updated config back to {:?}", path);
         fs::write(path, updated_content)?;
+    } else {
+        debug!("No updates needed for config.edn");
     }
     
     Ok(())

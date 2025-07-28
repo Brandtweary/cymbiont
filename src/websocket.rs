@@ -130,6 +130,17 @@ pub enum Command {
         success: bool,
         error: Option<String>,
     },
+    // Graph switch confirmation messages
+    GraphSwitchRequested {
+        target_graph_id: String,
+        target_graph_name: String,
+        target_graph_path: String,
+    },
+    GraphSwitchConfirmed {
+        graph_id: String,
+        graph_name: String,
+        graph_path: String,
+    },
 }
 
 /// Response protocol definitions
@@ -257,7 +268,8 @@ async fn handle_command(
         Command::BlockCreated { .. } |
         Command::BlockUpdated { .. } |
         Command::BlockDeleted { .. } |
-        Command::PageCreated { .. }
+        Command::PageCreated { .. } |
+        Command::GraphSwitchConfirmed { .. }
     ) {
         if !is_authenticated(connection_id, state).await {
             warn!("Rejecting command from unauthenticated connection {}: {:?}", connection_id, command);
@@ -300,7 +312,8 @@ async fn handle_command(
         Command::CreateBlock { .. } | 
         Command::UpdateBlock { .. } | 
         Command::DeleteBlock { .. } | 
-        Command::CreatePage { .. } => {
+        Command::CreatePage { .. } |
+        Command::GraphSwitchRequested { .. } => {
             // These commands are only sent FROM server TO client
             // The plugin should never send these to the server
             error!("Unexpected command from client: {:?}", command);
@@ -382,6 +395,13 @@ async fn handle_command(
             info!("📥 Page creation acknowledgment: correlation_id={}, success={}, error={:?}", 
                   correlation_id, success, error);
             // TODO: Handle page creation acknowledgments
+        }
+        Command::GraphSwitchConfirmed { graph_id, graph_name, graph_path } => {
+            info!("📥 Graph switch confirmed: graph_id={}, name={}, path={}", 
+                  graph_id, graph_name, graph_path);
+            
+            // Notify session manager that graph switch was confirmed
+            state.session_manager.confirm_graph_switch(&graph_id).await;
         }
     }
     

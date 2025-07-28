@@ -145,6 +145,7 @@ use crate::pkm_data::{PKMBlockData, PKMPageData};
 use crate::utils::parse_json_data;
 use crate::websocket::websocket_handler;
 use crate::edn;
+use crate::session_manager::DbIdentifier;
 
 // ===== API Types =====
 
@@ -233,6 +234,10 @@ pub fn create_router(app_state: Arc<AppState>) -> Router {
         .route("/config/validate", post(validate_config))
         .route("/log", post(receive_log))
         .route("/ws", any(websocket_handler))
+        // Session management endpoints
+        .route("/api/session/switch", post(switch_database))
+        .route("/api/session/current", get(get_current_session))
+        .route("/api/session/databases", get(list_databases))
         .layer(middleware::from_fn_with_state(
             app_state.clone(),
             graph_validation_middleware,
@@ -385,28 +390,15 @@ pub async fn plugin_initialized(
     // Get the active graph ID that was set by middleware
     let graph_id = state.get_active_graph_manager().await;
     
-    // Check if the actual graph path matches the configured graph path
-    if let Some(ref configured_path) = state.config.logseq.graph_path {
-        if let Some(ref active_id) = graph_id {
-            let actual_path = {
-                let registry = state.graph_registry.lock().unwrap();
-                registry.get_graph(active_id).map(|info| info.path.clone())
-            };
-            
-            if let Some(actual) = actual_path {
-                // Normalize paths for comparison
-                let configured_abs = std::path::Path::new(configured_path).canonicalize().ok();
-                let actual_abs = std::path::Path::new(&actual).canonicalize().ok();
-                
-                match (configured_abs, actual_abs) {
-                    (Some(conf), Some(act)) if conf != act => {
-                        warn!("⚠️ Graph path mismatch: configured '{}' but actual graph is '{}'", 
-                              configured_path, actual);
-                        warn!("This may cause config.edn updates to apply to the wrong graph");
-                    },
-                    _ => debug!("✅ Graph path matches configured path"),
-                }
-            }
+    // Log the active graph path if available
+    if let Some(ref active_id) = graph_id {
+        let actual_path = {
+            let registry = state.graph_registry.lock().unwrap();
+            registry.get_graph(active_id).map(|info| info.path.clone())
+        };
+        
+        if let Some(path) = actual_path {
+            info!("Active graph path: {}", path);
         }
     }
     
@@ -548,6 +540,8 @@ pub async fn validate_config(
     State(state): State<Arc<AppState>>,
     Json(request): Json<ConfigValidationRequest>,
 ) -> Json<ApiResponse> {
+    debug!("validate_config handler reached with request: {:?}", request);
+    
     // Get active graph
     let active_graph_id = state.get_active_graph_manager().await;
     if active_graph_id.is_none() {
@@ -596,7 +590,7 @@ pub async fn validate_config(
             {
                 let mut registry = state.graph_registry.lock().unwrap();
                 if let Err(e) = registry.mark_config_updated(&graph_id) {
-                    warn!("Failed to mark config as updated in registry: {}", e);
+                    error!("Failed to mark config as updated in registry: {}", e);
                 }
             }
             
@@ -1004,6 +998,11 @@ async fn graph_validation_middleware(
     let graph_context = GraphContext::from_headers(req.headers());
     let path = req.uri().path().to_string();
     
+    // Only log non-heartbeat requests
+    if path != "/" {
+        debug!("Middleware processing request to {} with graph context: {:?}", path, graph_context);
+    }
+    
     // Skip validation for certain endpoints
     if path == "/" || path == "/ws" || path == "/log" {
         return next.run(req).await;
@@ -1014,6 +1013,10 @@ async fn graph_validation_middleware(
         // Validate and switch graph
         let (graph_info, is_new) = {
             let mut registry = state.graph_registry.lock().unwrap();
+            debug!("Calling validate_and_switch with name={:?}, path={:?}, id={:?}", 
+                  graph_context.graph_name.as_deref(),
+                  graph_context.graph_path.as_deref(),
+                  graph_context.graph_id.as_deref());
             match registry.validate_and_switch(
                 graph_context.graph_name.as_deref(),
                 graph_context.graph_path.as_deref(),
@@ -1066,6 +1069,88 @@ async fn graph_validation_middleware(
     }
     
     next.run(req).await
+}
+
+// ===== Session Management API =====
+
+// Request types for session endpoints
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub enum SwitchDatabaseRequest {
+    ByName { name: String },
+    ByPath { path: String },
+}
+
+#[derive(Serialize)]
+pub struct DatabaseInfo {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+}
+
+/// Switch to a different database
+#[axum::debug_handler]
+pub async fn switch_database(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<SwitchDatabaseRequest>,
+) -> Result<Json<ApiResponse>, (StatusCode, Json<ApiResponse>)> {
+    let identifier = match request {
+        SwitchDatabaseRequest::ByName { name } => DbIdentifier::Name(name),
+        SwitchDatabaseRequest::ByPath { path } => DbIdentifier::Path(path),
+    };
+    
+    match state.session_manager.switch_database_with_notifier(identifier, &state).await {
+        Ok(_) => Ok(Json(ApiResponse {
+            success: true,
+            message: "Database switched successfully".to_string(),
+            graph_id: None,
+        })),
+        Err(e) => {
+            error!("Failed to switch database: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse {
+                    success: false,
+                    message: format!("Failed to switch database: {}", e),
+                    graph_id: None,
+                }),
+            ))
+        }
+    }
+}
+
+/// Get current session information
+pub async fn get_current_session(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let session_info = state.session_manager.get_session_info().await;
+    
+    Json(serde_json::json!({
+        "session_state": session_info.state,
+        "active_graph_id": session_info.active_graph_id,
+        "active_graph_name": session_info.active_graph_name,
+        "active_graph_path": session_info.active_graph_path,
+    }))
+}
+
+/// List all available databases
+pub async fn list_databases(
+    State(state): State<Arc<AppState>>,
+) -> Json<Vec<DatabaseInfo>> {
+    let databases = if let Ok(registry) = state.graph_registry.lock() {
+        registry.get_all_graphs()
+            .into_iter()
+            .map(|info| DatabaseInfo {
+                id: info.id.clone(),
+                name: info.name.clone(),
+                path: info.path.clone(),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    
+    Json(databases)
 }
 
 

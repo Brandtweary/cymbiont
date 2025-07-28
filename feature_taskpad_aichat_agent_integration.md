@@ -61,7 +61,67 @@ Integrate the aichat-agent library as a git submodule in Cymbiont to provide LLM
 
 **Status**: READY FOR INTEGRATION - The kg_api module provides a complete, transaction-safe public API for knowledge graph operations. It's currently marked with `#![allow(dead_code)]` to prevent warnings, but all functionality is implemented and tested. This is the foundation layer that the AIChat-Agent native functions will consume.
 
-### 3. Git Submodule Setup (PRIORITY #5 - Final Integration)
+### 3. Multi-Graph Support Completion (from feature_taskpad_multi_graph_support.md)
+- [ ] Recovery happens per-graph on startup
+- [ ] Test with both file and DB graph types
+- [ ] Update archive recovery to filter by graph_id when needed
+- [ ] Memory management considerations:
+  - [ ] Document that we keep all graphs in RAM (modern machines can handle it)
+  - [ ] Future optimization: LRU cache for inactive graphs
+- [ ] CLI Commands:
+  - [ ] `cymbiont switch-graph <name>` - Switch active graph by Logseq graph name (via API)
+  - [ ] `cymbiont switch-graph --path <path>` - Alternative: switch by path (will resolve to name)
+  - [ ] `cymbiont list-graphs` - Show all graphs with names and paths (via API)
+  - [ ] `cymbiont current-graph` - Show current active graph name and path (via API)
+- [ ] Migration and Documentation:
+  - [ ] Create migration guide for existing users
+  - [ ] Update CLAUDE.md with multi-graph instructions
+  - [ ] Document session management and low-click workflow
+  - [ ] Document graph identifier best practices
+  - [ ] Add examples for common multi-graph setups
+  - [ ] Update architecture documentation
+
+### 4. Transaction Log Completion (from feature_taskpad_transaction_log_wal.md)
+- [ ] Test crash recovery scenarios with kill -9
+- [ ] Add timeout handling for missing acknowledgments
+- [ ] Add correlation tracking for update operations
+- [ ] Add correlation tracking for delete operations
+- [ ] Add correlation tracking for page operations
+- [ ] Add metrics for deduplication effectiveness
+- [ ] Test recovery with various failure scenarios
+- [ ] Configuration and Management:
+  - [ ] Add transaction log settings to config.yaml
+  - [ ] Implement log rotation and compaction
+  - [ ] Create CLI commands for log inspection
+  - [ ] Add metrics and health checks
+  - [ ] Document operational procedures
+
+### 5. WebSocket Bidirectional Completion (from feature_taskpad_websocket_bidirectional.md)
+- [ ] WebSocket Multi-Graph Support:
+  - [ ] Modify `ConnectionState` struct to include `graph_id: Option<String>` field
+  - [ ] Update `auth` command to accept graph identification from plugin headers
+  - [ ] Modify `broadcast_command()` to filter by graph_id before sending
+  - [ ] Add `get_authenticated_senders_for_graph(graph_id)` helper function
+  - [ ] Update plugin WebSocket client to send graph context during authentication
+  - [ ] Update WebSocket messages to include graph context
+  - [ ] Coordinate with SessionManager when graphs are switched
+  - [ ] Maintain WebSocket connections across graph switches (don't disconnect)
+  - [ ] Update active graph context for existing connections when user switches graphs
+  - [ ] Handle scenario where connection was established for Graph A but user switches to Graph B
+  - [ ] Track which connections belong to which graph
+  - [ ] Only broadcast commands to relevant connections
+  - [ ] Update WebSocket connections with new graph context on session switch
+- [ ] Timeout and Correlation:
+  - [ ] Add acknowledgment timeouts (30s default)
+  - [ ] Extend correlation tracking to update_block operations
+  - [ ] Extend correlation tracking to delete_block operations  
+  - [ ] Extend correlation tracking to create_page operations
+- [ ] Implement error recovery for failed operations
+- [ ] Add command deduplication to prevent double-execution
+- [ ] Implement operation batching for efficiency
+- [ ] Document WebSocket protocol in architecture.md
+
+### 6. Git Submodule Setup (PRIORITY #5 - Final Integration)
 - [ ] Add aichat-agent as git submodule at `cymbiont/aichat-agent/`
 - [ ] Configure Cargo.toml with path dependency to submodule
 - [ ] Set up workspace configuration if needed
@@ -71,9 +131,9 @@ Integrate the aichat-agent library as a git submodule in Cymbiont to provide LLM
 **Status**: WAIT FOR INFRASTRUCTURE COMPLETION
 - **Implementation Priority**: #5 in the development sequence
 - **Why Last**: Should only begin when everything else is complete and stable
-- **Dependencies**: Session Management (#1), Integration Testing (#2), Transaction Log Completion (#3), WebSocket Completion (#4)
+- **Dependencies**: Multi-Graph Support Completion, Transaction Log Completion, WebSocket Completion, Integration Testing
 
-### 4. Knowledge Graph Function Implementation
+### 7. Knowledge Graph Function Implementation
 - [ ] Create `src/kg_functions.rs` module for native function implementations
 - [ ] Implement core KG tool functions:
   - [ ] `kg_query_nodes(query: String) -> Vec<NodeInfo>` - BFS traversal with search
@@ -86,48 +146,48 @@ Integrate the aichat-agent library as a git submodule in Cymbiont to provide LLM
 - [ ] Add error handling and validation
 - [ ] Write unit tests for each function
 
-### 5. Function Registry Integration
+### 8. Function Registry Integration
 - [ ] Create `FunctionRegistry` instance with KG functions
 - [ ] Map Rust functions to AIChat's function calling format
 - [ ] Handle async operations if GraphManager requires them
 - [ ] Test function execution through the registry
 - [ ] Add function documentation and examples
 
-### 6. Knowledge Graph Agent Definition
+### 9. Knowledge Graph Agent Definition
 - [ ] Create agent definition using `AgentDefinitionBuilder`
 - [ ] Write agent instructions for KG-aware responses
 - [ ] Configure agent with available KG functions
 - [ ] Set appropriate model and temperature settings
 - [ ] Save agent definition to appropriate directory structure
 
-### 7. REPL Integration and Testing
+### 10. REPL Integration and Testing
 - [ ] Create main entry point for Cymbiont REPL mode
 - [ ] Initialize `TempConfigBuilder` with API keys from config
 - [ ] Set up `ReplSession` with KG functions and agent
 - [ ] Add command-line arguments for REPL vs server mode
 - [ ] Test full conversation flow with KG queries
 
-### 8. Configuration and Deployment
+### 11. Configuration and Deployment
 - [ ] Update `config.yaml` with AIChat-related settings
 - [ ] Create example configurations for different use cases
 - [ ] Update Cymbiont CLI to support agent commands
 - [ ] Document configuration options in README
 
-### 9. Integration Testing
+### 12. Integration Testing
 - [ ] Create integration tests for agent + KG scenarios
 - [ ] Test error handling and edge cases
 - [ ] Verify agent maintains conversation context
 - [ ] Test with different LLM providers (Claude, GPT-4, etc.)
 - [ ] Ensure KG modifications are reflected in agent responses
 
-### 10. Documentation
+### 13. Documentation
 - [ ] Write user guide for knowledge graph agent usage
 - [ ] Document available KG functions and examples
 - [ ] Create architecture diagram showing integration
 - [ ] Add inline code documentation for new modules
 - [ ] Update README with agent capabilities
 
-### 11. Final Polish
+### 14. Final Polish
 - [ ] Clean up any debugging code or logs
 - [ ] Remove temporary test code
 - [ ] Ensure all error messages are user-friendly
@@ -141,6 +201,8 @@ Integrate the aichat-agent library as a git submodule in Cymbiont to provide LLM
 - Consistent error handling and validation
 
 ## Future Tasks
+
+### AIChat-Agent Integration Future Tasks
 - Implement automatic context injection from recent KG queries
 - Add relevance scoring for KG results
 - Create context windowing to stay within token limits
@@ -158,6 +220,49 @@ Integrate the aichat-agent library as a git submodule in Cymbiont to provide LLM
 - Build collaborative features for shared knowledge graphs
 - Implement incremental indexing for large knowledge bases
 - Add support for external knowledge sources beyond Logseq
+
+### Multi-Graph Support Future Tasks (from feature_taskpad_multi_graph_support.md)
+- Enhanced session management (multiple simultaneous Logseq instances)
+- Graph preloading and caching for instant switching
+- Graph-specific plugin configurations
+- Cross-graph query capabilities (with explicit permission)
+- Graph migration tools (move data between graphs using internal IDs)
+- Multi-graph dashboard for monitoring all registered graphs
+- Automatic graph discovery and registration with ID assignment
+- Graph-level access control and permissions
+- Performance optimization for many graphs
+- Graph templates and inheritance
+- Internal ID remapping tool (emergency use only)
+
+### Transaction Log Future Tasks (from feature_taskpad_transaction_log_wal.md)
+- Distributed transaction support for multi-instance Cymbiont
+- Streaming replication to secondary instances
+- Point-in-time recovery ("show me the graph as of timestamp X")
+- Transaction history UI in a web interface
+- Prometheus metrics export for monitoring
+- Compression for old log segments
+- Encryption at rest for log files
+- Multi-version concurrency control (MVCC) for read consistency
+- Saga pattern implementation for long-running workflows
+
+### WebSocket Bidirectional Future Tasks (from feature_taskpad_websocket_bidirectional.md)
+- Comprehensive integration tests with real Logseq API
+- Mock Logseq API for unit testing (complex due to browser environment)
+- Test reconnection scenarios (kill server, kill plugin, network issues)
+- Load testing with rapid command sequences
+- Edge case testing (non-existent blocks, permission errors)
+- Multi-graph support testing
+- Binary protocol optimization (MessagePack) if JSON becomes bottleneck
+- Command compression for large content blocks
+- WebSocket connection pooling for multiple graph support
+- Live collaborative features (see other users' cursors)
+- Streaming responses for long-running operations
+- WebRTC data channel for P2P sync between devices
+- Command history and undo/redo support
+- Rate limiting to prevent runaway agents
+- Metrics dashboard for monitoring command flow
+- Plugin-side command validation before sending
+- Connection status UI indicators in plugin
 
 ## Final Implementation
 {To be completed when the integration is finished - will contain authoritative summary of what was built}

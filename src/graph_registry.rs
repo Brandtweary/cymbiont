@@ -51,28 +51,31 @@
 //! ## Usage Patterns
 //!
 //! ### Plugin Initialization
-//! ```rust
+//! ```rust,no_run
+//! # use cymbiont::graph_registry::GraphRegistry;
+//! # let mut registry = GraphRegistry::new();
 //! // Plugin sends graph context via headers
-//! let headers = extract_graph_headers(&request)?;
-//! let (graph_info, is_new) = registry.validate_and_switch_graph(
-//!     headers.graph_id.as_deref(),
-//!     &headers.graph_name,
-//!     &headers.graph_path
-//! )?;
+//! let (graph_info, is_new) = registry.validate_and_switch(
+//!     Some("My Graph"),
+//!     Some("path/to/graph"),
+//!     Some("optional-uuid")
+//! ).unwrap();
 //! ```
 //!
 //! ### Graph Management
-//! ```rust
+//! ```rust,no_run
+//! # use cymbiont::graph_registry::GraphRegistry;
+//! # let mut registry = GraphRegistry::new();
 //! // Register new graph
 //! let graph_info = registry.register_graph(
 //!     "My Knowledge Base".to_string(),
 //!     "/path/to/graph".to_string(),
 //!     None  // Auto-generate UUID
-//! )?;
+//! ).unwrap();
 //!
 //! // Get active graph
 //! if let Some(active_id) = registry.get_active_graph_id() {
-//!     let graph_info = registry.get_graph(&active_id)?;
+//!     let graph_info = registry.get_graph(&active_id).unwrap();
 //! }
 //! ```
 //!
@@ -98,7 +101,7 @@ use std::fs;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
-use tracing::{info, warn};
+use tracing::{info, warn, error};
 use thiserror::Error;
 
 /// Graph registry errors
@@ -182,23 +185,31 @@ impl GraphRegistry {
 
     /// Register a new graph or update existing
     pub fn register_graph(&mut self, name: String, path: String, id: Option<String>) -> Result<GraphInfo> {
-        // Check if we already know this graph by name/path
+        // Check if we already know this graph by name/path BEFORE normalizing
         let existing_id = self.find_graph_id(&name, &path);
         
         let graph_id = match (existing_id, id) {
             // Graph exists and client knows the ID - verify they match
             (Some(existing), Some(provided)) => {
                 if existing != provided {
-                    warn!(
-                        "Graph ID mismatch for {}: expected {}, got {}",
+                    error!(
+                        "Graph ID mismatch for {}: registry has {}, config.edn has {}. This is a serious data integrity issue!",
                         name, existing, provided
                     );
+                    // Recovery: If name AND path match, we can be confident it's the same graph
+                    // Update the registry to use the ID from config.edn
+                    warn!(
+                        "🔧 UUID Recovery: Since name '{}' AND path '{}' match, updating registry to use config.edn ID: {}",
+                        name, path, provided
+                    );
+                    provided  // Use the ID from config.edn
+                } else {
+                    existing
                 }
-                existing
             },
             // Graph exists but client doesn't know the ID - RECOVERY MODE
             (Some(existing), None) => {
-                warn!(
+                info!(
                     "🔧 UUID Recovery: Graph '{}' at '{}' is missing its UUID. \
                     Recovering with existing ID: {} (matched by name AND path)",
                     name, path, existing
@@ -217,7 +228,7 @@ impl GraphRegistry {
         let graph_info = GraphInfo {
             id: graph_id.clone(),
             name,
-            path,
+            path,  // Store the path as provided, not normalized
             kg_path,
             last_seen: Utc::now(),
             config_updated: false,
@@ -237,8 +248,53 @@ impl GraphRegistry {
     /// Returns a match only if BOTH name AND path match (safe recovery)
     fn find_graph_id(&self, name: &str, path: &str) -> Option<String> {
         self.graphs.iter()
-            .find(|(_, info)| info.name == name && info.path == path)
+            .find(|(_, info)| {
+                // Compare both exact paths AND normalized paths to handle duplicates
+                let paths_match = info.path == path || Self::paths_equivalent(&info.path, path);
+                info.name == name && paths_match
+            })
             .map(|(id, _)| id.clone())
+    }
+    
+    /// Check if two paths refer to the same location
+    /// Handles relative vs absolute path comparisons
+    pub fn paths_equivalent(path1: &str, path2: &str) -> bool {
+        // Quick exact match check
+        if path1 == path2 {
+            return true;
+        }
+        
+        // Try to resolve both paths to canonical form
+        let p1 = PathBuf::from(path1);
+        let p2 = PathBuf::from(path2);
+        
+        // If both are relative, compare as strings to avoid PathBuf normalization
+        if p1.is_relative() && p2.is_relative() {
+            return path1 == path2;
+        }
+        
+        // Try to canonicalize for comparison
+        let canonical1 = if p1.is_relative() {
+            std::env::current_dir()
+                .ok()
+                .and_then(|cwd| cwd.join(&p1).canonicalize().ok())
+        } else {
+            p1.canonicalize().ok()
+        };
+        
+        let canonical2 = if p2.is_relative() {
+            std::env::current_dir()
+                .ok()
+                .and_then(|cwd| cwd.join(&p2).canonicalize().ok())
+        } else {
+            p2.canonicalize().ok()
+        };
+        
+        // If we could canonicalize both, compare them
+        match (canonical1, canonical2) {
+            (Some(c1), Some(c2)) => c1 == c2,
+            _ => false
+        }
     }
 
     /// Get graph info by ID
@@ -328,12 +384,23 @@ impl GraphRegistry {
             .map(|info| info.config_updated)
             .unwrap_or(false)
     }
+    
+    /// Get all registered graphs
+    pub fn get_all_graphs(&self) -> Vec<GraphInfo> {
+        self.graphs.values().cloned().collect()
+    }
+
+    /// Get the currently active graph ID
+    pub fn get_active_graph_id(&self) -> Option<&str> {
+        self.active_graph_id.as_deref()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
+    use std::env;
 
     #[test]
     fn test_new_registry() {
@@ -408,5 +475,160 @@ mod tests {
         
         // Should get a different ID (AND logic for safety)
         assert_ne!(info1.id, info3.id);
+    }
+
+    #[test]
+    fn test_paths_equivalent_exact_match() {
+        assert!(GraphRegistry::paths_equivalent("foo/bar", "foo/bar"));
+        assert!(GraphRegistry::paths_equivalent("/abs/path", "/abs/path"));
+    }
+
+    #[test]
+    fn test_paths_equivalent_both_relative() {
+        assert!(GraphRegistry::paths_equivalent("foo/bar", "foo/bar"));
+        assert!(!GraphRegistry::paths_equivalent("foo/bar", "foo/baz"));
+        assert!(!GraphRegistry::paths_equivalent("foo/bar", "bar/foo"));
+    }
+
+    #[test]
+    fn test_paths_equivalent_with_temp_dir() {
+        let temp = tempdir().unwrap();
+        let subdir = temp.path().join("subdir");
+        fs::create_dir_all(&subdir).unwrap();
+        
+        // Change to temp directory to test relative paths
+        let original_dir = env::current_dir().unwrap();
+        env::set_current_dir(&temp.path()).unwrap();
+        
+        // Test relative vs absolute
+        let abs_path = subdir.to_str().unwrap();
+        assert!(GraphRegistry::paths_equivalent("subdir", abs_path));
+        assert!(GraphRegistry::paths_equivalent(abs_path, "subdir"));
+        
+        // Restore original directory
+        env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    fn test_duplicate_prevention_relative_absolute() {
+        let mut registry = GraphRegistry::new();
+        
+        // Create a temp directory to ensure paths exist
+        let temp = tempdir().unwrap();
+        let graph_dir = temp.path().join("test_graph");
+        fs::create_dir_all(&graph_dir).unwrap();
+        
+        let original_dir = env::current_dir().unwrap();
+        env::set_current_dir(&temp.path()).unwrap();
+        
+        // Register with relative path
+        let info1 = registry.register_graph(
+            "TestGraph".to_string(),
+            "test_graph".to_string(),
+            None
+        ).unwrap();
+        
+        // Try to register with absolute path - should get same ID
+        let abs_path = graph_dir.to_str().unwrap().to_string();
+        let info2 = registry.register_graph(
+            "TestGraph".to_string(),
+            abs_path,
+            None
+        ).unwrap();
+        
+        assert_eq!(info1.id, info2.id, "Should not create duplicate for relative/absolute path");
+        assert_eq!(registry.graphs.len(), 1, "Should only have one graph registered");
+        
+        env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    fn test_path_normalization_edge_cases() {
+        // For relative paths, we do exact string comparison
+        assert!(!GraphRegistry::paths_equivalent("foo/bar", "foo/bar/"));
+        assert!(!GraphRegistry::paths_equivalent("foo/bar/", "foo/bar"));
+        
+        // Test paths with . and .. - won't be equivalent without canonicalization
+        assert!(!GraphRegistry::paths_equivalent("foo/./bar", "foo/bar"));
+        assert!(!GraphRegistry::paths_equivalent("foo/../foo/bar", "foo/bar"));
+        
+        // Different paths should not be equivalent
+        assert!(!GraphRegistry::paths_equivalent("foo", "bar"));
+        assert!(!GraphRegistry::paths_equivalent("/abs/foo", "/abs/bar"));
+    }
+
+    #[test]
+    fn test_registry_with_nonexistent_paths() {
+        let mut registry = GraphRegistry::new();
+        
+        // Should still work with non-existent paths
+        let info1 = registry.register_graph(
+            "TestGraph".to_string(),
+            "nonexistent/path".to_string(),
+            None
+        ).unwrap();
+        
+        // Should find it again
+        let info2 = registry.register_graph(
+            "TestGraph".to_string(),
+            "nonexistent/path".to_string(),
+            None
+        ).unwrap();
+        
+        assert_eq!(info1.id, info2.id);
+    }
+
+    #[test]
+    fn test_windows_vs_unix_paths() {
+        // Even on Unix, we should handle Windows-style paths gracefully
+        let mut registry = GraphRegistry::new();
+        
+        // These should be treated as different paths
+        let info1 = registry.register_graph(
+            "TestGraph".to_string(),
+            "C:\\Users\\test".to_string(),
+            None
+        ).unwrap();
+        
+        let info2 = registry.register_graph(
+            "TestGraph".to_string(),
+            "C:/Users/test".to_string(),
+            None
+        ).unwrap();
+        
+        // On Unix, these are different paths
+        // On Windows, they might be the same (but we're not on Windows in CI)
+        #[cfg(unix)]
+        assert_ne!(info1.id, info2.id);
+    }
+
+    #[test]
+    fn test_find_graph_id_with_path_variations() {
+        let mut registry = GraphRegistry::new();
+        
+        // Register a graph
+        registry.register_graph(
+            "TestGraph".to_string(),
+            "some/relative/path".to_string(),
+            Some("test-id".to_string())
+        ).unwrap();
+        
+        // Should find it with exact path
+        assert_eq!(
+            registry.find_graph_id("TestGraph", "some/relative/path"),
+            Some("test-id".to_string())
+        );
+        
+        // Should not find with different name
+        assert_eq!(
+            registry.find_graph_id("OtherGraph", "some/relative/path"),
+            None
+        );
+        
+        // Should not find with different path
+        assert_eq!(
+            registry.find_graph_id("TestGraph", "different/path"),
+            None
+        );
     }
 }

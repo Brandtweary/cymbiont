@@ -583,9 +583,75 @@ window.KnowledgeGraphAPI.websocket = {
         }
         break;
         
+      case 'graph_switch_requested':
+        // Backend is switching graphs - start polling for change
+        console.info(`WebSocket: Graph switch requested to ${response.target_graph_name}`);
+        this.startGraphChangeDetection(response.target_graph_id, response.target_graph_name, response.target_graph_path);
+        break;
+        
       default:
         console.warn('WebSocket: Unknown response type:', response.type);
     }
+  },
+  
+  /**
+   * Start polling for graph change detection
+   * @param {string} targetGraphId - Expected graph ID after switch
+   * @param {string} targetGraphName - Expected graph name after switch
+   * @param {string} targetGraphPath - Expected graph path after switch
+   */
+  async startGraphChangeDetection(targetGraphId, targetGraphName, targetGraphPath) {
+    const maxAttempts = 20; // 10 seconds with 500ms intervals
+    let attempts = 0;
+    let lastGraphPath = null;
+    
+    const checkInterval = setInterval(async () => {
+      try {
+        const currentGraph = await logseq.App.getCurrentGraph();
+        
+        if (currentGraph && currentGraph.path) {
+          // Check if graph actually changed
+          if (currentGraph.path !== lastGraphPath) {
+            lastGraphPath = currentGraph.path;
+            
+            // Graph changed - send confirmation
+            clearInterval(checkInterval);
+            
+            // Read the graph ID from config.edn for the current graph
+            let graphId = '';
+            try {
+              const graphConfigs = await logseq.App.getCurrentGraphConfigs();
+              graphId = graphConfigs['cymbiont/graph-id'] || '';
+            } catch (error) {
+              console.error('WebSocket: Failed to read graph ID from config:', error);
+            }
+            
+            this.send({
+              type: 'graph_switch_confirmed',
+              graph_id: graphId,
+              graph_name: currentGraph.name,
+              graph_path: currentGraph.path
+            });
+            
+            console.info(`WebSocket: Graph switch confirmed - ${currentGraph.name}`);
+            window.KnowledgeGraphAPI.log.info('Graph switch confirmed', {
+              graph_id: graphId,
+              graph_name: currentGraph.name,
+              graph_path: currentGraph.path
+            });
+          }
+        }
+        
+        if (++attempts >= maxAttempts) {
+          clearInterval(checkInterval);
+          console.error('WebSocket: Graph switch detection timeout');
+          window.KnowledgeGraphAPI.log.error('Graph switch detection timeout after 10 seconds');
+        }
+      } catch (error) {
+        clearInterval(checkInterval);
+        console.error('WebSocket: Error during graph change detection:', error);
+      }
+    }, 500);
   },
   
   /**

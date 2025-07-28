@@ -334,5 +334,5 @@ cargo run [OPTIONS]
 ## Development Constraints
 - No debug logs in production code
 - Dead code must be removed (no `_` prefixes)
-- Tests run with default 3s duration
+- Server runs with default 3s duration
 - Plugin requires backend running first

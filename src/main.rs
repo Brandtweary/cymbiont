@@ -179,7 +179,13 @@ impl AppState {
     /// Set the active graph ID
     pub async fn set_active_graph(&self, graph_id: String) {
         let mut active = self.active_graph_id.write().await;
-        *active = Some(graph_id);
+        *active = Some(graph_id.clone());
+        drop(active); // Release the write lock before calling session manager
+        
+        // Notify session manager that this graph is now active
+        if let Err(e) = self.session_manager.on_graph_active(&graph_id).await {
+            error!("Failed to update session for active graph: {}", e);
+        }
     }
 }
 

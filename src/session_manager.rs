@@ -1,16 +1,27 @@
 //! Session Manager: Logseq Database Session Management
 //!
-//! This module provides session management for launching Logseq with specific databases
+//! This module provides comprehensive session management for launching Logseq with specific databases
 //! and switching between them using the URL scheme. It coordinates with the GraphRegistry
 //! to resolve user-friendly names and paths to internal graph IDs.
+//!
+//! ## Overview
+//!
+//! The SessionManager is responsible for:
+//! - Launching Logseq with a specific graph database
+//! - Switching between graphs using the `logseq://graph/{name}` URL scheme
+//! - Tracking the active graph session state
+//! - Persisting the last active graph for automatic restoration
+//! - Coordinating graph switches with the plugin via WebSocket confirmation
 //!
 //! ## Key Features
 //!
 //! - **Flexible Launch**: Support for last active, configured default, or CLI-specified database
 //! - **Name/Path Resolution**: Accept both database names and paths, resolving to graph IDs
 //! - **Pre-registration**: Register configured databases before first connection
-//! - **Session Persistence**: Remember last active database across restarts
-//! - **Platform Support**: Cross-platform URL scheme invocation
+//! - **Session Persistence**: Remember last active database across restarts in `data/last_session.json`
+//! - **Platform Support**: Cross-platform URL scheme invocation (Linux/macOS/Windows)
+//! - **Confirmation Mechanism**: Wait for plugin confirmation when switching graphs
+//! - **Timeout Handling**: 10-second timeout for graph switch confirmations
 //!
 //! ## Launch Behavior
 //!
@@ -18,6 +29,30 @@
 //! 1. CLI override (--graph or --graph-path)
 //! 2. Config preference (launch_specific_database)
 //! 3. Last active database (default behavior)
+//!
+//! ## Session States
+//!
+//! The session can be in one of four states:
+//! - `Inactive`: No Logseq process running
+//! - `Starting`: Logseq is launching
+//! - `Active { graph_id }`: Logseq running with specific graph
+//! - `Switching { from_id, to_id }`: Transitioning between graphs
+//!
+//! ## API Integration
+//!
+//! The module exposes HTTP endpoints via the main API:
+//! - `POST /api/session/switch`: Switch to a different graph
+//! - `GET /api/session/current`: Get current session information
+//! - `GET /api/session/databases`: List all registered databases
+//!
+//! ## WebSocket Integration
+//!
+//! Graph switches can be confirmed via WebSocket using the `GraphSwitchNotifier` trait:
+//! 1. Backend sends `graph_switch_requested` command
+//! 2. Plugin detects graph change and sends `graph_switch_confirmed`
+//! 3. SessionManager updates state only after confirmation
+//!
+//! This ensures the backend's state accurately reflects what graph Logseq has loaded.
 
 use crate::graph_registry::GraphRegistry;
 use crate::config::LogseqConfig;
@@ -559,6 +594,21 @@ impl SessionManager {
             let _ = sender.send(());
             info!("Graph switch to {} confirmed by plugin", graph_id);
         }
+    }
+    
+    /// Update session when a graph becomes active (e.g., on plugin initialization)
+    pub async fn on_graph_active(&self, graph_id: &str) -> Result<()> {
+        // Update session state
+        {
+            let mut state = self.session_state.write().await;
+            *state = SessionState::Active { graph_id: graph_id.to_string() };
+        }
+        
+        // Save as last active
+        self.save_last_active(graph_id)?;
+        
+        info!("Session updated: graph {} is now active", graph_id);
+        Ok(())
     }
 }
 

@@ -379,8 +379,8 @@ async function validateConfigProperties() {
     const hiddenProps = graphConfigs['block-hidden-properties'];
     KnowledgeGraphAPI.log.debug('Hidden props from config', {hiddenProps});
     const hasHiddenProperty = !!(hiddenProps && 
-      (Array.isArray(hiddenProps) ? hiddenProps.includes(':cymbiont-updated-ms') : 
-       typeof hiddenProps === 'string' && hiddenProps.includes(':cymbiont-updated-ms')));
+      (Array.isArray(hiddenProps) ? hiddenProps.includes('cymbiont-updated-ms') : 
+       typeof hiddenProps === 'string' && hiddenProps.includes('cymbiont-updated-ms')));
     
     // Check for graph ID
     const graphId = graphConfigs['cymbiont/graph-id'];

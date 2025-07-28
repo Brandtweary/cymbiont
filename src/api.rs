@@ -998,9 +998,9 @@ async fn graph_validation_middleware(
     let graph_context = GraphContext::from_headers(req.headers());
     let path = req.uri().path().to_string();
     
-    // Only log non-heartbeat requests
+    // Only log non-heartbeat requests at trace level
     if path != "/" {
-        debug!("Middleware processing request to {} with graph context: {:?}", path, graph_context);
+        trace!("Middleware processing request to {} with graph context: {:?}", path, graph_context);
     }
     
     // Skip validation for certain endpoints
@@ -1013,7 +1013,7 @@ async fn graph_validation_middleware(
         // Validate and switch graph
         let (graph_info, is_new) = {
             let mut registry = state.graph_registry.lock().unwrap();
-            debug!("Calling validate_and_switch with name={:?}, path={:?}, id={:?}", 
+            trace!("Calling validate_and_switch with name={:?}, path={:?}, id={:?}", 
                   graph_context.graph_name.as_deref(),
                   graph_context.graph_path.as_deref(),
                   graph_context.graph_id.as_deref());
@@ -1051,7 +1051,6 @@ async fn graph_validation_middleware(
                         }
                     }
                     
-                    // TODO: Create SessionManager to handle graph switching
                     info!("📊 Switching to graph: {} ({})", graph_info.name, graph_info.id);
                     
                     // Ensure graph manager exists

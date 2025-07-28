@@ -14,6 +14,8 @@ RUST_LOG=debug cargo run         # Run backend server with debug logging (do not
 - `--duration <SECONDS>`: Run server for a specific duration in seconds (to run indefinitely, set default_duration to null in config.yaml )
 - `--force-incremental-sync`: Force an incremental sync (updates modified blocks/pages since last sync and catches deletion events)
 - `--force-full-sync`: Force a full database sync (needed if block content is being modified by external tools)
+- `--graph <NAME>`: Launch with specific graph by name
+- `--graph-path <PATH>`: Launch with specific graph by path
 
 ## Architecture
 - See `cymbiont_architecture.md` for comprehensive codebase architecture
@@ -41,6 +43,7 @@ RUST_LOG=debug cargo run         # Run backend server with debug logging (do not
   - **saga.rs**: Saga pattern for multi-step workflows
   - **kg_api.rs**: Public API for knowledge graph operations
   - **graph_registry.rs**: Multi-graph identification and management
+  - **session_manager.rs**: Logseq database session management and switching
   - **edn.rs**: EDN format manipulation for config.edn
 - **tests/**: Integration tests
 - **Cargo.toml**: Dependencies and metadata

@@ -17,6 +17,7 @@ cymbiont/
 │   ├── transaction_log.rs         # WAL with sled, content hash indexing
 │   ├── transaction.rs             # Transaction lifecycle and state machine
 │   ├── saga.rs                    # Multi-step workflow coordination
+│   ├── session_manager.rs         # Logseq database session management
 │   └── edn.rs                     # EDN format manipulation for config.edn
 ├── logseq_plugin/
 │   ├── index.js                   # Plugin lifecycle, graph identification, DB monitoring
@@ -36,13 +37,13 @@ cymbiont/
 
 ### main.rs
 **Purpose**: Server entry point and lifecycle orchestration  
-**Manages**: AppState, server runtime, graph coordination  
+**Manages**: AppState, server runtime, graph coordination, session management  
 **Requires**: All modules via AppState injection  
 **Data flow**:
 ```
-CLI args → Config loading → AppState init → HTTP server → Graph registry → Active graph selection
+CLI args → Config loading → AppState init → Session manager → Logseq launch → HTTP server → Graph registry → Active graph selection
 ```
-**Key types**: `AppState { graph_managers: HashMap<String, RwLock<GraphManager>>, websocket, active_graph_id }`
+**Key types**: `AppState { graph_managers: HashMap<String, RwLock<GraphManager>>, websocket, active_graph_id, session_manager }`
 
 ### config.rs
 **Purpose**: Configuration management  
@@ -72,6 +73,9 @@ HTTP request → Graph validation (headers) → Handler → Graph operation → 
 - `POST /config/validate` - EDN property validation
 - `POST /log` - Plugin logging
 - `GET /ws` - WebSocket upgrade
+- `POST /api/session/switch` - Switch to different graph
+- `GET /api/session/current` - Get current session info
+- `GET /api/session/databases` - List all registered databases
 
 ### graph_manager.rs
 **Purpose**: Per-graph petgraph storage  
@@ -122,6 +126,24 @@ Transaction → Serialize → WAL append → Content hash index → Pending queu
 **Requires**: TransactionLog integration  
 **States**: `Active` → `WaitingForAck` → `Committed`
 
+### session_manager.rs
+**Purpose**: Logseq database session management  
+**Manages**: Graph launch, switching, session persistence  
+**Requires**: GraphRegistry, URL scheme invocation  
+**Data flow**:
+```
+CLI/API request → Resolve name/path → Open logseq://graph/{name} → Wait for confirmation → Update state
+```
+**Key features**:
+- Launch with `--graph` or `--graph-path` CLI args
+- Platform-specific URL opening (Linux/macOS/Windows)
+- WebSocket confirmation mechanism with timeout
+- Session persistence in `data/last_session.json`
+**API endpoints**:
+- `POST /api/session/switch` - Switch to different graph
+- `GET /api/session/current` - Get current session info
+- `GET /api/session/databases` - List all registered databases
+
 ### websocket.rs
 **Purpose**: Bidirectional communication  
 **Manages**: Connection management, command routing  
@@ -131,8 +153,8 @@ Transaction → Serialize → WAL append → Content hash index → Pending queu
 Client connect → Auth command → Authenticated state → Command dispatch → Broadcast to clients
 ```
 **Commands**:
-- Client→Server: `auth`, `heartbeat`, `test`, acknowledgments
-- Server→Client: `create_block`, `update_block`, `delete_block`, `create_page`
+- Client→Server: `auth`, `heartbeat`, `test`, `graph_switch_confirmed`, acknowledgments
+- Server→Client: `create_block`, `update_block`, `delete_block`, `create_page`, `graph_switch_requested`
 
 ### edn.rs
 **Purpose**: EDN format manipulation  
@@ -219,10 +241,12 @@ Sync timer → Status check → Page/block query → Filter by timestamp → Bat
 {"type": "auth", "token": "dummy"}
 {"type": "heartbeat"}
 {"type": "BlockCreated", "correlation_id": "...", "uuid": "..."}
+{"type": "graph_switch_confirmed", "graph_id": "...", "graph_name": "...", "graph_path": "..."}
 
 // Server → Client
 {"type": "create_block", "correlation_id": "...", "temp_id": "...", "content": "..."}
 {"type": "update_block", "correlation_id": "...", "uuid": "...", "content": "..."}
+{"type": "graph_switch_requested", "target_graph_id": "...", "target_graph_name": "...", "target_graph_path": "..."}
 ```
 
 ## Persistence Layout
@@ -236,6 +260,10 @@ data/graphs/{graph-id}/
 └── transaction_log/              # Per-graph WAL
     ├── data.mdb
     └── lock.mdb
+
+data/
+├── graph_registry.json           # Registry of all graphs
+└── last_session.json             # Session persistence
 ```
 
 ### Graph Registry
@@ -283,6 +311,8 @@ cargo run [OPTIONS]
   --force-incremental-sync       Force incremental sync
   --force-full-sync             Force full sync
   --test-websocket <COMMAND>    Test WebSocket commands
+  --graph <NAME>                Launch with specific graph by name
+  --graph-path <PATH>           Launch with specific graph by path
 ```
 
 ## Testing Entry Points

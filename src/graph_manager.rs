@@ -4,7 +4,7 @@
  * 
  * This module is the heart of Cymbiont's knowledge graph implementation, providing
  * persistent graph storage using petgraph's StableGraph structure. All PKM data (pages
- * and blocks from Logseq) are stored as nodes in a directed graph with typed edges
+ * and blocks from PKM sources) are stored as nodes in a directed graph with typed edges
  * representing various relationships.
  * 
  * ## Architecture Overview
@@ -21,9 +21,9 @@
  * This is critical for our HashMap-based ID mapping system, preventing index invalidation.
  * 
  * ### Dual ID System
- * - **PKM ID**: Original Logseq identifier (block UUID or page name)
+ * - **PKM ID**: Original PKM identifier (block UUID or page name)
  * - **Internal ID**: UUID generated for graph serialization compatibility
- * This allows the graph to be self-contained while maintaining Logseq references.
+ * This allows the graph to be self-contained while maintaining external references.
  * 
  * ### Reference Resolution Strategy
  * When processing references to non-existent nodes, the system creates placeholder nodes:
@@ -41,10 +41,10 @@
  * 
  * ### NodeData Structure
  * - `id`: Internal UUID for serialization
- * - `pkm_id`: Original Logseq identifier
+ * - `pkm_id`: Original PKM identifier
  * - `node_type`: Page or Block enum
  * - `content`: Page name or block text
- * - `properties`: HashMap of Logseq properties
+ * - `properties`: HashMap of node properties
  * - `created_at` / `updated_at`: Timestamps parsed from multiple formats
  * 
  * ### Edge Types and Semantics
@@ -68,10 +68,6 @@
  * - `load_graph()`: Deserialize from disk on startup
  * - `save_if_needed()`: Auto-save trigger logic
  * 
- * ### Sync Management
- * - `get_sync_status()`: Returns sync metadata and graph statistics
- * - `is_full_sync_needed()`: 2-hour threshold check
- * - `update_full_sync_timestamp()`: Mark successful sync completion
  * 
  * ### Internal Helpers
  * - `has_edge()`: Duplicate edge prevention
@@ -463,101 +459,6 @@ impl GraphManager {
             .and_then(|&idx| self.graph.node_weight(idx))
     }
     
-    /// Get the current sync status
-    pub fn get_sync_status(&self, config: &crate::config::SyncConfig) -> serde_json::Value {
-        let now = Utc::now().timestamp_millis();
-        
-        // Calculate hours since each sync type
-        let hours_since_incremental = self.last_incremental_sync.map(|last_sync| {
-            (now - last_sync) as f64 / (1000.0 * 60.0 * 60.0)
-        });
-        
-        let hours_since_full = self.last_full_sync.map(|last_sync| {
-            (now - last_sync) as f64 / (1000.0 * 60.0 * 60.0)
-        });
-        
-        // Convert Unix timestamps to ISO strings for JavaScript consumption
-        let last_incremental_sync_iso = self.last_incremental_sync.map(|timestamp| {
-            DateTime::<Utc>::from_timestamp_millis(timestamp)
-                .map(|dt| dt.to_rfc3339())
-                .unwrap_or_else(|| "invalid".to_string())
-        });
-        
-        let last_full_sync_iso = self.last_full_sync.map(|timestamp| {
-            DateTime::<Utc>::from_timestamp_millis(timestamp)
-                .map(|dt| dt.to_rfc3339())
-                .unwrap_or_else(|| "invalid".to_string())
-        });
-        
-        serde_json::json!({
-            // Legacy fields for backwards compatibility
-            "last_full_sync": self.last_incremental_sync,
-            "last_full_sync_iso": last_incremental_sync_iso.clone(),
-            "hours_since_sync": hours_since_incremental,
-            "full_sync_needed": self.is_incremental_sync_needed(config.incremental_interval_hours),
-            
-            // New detailed fields
-            "last_incremental_sync": self.last_incremental_sync,
-            "last_incremental_sync_iso": last_incremental_sync_iso,
-            "hours_since_incremental": hours_since_incremental,
-            "incremental_sync_needed": self.is_incremental_sync_needed(config.incremental_interval_hours),
-            
-            "last_true_full_sync": self.last_full_sync,
-            "last_true_full_sync_iso": last_full_sync_iso,
-            "hours_since_full": hours_since_full,
-            "true_full_sync_needed": self.is_true_full_sync_needed(config),
-            
-            // Configuration info
-            "sync_config": {
-                "incremental_interval_hours": config.incremental_interval_hours,
-                "full_interval_hours": config.full_interval_hours,
-                "enable_full_sync": config.enable_full_sync,
-            },
-            
-            // Graph stats
-            "node_count": self.graph.node_count(),
-            "edge_count": self.graph.edge_count(),
-        })
-    }
-    
-    /// Check if an incremental sync is needed based on time since last sync
-    pub fn is_incremental_sync_needed(&self, interval_hours: u64) -> bool {
-        let now = Utc::now().timestamp_millis();
-        
-        self.last_incremental_sync.map_or_else(|| {
-            info!("Incremental sync needed: No previous sync found");
-            true
-        }, |last_sync| {
-            let hours_since_sync = (now - last_sync) / (1000 * 60 * 60);
-            let sync_needed = hours_since_sync > interval_hours as i64;
-            
-            trace!("Last incremental sync: {last_sync}, Hours since sync: {hours_since_sync}, Incremental sync needed: {sync_needed}");
-            
-            sync_needed
-        })
-    }
-    
-    /// Check if a true full sync is needed (re-sync entire PKM)
-    pub fn is_true_full_sync_needed(&self, config: &crate::config::SyncConfig) -> bool {
-        // Full sync disabled by configuration
-        if !config.enable_full_sync {
-            return false;
-        }
-        
-        let now = Utc::now().timestamp_millis();
-        
-        self.last_full_sync.map_or_else(|| {
-            info!("True full sync needed: No previous full sync found");
-            true
-        }, |last_sync| {
-            let hours_since_sync = (now - last_sync) / (1000 * 60 * 60);
-            let sync_needed = hours_since_sync > config.full_interval_hours as i64;
-            
-            trace!("Last full sync: {last_sync}, Hours since sync: {hours_since_sync}, True full sync needed: {sync_needed}");
-            
-            sync_needed
-        })
-    }
     
     /// Update the last incremental sync timestamp
     pub fn update_incremental_sync_timestamp(&mut self) -> GraphResult<()> {

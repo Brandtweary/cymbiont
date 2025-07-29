@@ -120,7 +120,7 @@ impl TransactionCoordinator {
         &self,
         correlation_id: &str,
         success: bool,
-        logseq_uuid: Option<String>,
+        external_uuid: Option<String>,
     ) -> Result<()> {
         // Find transaction by correlation ID
         // For now, we'll use the transaction ID as correlation ID
@@ -129,7 +129,7 @@ impl TransactionCoordinator {
         let operation = Operation::ReceivedAck {
             correlation_id: correlation_id.to_string(),
             success,
-            logseq_uuid: logseq_uuid.clone(),
+            external_uuid: external_uuid.clone(),
         };
         
         // Create a new transaction for the acknowledgment
@@ -139,7 +139,7 @@ impl TransactionCoordinator {
         // Update the original transaction state
         if success {
             self.commit_transaction(tx_id).await?;
-            info!("Transaction {} acknowledged successfully with UUID: {:?}", tx_id, logseq_uuid);
+            info!("Transaction {} acknowledged successfully with UUID: {:?}", tx_id, external_uuid);
         } else {
             self.abort_transaction(tx_id, "Acknowledgment failed").await?;
         }

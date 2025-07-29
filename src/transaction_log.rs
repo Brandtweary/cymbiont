@@ -2,7 +2,7 @@
 //!
 //! This module provides persistent transaction logging using the sled embedded database
 //! to ensure ACID guarantees for all knowledge graph operations. It serves as the foundation
-//! for coordinating between AI-generated content and real-time synchronization from Logseq.
+//! for coordinating between AI-generated content and real-time synchronization.
 //!
 //! ## Overview
 //!
@@ -10,7 +10,7 @@
 //! operations before they are applied to the knowledge graph. This enables:
 //! - **Crash Recovery**: Replay incomplete transactions after system restart
 //! - **Deduplication**: Prevent duplicate processing of echoed operations
-//! - **Coordination**: Synchronize between WebSocket commands and real-time sync
+//! - **Coordination**: Synchronize between WebSocket commands and data updates
 //! - **Audit Trail**: Complete history of all graph mutations
 //!
 //! ## Architecture
@@ -71,7 +71,7 @@
 //! # }
 //! ```
 //!
-//! This is critical for preventing echoed operations when real-time sync processes
+//! This is critical for preventing echoed operations when processing 
 //! content that was originally created via WebSocket commands.
 
 use serde::{Deserialize, Serialize};
@@ -112,7 +112,7 @@ pub enum Operation {
     UpdateNode { node_id: String, content: String },
     DeleteNode { node_id: String },
     SendWebSocket { command: String, correlation_id: String },
-    ReceivedAck { correlation_id: String, success: bool, logseq_uuid: Option<String> },
+    ReceivedAck { correlation_id: String, success: bool, external_uuid: Option<String> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

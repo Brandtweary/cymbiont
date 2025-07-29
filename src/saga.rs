@@ -217,7 +217,7 @@ impl WorkflowSagas {
         };
         let tx1_id = self.saga_coordinator.add_transaction_to_saga(&saga_id, create_op).await?;
         
-        // Step 2: Send to Logseq via WebSocket
+        // Step 2: Send via WebSocket
         let send_op = Operation::SendWebSocket {
             command: format!("create_{}", node_type),
             correlation_id: tx1_id.clone(),
@@ -236,13 +236,13 @@ impl WorkflowSagas {
         saga_id: &str,
         temp_id: &str,
         success: bool,
-        logseq_uuid: Option<String>,
+        external_uuid: Option<String>,
     ) -> Result<()> {
-        if success && logseq_uuid.is_some() {
+        if success && external_uuid.is_some() {
             // Step 3: Update mapping with real UUID
             let update_op = Operation::UpdateNode {
                 node_id: temp_id.to_string(),
-                content: format!("{{uuid: {}}}", logseq_uuid.as_ref().unwrap()),
+                content: format!("{{uuid: {}}}", external_uuid.as_ref().unwrap()),
             };
             self.saga_coordinator.add_transaction_to_saga(saga_id, update_op).await?;
             

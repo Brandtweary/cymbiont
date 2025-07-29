@@ -36,13 +36,6 @@
  * Useful for automated testing and development workflows. Production
  * deployments should leave this as None for indefinite operation.
  * 
- * ### SyncConfig
- * - `incremental_interval_hours`: Hours between incremental syncs (default: 2)
- * - `full_interval_hours`: Hours between full database syncs (default: 168/7 days)
- * - `enable_full_sync`: Whether to perform full syncs at all (default: false)
- * 
- * Incremental sync only processes blocks/pages modified since last sync.
- * Full sync re-processes the entire PKM, catching external file modifications.
  * 
  * ### Data Directory Configuration
  * - `data_dir`: Path for data storage (default: "data")
@@ -77,7 +70,6 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::fs;
 use tracing::{debug, error};
-use std::error::Error;
 
 // Configuration structure
 #[derive(Debug, Deserialize, Clone)]
@@ -85,8 +77,6 @@ pub struct Config {
     pub backend: BackendConfig,
     #[serde(default)]
     pub development: DevelopmentConfig,
-    #[serde(default)]
-    pub sync: SyncConfig,
     #[serde(default = "default_data_dir")]
     pub data_dir: String,
 }
@@ -104,27 +94,6 @@ pub struct DevelopmentConfig {
     pub default_duration: Option<u64>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
-pub struct SyncConfig {
-    #[serde(default = "default_incremental_interval_hours")]
-    pub incremental_interval_hours: u64,
-    #[serde(default = "default_full_interval_hours")]
-    pub full_interval_hours: u64,
-    #[serde(default = "default_enable_full_sync")]
-    pub enable_full_sync: bool,
-}
-
-fn default_incremental_interval_hours() -> u64 {
-    2
-}
-
-fn default_full_interval_hours() -> u64 {
-    168 // 7 days
-}
-
-fn default_enable_full_sync() -> bool {
-    false
-}
 
 fn default_data_dir() -> String {
     "data".to_string()
@@ -141,7 +110,6 @@ impl Default for Config {
             development: DevelopmentConfig {
                 default_duration: None,
             },
-            sync: SyncConfig::default(),
             data_dir: default_data_dir(),
         }
     }
@@ -155,15 +123,6 @@ impl Default for DevelopmentConfig {
     }
 }
 
-impl Default for SyncConfig {
-    fn default() -> Self {
-        SyncConfig {
-            incremental_interval_hours: default_incremental_interval_hours(),
-            full_interval_hours: default_full_interval_hours(),
-            enable_full_sync: default_enable_full_sync(),
-        }
-    }
-}
 
 // Load configuration from file
 pub fn load_config() -> Config {
@@ -230,9 +189,10 @@ mod tests {
         assert_eq!(config.backend.port, 3000);
         assert_eq!(config.backend.max_port_attempts, 10);
         assert_eq!(config.development.default_duration, None);
-        assert_eq!(config.sync.incremental_interval_hours, 2);
-        assert_eq!(config.sync.full_interval_hours, 168);
-        assert_eq!(config.sync.enable_full_sync, false);
+        // Sync configuration removed - tests preserved for reference
+        // assert_eq!(config.sync.incremental_interval_hours, 2);
+        // assert_eq!(config.sync.full_interval_hours, 168);
+        // assert_eq!(config.sync.enable_full_sync, false);
         assert_eq!(config.data_dir, "data");
     }
 
@@ -242,20 +202,21 @@ mod tests {
         assert_eq!(config.default_duration, None);
     }
 
-    #[test]
-    fn test_sync_config_default() {
-        let config = SyncConfig::default();
-        assert_eq!(config.incremental_interval_hours, 2);
-        assert_eq!(config.full_interval_hours, 168);
-        assert_eq!(config.enable_full_sync, false);
-    }
+    // Sync configuration tests removed - functionality no longer exists
+    // #[test]
+    // fn test_sync_config_default() {
+    //     let config = SyncConfig::default();
+    //     assert_eq!(config.incremental_interval_hours, 2);
+    //     assert_eq!(config.full_interval_hours, 168);
+    //     assert_eq!(config.enable_full_sync, false);
+    // }
 
-    #[test]
-    fn test_sync_default_functions() {
-        assert_eq!(default_incremental_interval_hours(), 2);
-        assert_eq!(default_full_interval_hours(), 168);
-        assert_eq!(default_enable_full_sync(), false);
-    }
+    // #[test]  
+    // fn test_sync_default_functions() {
+    //     assert_eq!(default_incremental_interval_hours(), 2);
+    //     assert_eq!(default_full_interval_hours(), 168);
+    //     assert_eq!(default_enable_full_sync(), false);
+    // }
 
     #[test]
     fn test_data_dir_default() {

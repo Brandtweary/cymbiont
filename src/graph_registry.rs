@@ -1,13 +1,13 @@
 //! Graph Registry: Multi-Graph Identification and Management
 //!
 //! This module provides the core infrastructure for Cymbiont's multi-graph architecture,
-//! enabling automatic identification, registration, and management of multiple Logseq graphs
+//! enabling automatic identification, registration, and management of multiple knowledge graphs
 //! with complete isolation between them.
 //!
 //! ## Overview
 //!
-//! The graph registry system allows Cymbiont to work with multiple Logseq graphs simultaneously
-//! by automatically identifying each graph through name and path information sent by the plugin.
+//! The graph registry system allows Cymbiont to work with multiple knowledge graphs simultaneously
+//! by automatically identifying each graph through name and path information.
 //! Each graph receives a unique UUID that remains stable across sessions, enabling consistent
 //! tracking and isolation of graph-specific data.
 //!
@@ -16,7 +16,7 @@
 //! ### GraphInfo
 //! Represents metadata for a single registered graph:
 //! - **id**: Internal Cymbiont UUID (stable identifier)
-//! - **name**: Human-readable graph name from Logseq
+//! - **name**: Human-readable graph name
 //! - **path**: File system path to the graph directory
 //! - **kg_path**: Where Cymbiont stores knowledge graph data for this graph
 //! - **last_seen**: Timestamp of last interaction with this graph
@@ -140,9 +140,9 @@ type Result<T> = std::result::Result<T, GraphRegistryError>;
 pub struct GraphInfo {
     /// Internal Cymbiont UUID
     pub id: String,
-    /// Graph name from Logseq
+    /// Graph name
     pub name: String,
-    /// Graph path from Logseq
+    /// Graph path
     pub path: String,
     /// Path where we store the knowledge graph data
     pub kg_path: PathBuf,

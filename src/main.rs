@@ -17,16 +17,14 @@
  * 
  * ## Core Features
  * 
- * - **Real-time Sync**: Automatically syncs with PKM tools to maintain an up-to-date knowledge graph
  * - **Graph-Aware Context**: Provides AI agents with understanding of relationships between concepts
  * - **Multi-Graph Support**: Manage multiple knowledge bases simultaneously with complete isolation
- * - **Incremental Updates**: Efficiently tracks changes without full database rescans
  * - **Configurable Storage**: Flexible data directory configuration for different deployment scenarios
  * 
  * ## Architecture Overview
  * 
  * Cymbiont consists of three main components:
- * 1. **Backend Server** (Rust) - This codebase: graph management, API endpoints, sync coordination
+ * 1. **Backend Server** (Rust) - This codebase: graph management, API endpoints
  * 2. **Agent Integration** - Terminal-based agents for knowledge management
  * 3. **AI Agent Integration** - Future integration with aichat-agent library for LLM capabilities
  * 
@@ -73,7 +71,6 @@
  * For comprehensive usage instructions, see README.md in the project root.
  */
 
-use async_trait::async_trait;
 use axum::Router;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -83,7 +80,7 @@ use tokio::sync::{oneshot, RwLock};
 use std::error::Error;
 use std::fs;
 use std::time::{Duration, Instant};
-use tracing::{info, warn, error, debug};
+use tracing::{info, error, debug};
 use clap::Parser;
 use std::collections::HashMap;
 
@@ -100,7 +97,6 @@ mod transaction;
 mod saga;
 mod kg_api;
 mod graph_registry;
-mod edn;
 
 use graph_manager::GraphManager;
 use graph_registry::GraphRegistry;
@@ -120,13 +116,6 @@ struct Args {
     #[arg(long)]
     duration: Option<u64>,
     
-    /// Force a full database sync on next plugin connection
-    #[arg(long)]
-    force_full_sync: bool,
-    
-    /// Force an incremental sync on next plugin connection
-    #[arg(long)]
-    force_incremental_sync: bool,
     
     /// Test WebSocket by sending a command after connection
     #[arg(long)]
@@ -148,10 +137,7 @@ pub struct AppState {
     pub graph_registry: Arc<Mutex<GraphRegistry>>,
     pub active_graph_id: Arc<RwLock<Option<String>>>,
     pub plugin_init_tx: Mutex<Option<oneshot::Sender<()>>>,
-    pub sync_complete_tx: Mutex<Option<oneshot::Sender<()>>>,
     pub ws_ready_tx: Mutex<Option<oneshot::Sender<()>>>,
-    pub force_full_sync: bool,
-    pub force_incremental_sync: bool,
     pub config: Config,
     pub ws_connections: Option<Arc<RwLock<HashMap<String, websocket::WsConnection>>>>,
     pub transaction_coordinators: Arc<RwLock<HashMap<String, Arc<TransactionCoordinator>>>>,
@@ -222,7 +208,7 @@ impl AppState {
     pub async fn set_active_graph(&self, graph_id: String) {
         let mut active = self.active_graph_id.write().await;
         *active = Some(graph_id.clone());
-        drop(active); // Release the write lock before calling session manager
+        drop(active); // Release the write lock
         
     }
 }
@@ -360,13 +346,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         dummy_coordinator.clone(),
     ));
     
-    // Log if force sync is enabled
-    if args.force_full_sync {
-        info!("⚡ Force full sync enabled - next plugin connection will trigger a full database sync");
-    }
-    if args.force_incremental_sync {
-        info!("⚡ Force incremental sync enabled - next plugin connection will trigger an incremental sync");
-    }
     
     // Create shared application state
     let app_state = Arc::new(AppState {
@@ -374,10 +353,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         graph_registry: graph_registry.clone(),
         active_graph_id: Arc::new(RwLock::new(None)),
         plugin_init_tx: Mutex::new(None),
-        sync_complete_tx: Mutex::new(None),
         ws_ready_tx: Mutex::new(None),
-        force_full_sync: args.force_full_sync,
-        force_incremental_sync: args.force_incremental_sync,
         config: config.clone(),
         ws_connections: Some(Arc::new(RwLock::new(HashMap::new()))),
         transaction_coordinators: transaction_coordinators.clone(),
@@ -466,11 +442,6 @@ async fn run_with_duration(
     // Create graceful shutdown signal
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     
-    // Create sync completion channel BEFORE plugin starts
-    let (sync_tx, sync_rx) = oneshot::channel::<()>();
-    if let Ok(mut tx_guard) = app_state.sync_complete_tx.lock() {
-        *tx_guard = Some(sync_tx);
-    }
     
     // Serve with graceful shutdown capability
     let server = axum::serve(listener, app)
@@ -517,17 +488,7 @@ async fn run_with_duration(
                 Ok(_) => {
                     debug!("🏃 Server will run for {} seconds after plugin initialization", duration_secs);
                     tokio::time::sleep(Duration::from_secs(duration_secs)).await;
-                    debug!("⏱️ Duration limit reached, checking for active sync...");
-                    
-                    // Wait for sync completion with timeout
-                    tokio::select! {
-                        _ = sync_rx => {
-                            debug!("✅ Sync completion received, shutting down gracefully");
-                        }
-                        _ = tokio::time::sleep(Duration::from_secs(10)) => {
-                            debug!("⏱️ Timeout waiting for sync completion, shutting down anyway");
-                        }
-                    }
+                    debug!("⏱️ Duration limit reached, shutting down gracefully");
                 },
                 Err(_) => {
                     // If plugin init fails, still run with timer

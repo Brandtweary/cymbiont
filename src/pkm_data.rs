@@ -3,13 +3,13 @@
  * @description Data structures for PKM (Personal Knowledge Management) entities
  * 
  * This module defines the core data structures used throughout the PKM Knowledge Graph
- * system. These structures represent the serialized format of Logseq blocks and pages
- * as they are transmitted from the JavaScript plugin to the Rust backend.
+ * system. These structures represent the serialized format of PKM blocks and pages
+ * as they are transmitted from external sources to the Rust backend.
  * 
  * ## Core Types
  * 
- * - `PKMBlockData`: Represents a Logseq block (the fundamental unit of content)
- * - `PKMPageData`: Represents a Logseq page (a container for blocks)
+ * - `PKMBlockData`: Represents a knowledge block (the fundamental unit of content)
+ * - `PKMPageData`: Represents a knowledge page (a container for blocks)
  * - `PKMReference`: Extracted references from block/page content
  * 
  * ## Design Decisions
@@ -26,7 +26,7 @@
  * - Data integrity before graph storage
  * 
  * The validation is intentionally lightweight, focusing on critical fields
- * while allowing flexibility for Logseq's evolving data model.
+ * while allowing flexibility for different PKM data sources.
  */
 
 use serde::{Deserialize, Serialize};

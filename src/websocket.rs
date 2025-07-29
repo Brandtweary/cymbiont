@@ -1,9 +1,9 @@
 /**
  * @module websocket
- * @description WebSocket server for bidirectional communication with Logseq plugin
+ * @description WebSocket server for bidirectional communication with clients
  * 
  * This module implements a WebSocket server that enables real-time bidirectional
- * communication between the Cymbiont backend and the Logseq plugin. It provides
+ * communication between the Cymbiont backend and external clients. It provides
  * the foundation for AI agents to create, update, and delete content in the user's
  * PKM through WebSocket commands.
  * 
@@ -45,7 +45,7 @@
  * 
  * ## Future Enhancements
  * 
- * - Command acknowledgments with Logseq UUIDs
+ * - Command acknowledgments with external UUIDs
  * - Integration with transaction log for correlation
  * - Command batching for efficiency
  * - Connection pooling for multi-graph support
@@ -408,7 +408,7 @@ async fn handle_command(
                   graph_id, graph_name, graph_path);
             
             // Notify session manager that graph switch was confirmed
-            state.session_manager.confirm_graph_switch(&graph_id).await;
+            // Graph switch confirmation - no longer needed without session manager
         }
     }
     

@@ -4,14 +4,14 @@
  * Knowledge Graph API Module
  * 
  * Provides the public API for knowledge graph operations with integrated transaction
- * logging and automatic PKM synchronization via WebSocket. This module serves as the
+ * logging and automatic WebSocket synchronization. This module serves as the
  * primary interface for AI agents and other consumers to interact with the knowledge
- * graph while maintaining consistency between the in-memory graph and Logseq.
+ * graph while maintaining data consistency.
  * 
  * Key responsibilities:
  * - Transaction-wrapped graph mutations
  * - Content deduplication via hash checking
- * - Automatic WebSocket sync to Logseq
+ * - Automatic WebSocket sync for real-time updates
  * - Saga coordination for multi-step operations
  * - Clean public API hiding internal complexity
  */
@@ -64,7 +64,7 @@ impl KgApi {
         Self { app_state }
     }
     
-    /// Add a new block to the knowledge graph and sync to Logseq
+    /// Add a new block to the knowledge graph and sync via WebSocket
     pub async fn add_block(
         &self,
         content: String,
@@ -125,7 +125,7 @@ impl KgApi {
         
         debug!("Added block to graph with temp_id: {} at index: {:?}", temp_id, node_idx);
         
-        // Send WebSocket command to create in Logseq
+        // Send WebSocket command to create block
         let command = Command::CreateBlock {
             content,
             parent_id,
@@ -142,7 +142,7 @@ impl KgApi {
         Ok(temp_id)
     }
     
-    /// Update an existing block in both graph and Logseq
+    /// Update an existing block in both graph and via WebSocket
     pub async fn update_block(
         &self,
         block_id: String,
@@ -245,7 +245,7 @@ impl KgApi {
         }
     }
     
-    /// Delete a block from both graph and Logseq
+    /// Delete a block from both graph and via WebSocket
     pub async fn delete_block(&self, block_id: String) -> Result<()> {
         // Get active graph
         let active_graph_id = self.app_state.get_active_graph_manager().await
@@ -313,7 +313,7 @@ impl KgApi {
         }
     }
     
-    /// Create a new page in both graph and Logseq
+    /// Create a new page in both graph and via WebSocket
     pub async fn create_page(
         &self,
         page_name: String,

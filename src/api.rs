@@ -65,14 +65,14 @@ use axum::{
     extract::{State, Request}, 
     Json, 
     Router, 
-    routing::{get, post, patch, any},
+    routing::{get, post, any},
     http::{HeaderMap, StatusCode},
     middleware::{self, Next},
     response::Response,
     body::Body,
 };
 use std::sync::Arc;
-use tracing::{info, warn, error, debug, trace};
+use tracing::{info, error, debug, trace};
 use serde::{Deserialize, Serialize};
 use serde_json;
 use std::collections::hash_map::DefaultHasher;
@@ -232,21 +232,6 @@ pub async fn receive_data(
                     })
                 }
             }
-        },
-        Some("sync_complete") => {
-            // Signal sync completion if we have a waiting channel
-            if let Ok(mut tx_guard) = state.sync_complete_tx.lock() {
-                if let Some(tx) = tx_guard.take() {
-                    let _ = tx.send(());
-                    debug!("Sync completion signal received");
-                }
-            }
-            
-            Json(ApiResponse {
-                success: true,
-                message: "Sync completion acknowledged".to_string(),
-                graph_id: None,
-            })
         },
         // For DB change events and other unspecified types
         _ => {

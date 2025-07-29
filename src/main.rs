@@ -1,36 +1,77 @@
 /**
- * @module main
- * @description Backend server orchestration for the PKM Knowledge Graph Plugin
+ * # Cymbiont - Self-Organizing Knowledge Graph Agent
  * 
- * This module serves as the central orchestrator for the PKM backend server, managing
- * application state and coordinating between specialized modules. After refactoring,
- * this module focuses on high-level control flow while delegating specific responsibilities
- * to dedicated modules.
+ * Cymbiont transforms your personal knowledge management (PKM) tool into a queryable 
+ * knowledge graph, providing AI agents with rich contextual understanding of your notes, 
+ * thoughts, and connections. Unlike traditional RAG approaches that treat documents as 
+ * isolated text chunks, Cymbiont preserves and leverages the inherent graph structure 
+ * of your knowledge base.
  * 
- * Key responsibilities:
+ * ## Getting Started
+ * 
+ * New to Cymbiont? Start with these documentation files:
+ * 
+ * - **[README.md](../README.md)** - Installation, setup, and basic usage
+ * - **[CLAUDE.md](../CLAUDE.md)** - Development guide, build commands, and CLI reference  
+ * - **[cymbiont_architecture.md](../cymbiont_architecture.md)** - Comprehensive technical architecture
+ * 
+ * ## Core Features
+ * 
+ * - **Real-time Sync**: Automatically syncs with Logseq to maintain an up-to-date knowledge graph
+ * - **Graph-Aware Context**: Provides AI agents with understanding of relationships between concepts
+ * - **Multi-Graph Support**: Manage multiple knowledge bases simultaneously with complete isolation
+ * - **Incremental Updates**: Efficiently tracks changes without full database rescans
+ * - **Configurable Storage**: Flexible data directory configuration for different deployment scenarios
+ * 
+ * ## Architecture Overview
+ * 
+ * Cymbiont consists of three main components:
+ * 1. **Backend Server** (Rust) - This codebase: graph management, API endpoints, sync coordination
+ * 2. **Logseq Plugin** (JavaScript) - Real-time sync integration with Logseq
+ * 3. **AI Agent Integration** - Future integration with aichat-agent library for LLM capabilities
+ * 
+ * ## Main Module Responsibilities
+ * 
+ * This main.rs module serves as the application entry point and orchestrator:
+ * 
+ * ### Core Functions
  * - Server lifecycle management (startup, shutdown, graceful termination)
- * - Application state management (AppState with graph manager, Logseq process, channels)
- * - Coordination between modules (config, logging, api, utils, graph_manager)
- * - Duration-based execution modes for development and testing
+ * - Application state coordination (AppState with multi-graph managers)
+ * - CLI argument processing and configuration loading
+ * - Data directory initialization and path resolution
+ * - Logseq process launching and session management
  * - Signal handling for clean shutdowns (Ctrl+C)
- * - Logseq process launching and termination
  * 
- * Module dependencies:
- * - config: Configuration loading and validation
- * - logging: Custom tracing setup
- * - utils: Port management, process utilities, and Logseq executable discovery
- * - api: HTTP routes and handlers
- * - graph_manager: Petgraph-based knowledge graph storage
+ * ### Module Coordination
+ * - **config**: YAML configuration loading and CLI overrides
+ * - **api**: HTTP router creation and endpoint handlers  
+ * - **graph_registry**: Multi-graph identification and switching
+ * - **session_manager**: Logseq database session coordination
+ * - **websocket**: Real-time communication with plugin
+ * - **utils**: Process management and platform utilities
  * 
- * The server supports two execution modes:
- * - Indefinite: Runs until terminated (production mode)
- * - Duration-based: Runs for specified seconds (development/testing)
+ * ### Execution Modes
+ * - **Production**: Runs indefinitely until terminated
+ * - **Development**: Auto-shutdown after configured duration (default: 3 seconds)
+ * - **Testing**: Uses isolated data directories for test isolation
  * 
- * When Logseq auto-launch is enabled, the server:
- * - Uses utils module to discover Logseq executable
- * - Launches Logseq after server startup
- * - Waits for plugin initialization before starting duration timer
- * - Terminates Logseq gracefully on shutdown
+ * ## Quick Start
+ * 
+ * ```bash
+ * # Standard operation
+ * cargo run
+ * 
+ * # With specific graph
+ * cargo run -- --graph "My Knowledge Base"
+ * 
+ * # Custom data directory  
+ * cargo run -- --data-dir /path/to/data
+ * 
+ * # Shutdown running server
+ * cargo run -- --shutdown-server
+ * ```
+ * 
+ * For comprehensive usage instructions, see README.md in the project root.
  */
 
 use async_trait::async_trait;
@@ -101,6 +142,14 @@ struct Args {
     /// Launch with specific Logseq database by path
     #[arg(long)]
     graph_path: Option<String>,
+    
+    /// Shutdown a running Cymbiont server gracefully
+    #[arg(long)]
+    shutdown_server: bool,
+    
+    /// Override data directory path (defaults to config value)
+    #[arg(long)]
+    data_dir: Option<String>,
 }
 
 // Application state that will be shared between handlers
@@ -144,10 +193,15 @@ impl AppState {
             return Ok(());
         }
         
-        // Create new GraphManager (absolute path)
-        let data_dir = std::env::current_dir()
-            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to get current directory: {e}")))?
-            .join("data").join("graphs").join(graph_id);
+        // Create new GraphManager using config data_dir
+        let base_data_dir = if std::path::Path::new(&self.config.data_dir).is_absolute() {
+            PathBuf::from(&self.config.data_dir)
+        } else {
+            std::env::current_dir()
+                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to get current directory: {e}")))?
+                .join(&self.config.data_dir)
+        };
+        let data_dir = base_data_dir.join("graphs").join(graph_id);
         fs::create_dir_all(&data_dir)?;
         
         let graph_manager = GraphManager::new(data_dir.clone())
@@ -226,9 +280,16 @@ fn cleanup_and_exit(app_state: Option<Arc<AppState>>, start_time: Instant) {
             });
         });
         
-        // Save graph registry
+        // Save graph registry using config data_dir
         if let Ok(registry_guard) = state.graph_registry.lock() {
-            let registry_path = PathBuf::from("data").join("graph_registry.json");
+            let base_data_dir = if std::path::Path::new(&state.config.data_dir).is_absolute() {
+                PathBuf::from(&state.config.data_dir)
+            } else {
+                std::env::current_dir()
+                    .unwrap_or_else(|_| PathBuf::from("."))
+                    .join(&state.config.data_dir)
+            };
+            let registry_path = base_data_dir.join("graph_registry.json");
             if let Err(e) = registry_guard.save(&registry_path) {
                 error!("Failed to save graph registry: {}", e);
             } else {
@@ -260,11 +321,40 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Parse command line arguments
     let args = Args::parse();
     
+    // Handle shutdown command
+    if args.shutdown_server {
+        if let Ok(info_str) = fs::read_to_string(SERVER_INFO_FILE) {
+            if let Ok(info) = serde_json::from_str::<utils::ServerInfo>(&info_str) {
+                println!("Shutting down Cymbiont server (PID: {})...", info.pid);
+                if terminate_previous_instance() {
+                    println!("Server shutdown successfully");
+                    let _ = fs::remove_file(SERVER_INFO_FILE);
+                    return Ok(());
+                } else {
+                    eprintln!("Failed to shutdown server or server not running");
+                    return Err("Shutdown failed".into());
+                }
+            } else {
+                eprintln!("Failed to parse server info file");
+                return Err("Invalid server info".into());
+            }
+        } else {
+            eprintln!("No running Cymbiont server found");
+            return Err("No server to shutdown".into());
+        }
+    }
+    
     // Initialize logging
     init_logging();
     
     // Load configuration
-    let config = load_config();
+    let mut config = load_config();
+    
+    // Apply CLI data_dir override if provided
+    if let Some(cli_data_dir) = &args.data_dir {
+        info!("🗂️  Overriding data directory from CLI: {}", cli_data_dir);
+        config.data_dir = cli_data_dir.clone();
+    }
     
     // Validate JavaScript plugin configuration
     if let Err(e) = validate_js_plugin_config(&config) {
@@ -277,10 +367,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let _ = fs::remove_file(SERVER_INFO_FILE);
     }
     
-    // Initialize data directory (absolute path from executable location)
-    let data_dir = std::env::current_dir()
-        .map_err(|e| Box::<dyn Error>::from(format!("Failed to get current directory: {e}")))?
-        .join("data");
+    // Initialize data directory from config
+    let data_dir = if std::path::Path::new(&config.data_dir).is_absolute() {
+        PathBuf::from(&config.data_dir)
+    } else {
+        std::env::current_dir()
+            .map_err(|e| Box::<dyn Error>::from(format!("Failed to get current directory: {e}")))?
+            .join(&config.data_dir)
+    };
     fs::create_dir_all(&data_dir)
         .map_err(|e| Box::<dyn Error>::from(format!("Failed to create data directory: {e}")))?;
     
@@ -295,6 +389,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let session_manager = Arc::new(SessionManager::new(
         graph_registry.clone(),
         config.logseq.clone(),
+        data_dir.clone(),
     ));
     
     // Initialize multi-graph managers and coordinators

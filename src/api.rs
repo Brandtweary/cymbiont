@@ -7,6 +7,10 @@
  * the JavaScript Logseq plugin and the Rust backend server, handling all data ingestion,
  * synchronization, and logging operations.
  * 
+ * ## Router Creation
+ * The main HTTP router is created by the `create_router()` function (line ~226), 
+ * which is called from main.rs to set up all API endpoints.
+ * 
  * ## Multi-Graph Support Limitations
  * 
  * While the API accepts graph identification headers (X-Cymbiont-Graph-ID, 
@@ -1017,10 +1021,12 @@ async fn graph_validation_middleware(
                   graph_context.graph_name.as_deref(),
                   graph_context.graph_path.as_deref(),
                   graph_context.graph_id.as_deref());
+            let data_dir = std::path::Path::new(&state.config.data_dir);
             match registry.validate_and_switch(
                 graph_context.graph_name.as_deref(),
                 graph_context.graph_path.as_deref(),
                 graph_context.graph_id.as_deref(),
+                data_dir,
             ) {
                 Ok(result) => result,
                 Err(e) => {

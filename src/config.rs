@@ -51,6 +51,18 @@
  * Incremental sync only processes blocks/pages modified since last sync.
  * Full sync re-processes the entire PKM, catching external file modifications.
  * 
+ * ### Data Directory Configuration
+ * - `data_dir`: Path for data storage (default: "data")
+ * 
+ * The data directory stores all persistent state including graph registries,
+ * session information, knowledge graphs, and transaction logs. Can be specified
+ * as absolute or relative path. Relative paths are resolved from the current
+ * working directory. This setting enables:
+ * - Storing data outside the Cymbiont installation directory
+ * - Data isolation for testing environments
+ * - Multi-user deployments with separate data stores
+ * - CLI override via --data-dir flag
+ * 
  * ## JavaScript Plugin Validation
  * 
  * The `validate_js_plugin_config()` function ensures the JavaScript plugin's
@@ -98,6 +110,8 @@ pub struct Config {
     pub development: DevelopmentConfig,
     #[serde(default)]
     pub sync: SyncConfig,
+    #[serde(default = "default_data_dir")]
+    pub data_dir: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -168,6 +182,10 @@ fn default_enable_full_sync() -> bool {
     false
 }
 
+fn default_data_dir() -> String {
+    "data".to_string()
+}
+
 // Default configuration
 impl Default for Config {
     fn default() -> Self {
@@ -181,6 +199,7 @@ impl Default for Config {
                 default_duration: None,
             },
             sync: SyncConfig::default(),
+            data_dir: default_data_dir(),
         }
     }
 }
@@ -362,6 +381,7 @@ mod tests {
         assert_eq!(config.sync.incremental_interval_hours, 2);
         assert_eq!(config.sync.full_interval_hours, 168);
         assert_eq!(config.sync.enable_full_sync, false);
+        assert_eq!(config.data_dir, "data");
     }
 
     #[test]
@@ -398,5 +418,33 @@ mod tests {
         assert_eq!(default_incremental_interval_hours(), 2);
         assert_eq!(default_full_interval_hours(), 168);
         assert_eq!(default_enable_full_sync(), false);
+    }
+
+    #[test]
+    fn test_data_dir_default() {
+        assert_eq!(default_data_dir(), "data");
+    }
+
+    #[test]
+    fn test_data_dir_serde_default() {
+        let yaml = r#"
+backend:
+  port: 3000
+  max_port_attempts: 10
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.data_dir, "data");
+    }
+
+    #[test]
+    fn test_data_dir_custom() {
+        let yaml = r#"
+backend:
+  port: 3000
+  max_port_attempts: 10
+data_dir: /custom/path
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.data_dir, "/custom/path");
     }
 }

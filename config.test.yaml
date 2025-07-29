@@ -21,11 +21,14 @@ logseq:
 
 # Development settings for tests
 development:
-  # Default to 3 seconds for tests
-  default_duration: 3
+  # Default to null for indefinite running in integration tests
+  default_duration: null
 
 # Sync configuration
 sync:
   incremental_interval_hours: 2
   full_interval_hours: 168
   enable_full_sync: false
+
+# Data directory for test isolation
+data_dir: test_data

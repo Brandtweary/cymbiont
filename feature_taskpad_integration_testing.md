@@ -1,191 +1,89 @@
 # Feature Taskpad: Integration Testing
 
 ## Feature Description
-Implement comprehensive integration tests for Cymbiont that test the system through its public HTTP and WebSocket APIs without importing internal modules. These tests will validate multi-graph support, transaction coordination, WebSocket communication, and end-to-end sync scenarios using real server processes and actual timing rather than mocks.
+Implement comprehensive integration tests for Cymbiont that test the system through its public HTTP and WebSocket APIs with real Logseq instances. Uses a single-instance test paradigm where all tests share one long-running Cymbiont+Logseq instance with graph-based isolation.
 
 ## Specifications
-- Test only through public APIs (HTTP endpoints and WebSocket)
-- No internal module imports (no `use cymbiont::*`)
-- Start real `cargo run` processes for each test
-- Use proper timing and waits for async operations
-- Include graph headers (X-Cymbiont-Graph-*) in all HTTP requests
-- Wait for WebSocket confirmations rather than optimistic updates
-- Clean process termination and test data cleanup
-- Test with existing dummy graphs in `logseq_databases/`
-- Validate actual system behavior, not mocked responses
-
-## Relevant Components
-
-### HTTP API Endpoints
-- `src/api.rs`: All HTTP endpoints for testing
-- Key endpoints: `/data`, `/plugin/initialized`, `/sync/status`, `/api/session/*`
-- Current usage: Need to test via reqwest client
-
-### WebSocket Server
-- `src/websocket.rs`: WebSocket command protocol
-- Key commands: auth, create_block, update_block, GraphSwitchConfirmed
-- Current usage: Need WebSocket test client
-
-### Test Graphs
-- `logseq_databases/dummy_graph/`: Test graph with sample data
-- `logseq_databases/dummy_graph_2/`: Second test graph for switching
-- Current usage: Already configured with graph IDs
-
-### Existing Tests
-- `tests/graph_registry_test.rs`: Currently uses internal imports
-- `tests/session_management_test.rs`: Partially implemented, needs completion
-- `tests/integration_test.rs`: Too simple, needs expansion
+- Test through public APIs only (no internal imports)
+- Single Cymbiont+Logseq instance for entire test suite
+- Graph-based isolation with automatic backup/restore
+- Real Logseq behavior verification (no mocks)
+- WebSocket confirmations for graph switches
+- Separate graph registry tests (require multiple instances)
 
 ## Development Plan
 
-### 1. Test Infrastructure
-- [ ] Create `tests/common/mod.rs` with shared test utilities
-- [ ] Implement `CymbiontTestServer` struct:
-  - [ ] `start(args: &[&str]) -> Result<Self>` - Start server with CLI args
-  - [ ] `wait_ready() -> Result<()>` - Poll health endpoint
-  - [ ] `stop()` - Graceful shutdown
-  - [ ] `impl Drop` for automatic cleanup
-- [ ] Implement `TestClient` wrapper around reqwest:
-  - [ ] `new(graph_name: &str) -> Self` - Create with graph headers
-  - [ ] Helper methods for each endpoint (post_data, get_sync_status, etc.)
-  - [ ] Automatic base URL and error handling
-- [ ] Implement `WebSocketTestClient`:
-  - [ ] `connect() -> Result<Self>` - Connect and authenticate
-  - [ ] `send_command(cmd: Command) -> Result<()>`
-  - [ ] `wait_for_event(matcher, timeout) -> Result<Event>`
-  - [ ] Heartbeat handling
+### 1-8. [OBSOLETE] Old Test Infrastructure
+Initial sections 1-8 created tests that only hit server APIs without Logseq. These have been superseded by section 9.
 
-### 2. Graph Registry Tests
-- [ ] Rename `graph_registry_test.rs` to `api_graph_registry_test.rs`
-- [ ] Remove all internal imports
-- [ ] Test graph registration via `/plugin/initialized`:
-  - [ ] First connection creates new graph
-  - [ ] Subsequent connections reuse existing graph
-  - [ ] Graph ID persistence across restarts
-- [ ] Test graph switching via `/api/session/switch`:
-  - [ ] Switch by name
-  - [ ] Switch by path
-  - [ ] Invalid graph handling
-- [ ] Test duplicate graph prevention:
-  - [ ] Same name and path returns same ID
-  - [ ] Different path creates new graph
+### 9. Single-Instance Test Paradigm 
+**Status**: ✅ Infrastructure complete, awaiting test execution
 
-### 3. Sync API Tests
-- [ ] Create `tests/api_sync_test.rs`
-- [ ] Test real-time sync via `/data`:
-  - [ ] Send PKMBlockData
-  - [ ] Send PKMPageData
-  - [ ] Verify sync status updates
-- [ ] Test incremental sync flow:
-  - [ ] Check sync status
-  - [ ] Send data with timestamps
-  - [ ] Verify only new data processed
-- [ ] Test deletion verification:
-  - [ ] Send block IDs to `/sync/verify`
-  - [ ] Verify missing blocks archived
-- [ ] Test force sync flags:
-  - [ ] `--force-incremental-sync`
-  - [ ] `--force-full-sync`
+- [x] Infrastructure setup:
+  - [x] Add `--shutdown-server` CLI command
+  - [x] Create test graphs with backups in `test_backups/`
+  - [x] Modify `config.test.yaml` for indefinite running
+- [x] Test harness implementation (`tests/common/test_harness.rs`)
+- [x] New test files created:
+  - [x] `sync_test.rs`
+  - [x] `websocket_test.rs`
+  - [x] `multi_graph_test.rs`
+  - [x] `integration_test_suite.rs` (main entry point)
+- [x] Documentation updates (tests/README.md)
+- [x] Delete old test files
 
-### 4. WebSocket Integration Tests
-- [ ] Create `tests/websocket_integration_test.rs`
-- [ ] Test authentication flow:
-  - [ ] Connect without auth (should fail)
-  - [ ] Send auth command
-  - [ ] Verify authenticated state
-- [ ] Test command broadcasting:
-  - [ ] Send create_block from server
-  - [ ] Verify acknowledgment received
-  - [ ] Check correlation IDs match
-- [ ] Test graph switch confirmation:
-  - [ ] Trigger graph switch
-  - [ ] Wait for GraphSwitchRequested
-  - [ ] Send GraphSwitchConfirmed
-  - [ ] Verify state updated
-- [ ] Test heartbeat mechanism:
-  - [ ] Verify ping/pong exchange
-  - [ ] Test connection timeout
+### 10. Graph Registry Tests (Separate)
+- [x] Keep `api_graph_registry_test.rs` standalone
+- [ ] Run with `cargo test api_graph_registry_test`
 
-### 5. Multi-Graph E2E Tests
-- [ ] Rename `session_management_test.rs` to `e2e_multi_graph_test.rs`
-- [ ] Complete existing test implementations
-- [ ] Test data isolation between graphs:
-  - [ ] Create data in graph 1
-  - [ ] Switch to graph 2
-  - [ ] Verify data not visible
-  - [ ] Switch back to graph 1
-  - [ ] Verify data still present
-- [ ] Test concurrent operations:
-  - [ ] Run two servers with different graphs
-  - [ ] Send data to both simultaneously
-  - [ ] Verify no cross-contamination
-- [ ] Test session persistence:
-  - [ ] Start with graph 1
-  - [ ] Restart server
-  - [ ] Verify returns to graph 1
+### 11. Test Data Isolation (CRITICAL)
+**Status**: 🚨 Required before any test execution - currently mixing test/production data
 
-### 6. Transaction Coordination Tests
-- [ ] Create `tests/transaction_test.rs`
-- [ ] Test content hash deduplication:
-  - [ ] Send same content via WebSocket and HTTP
-  - [ ] Verify only processed once
-- [ ] Test acknowledgment flow:
-  - [ ] Create block via kg_api
-  - [ ] Verify WebSocket command sent
-  - [ ] Send acknowledgment
-  - [ ] Verify transaction committed
-- [ ] Test timeout scenarios:
-  - [ ] Create block but don't acknowledge
-  - [ ] Verify timeout after 30s
-  - [ ] Check transaction rolled back
-- [ ] Test crash recovery:
-  - [ ] Start transaction
-  - [ ] Kill process
-  - [ ] Restart and verify recovery
+**Problem**: Tests currently write to production `data/` directory, polluting user data and making deterministic assertions impossible.
 
-### 7. Performance and Load Tests
-- [ ] Create `tests/performance_test.rs`
-- [ ] Benchmark sync performance:
-  - [ ] Time to sync 1000 blocks
-  - [ ] Memory usage during sync
-  - [ ] Verify <5ms transaction overhead
-- [ ] Load test concurrent operations:
-  - [ ] 10 simultaneous WebSocket connections
-  - [ ] Rapid command sequences
-  - [ ] Verify no deadlocks
-- [ ] Stress test graph switching:
-  - [ ] Rapid switches between graphs
-  - [ ] Verify data integrity maintained
+**Solution**: Add `--data-dir` CLI flag to redirect all data storage for tests.
 
-### 8. Test Documentation
-- [ ] Update `tests/README.md`:
-  - [ ] New test structure explanation
-  - [ ] How to run specific test suites
-  - [ ] Prerequisites (Logseq not required)
-  - [ ] CI/CD considerations
-- [ ] Add inline documentation to test utilities
-- [ ] Create example test as template
+- [ ] Add `--data-dir <PATH>` CLI argument to main.rs
+- [ ] Update Config struct to include data_dir field
+- [ ] Plumb data_dir through all modules that access disk:
+  - [ ] `GraphRegistry::load_or_create()` and `save()` 
+  - [ ] `GraphManager` knowledge graph storage paths
+  - [ ] `TransactionLog` and saga transaction log paths
+  - [ ] `SessionManager` for `last_session.json`
+  - [ ] Archive operations in `graph_manager.rs`
+- [ ] Add unit tests for `--data-dir` functionality
+- [ ] Update test harness to use isolated temp directory
+- [ ] Add graph registry validation with deterministic assertions
 
-## Development Notes
-**Architecture Decision**: All tests must use public APIs to ensure we're testing the actual user-facing behavior. This catches issues that unit tests miss, like header parsing, middleware behavior, and timing issues.
+**User Benefit**: This also enables users to store KG data outside the Cymbiont directory.
 
-**Test Data Strategy**: Use the existing dummy graphs rather than creating new test data. This ensures tests run against realistic data structures.
+### 12. Test Execution and Verification  
+**Status**: ⏸️ Blocked on Section 11 (Test Data Isolation)
 
-**Process Management**: Each test spawns its own server process to ensure isolation. The test utilities handle cleanup even if tests panic.
+- [ ] Delete standalone graph registry tests (will be covered by main suite)
+- [ ] Manually link all test graphs in Logseq
+- [ ] Run `cargo test integration_test_suite --test integration_test_suite -- --test-threads=1`
+- [ ] Fix any failing tests
+- [ ] Verify test side effects (diff graph folders)
+- [ ] If clean, consolidate into single `test_graph`
 
-**Timing Considerations**: Use proper async waits rather than sleep(). Poll endpoints for readiness rather than assuming fixed startup times.
+## Critical API Details
 
-## Future Tasks
-- Mock Logseq plugin for full E2E testing including plugin-side behavior
-- Fuzzing tests for API endpoints to find edge cases
-- Network failure simulation (connection drops, high latency)
-- Property-based testing for graph operations
-- Visual test reporter showing graph state changes
-- Integration with GitHub Actions for CI/CD
-- Benchmarking suite comparing different sync strategies
-- Chaos testing framework (random kills, resource limits)
-- Test coverage reporting and gap analysis
-- Contract testing between backend and plugin
+### PKMData Format
+```json
+{
+  "source": "test",
+  "type_": "blocks|pages",
+  "payload": "JSON string"  // stringified JSON!
+}
+```
 
-## Final Implementation
-{To be completed when the integration tests are fully implemented}
+### Key Field Names
+- PKMBlockData: `id`, `created`/`updated` as strings
+- PKMPageData: `name`, `normalized_name`
+- Headers: `X-Cymbiont-Graph-Name`, `X-Cymbiont-Graph-Path`
+
+## Current Status (2025-01-28)
+- ✅ Infrastructure complete
+- 🚨 **CRITICAL**: Section 11 (Test Data Isolation) must be completed before any test execution
+- ⏸️ Test execution blocked until data isolation is implemented

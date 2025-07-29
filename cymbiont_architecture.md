@@ -26,10 +26,16 @@ cymbiont/
 │   ├── data_processor.js          # Data validation and normalization
 │   └── websocket.js               # Command handlers (window.KnowledgeGraphWebSocket)
 ├── logseq_databases/              # Test graphs
-├── data/                          # Persistence layer
+├── data/                          # Persistence layer (configurable via data_dir)
 │   ├── graph_registry.json        # Graph UUID mappings
+│   ├── last_session.json          # Session persistence
+│   ├── archived_nodes/            # Global deletion archives
 │   ├── graphs/{graph-id}/         # Per-graph storage
-│   └── saga_transaction_log/      # Global saga coordination
+│   │   ├── knowledge_graph.json   # Graph serialization
+│   │   ├── archived_nodes/        # Per-graph deletion archives
+│   │   └── transaction_log/       # Per-graph WAL (sled database)
+│   ├── saga_transaction_log/      # Global saga coordination (sled database)
+│   └── transaction_log/           # Global transaction log (sled database)
 └── tests/                         # Integration tests
 ```
 
@@ -47,13 +53,13 @@ CLI args → Config loading → AppState init → Session manager → Logseq lau
 
 ### config.rs
 **Purpose**: Configuration management  
-**Manages**: Config struct hierarchy  
+**Manages**: Config struct hierarchy, data directory configuration  
 **Requires**: serde, config crate  
 **Data flow**:
 ```
-config.yaml → Config struct → Validation → AppState.config
+config.yaml → Config struct → CLI overrides → Validation → AppState.config → Data directory resolution
 ```
-**Key types**: `Config`, `BackendConfig`, `LogseqConfig`, `SyncConfig`
+**Key types**: `Config`, `BackendConfig`, `LogseqConfig`, `SyncConfig`, `DevelopmentConfig`
 
 ### api.rs
 **Purpose**: HTTP endpoint handlers  
@@ -92,13 +98,13 @@ PKM operation → NodeIndex lookup → Graph mutation → Auto-save trigger → 
 
 ### graph_registry.rs
 **Purpose**: Multi-graph identification  
-**Manages**: Graph UUID mappings, active graph tracking  
-**Requires**: File I/O for registry persistence  
+**Manages**: Graph UUID mappings, active graph tracking, configurable storage paths  
+**Requires**: File I/O for registry persistence, data directory configuration  
 **Data flow**:
 ```
-Plugin headers → Registry lookup → Graph creation/validation → Active graph switch
+Plugin headers → Registry lookup → Graph creation/validation → Data directory path resolution → Active graph switch
 ```
-**Key operations**: `get_or_create_graph()`, `validate_and_switch_graph()`
+**Key operations**: `get_or_create_graph()`, `validate_and_switch()`, `register_graph()`
 
 ### kg_api.rs
 **Purpose**: Public API for graph mutations  
@@ -128,8 +134,8 @@ Transaction → Serialize → WAL append → Content hash index → Pending queu
 
 ### session_manager.rs
 **Purpose**: Logseq database session management  
-**Manages**: Graph launch, switching, session persistence  
-**Requires**: GraphRegistry, URL scheme invocation  
+**Manages**: Graph launch, switching, session persistence, graph registration  
+**Requires**: GraphRegistry, URL scheme invocation, configurable data directory  
 **Data flow**:
 ```
 CLI/API request → Resolve name/path → Open logseq://graph/{name} → Wait for confirmation → Update state
@@ -138,7 +144,8 @@ CLI/API request → Resolve name/path → Open logseq://graph/{name} → Wait fo
 - Launch with `--graph` or `--graph-path` CLI args
 - Platform-specific URL opening (Linux/macOS/Windows)
 - WebSocket confirmation mechanism with timeout
-- Session persistence in `data/last_session.json`
+- Session persistence in `{data_dir}/last_session.json`
+- Graph registration with configurable data directory paths
 **API endpoints**:
 - `POST /api/session/switch` - Switch to different graph
 - `GET /api/session/current` - Get current session info
@@ -251,19 +258,36 @@ Sync timer → Status check → Page/block query → Filter by timestamp → Bat
 
 ## Persistence Layout
 
-### Per-Graph Storage
-```
-data/graphs/{graph-id}/
-├── knowledge_graph.json          # Full graph serialization
-├── archived_nodes/               # Deletion archives
-│   └── archive_YYYYMMDD_HHMMSS.json
-└── transaction_log/              # Per-graph WAL
-    ├── data.mdb
-    └── lock.mdb
+### Configurable Data Directory
+The data directory is configurable via `config.yaml` (`data_dir` field) or CLI `--data-dir` override.
+Default structure under data directory:
 
-data/
-├── graph_registry.json           # Registry of all graphs
-└── last_session.json             # Session persistence
+### Complete Data Directory Structure
+```
+{data_dir}/
+├── graph_registry.json           # Registry of all graphs with UUIDs
+├── last_session.json             # Session persistence and active graph tracking
+├── archived_nodes/               # Global deletion archives
+│   └── archive_YYYYMMDD_HHMMSS.json
+├── graphs/{graph-id}/            # Per-graph isolated storage
+│   ├── knowledge_graph.json      # Full graph serialization (petgraph)
+│   ├── archived_nodes/           # Per-graph deletion archives
+│   │   └── archive_YYYYMMDD_HHMMSS.json
+│   └── transaction_log/          # Per-graph WAL (sled database)
+│       ├── blobs/               # Sled blob storage
+│       ├── conf                 # Sled configuration
+│       ├── db                   # Sled main database file
+│       └── snap.*               # Sled snapshots
+├── saga_transaction_log/         # Global saga coordination (sled database)
+│   ├── blobs/
+│   ├── conf
+│   ├── db
+│   └── snap.*
+└── transaction_log/              # Global transaction log (sled database)
+    ├── blobs/
+    ├── conf
+    ├── db
+    └── snap.*
 ```
 
 ### Graph Registry
@@ -286,6 +310,9 @@ data/
 
 ### config.yaml
 ```yaml
+# Data storage directory (configurable)
+data_dir: data
+
 backend:
   host: "localhost"
   port: 3000
@@ -313,6 +340,8 @@ cargo run [OPTIONS]
   --test-websocket <COMMAND>    Test WebSocket commands
   --graph <NAME>                Launch with specific graph by name
   --graph-path <PATH>           Launch with specific graph by path
+  --data-dir <PATH>             Override data directory (defaults to config value)
+  --shutdown-server             Shutdown running Cymbiont server gracefully
 ```
 
 ## Testing Entry Points

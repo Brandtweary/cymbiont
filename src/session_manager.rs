@@ -18,7 +18,7 @@
 //! - **Flexible Launch**: Support for last active, configured default, or CLI-specified database
 //! - **Name/Path Resolution**: Accept both database names and paths, resolving to graph IDs
 //! - **Pre-registration**: Register configured databases before first connection
-//! - **Session Persistence**: Remember last active database across restarts in `data/last_session.json`
+//! - **Session Persistence**: Remember last active database across restarts in `{data_dir}/last_session.json`
 //! - **Platform Support**: Cross-platform URL scheme invocation (Linux/macOS/Windows)
 //! - **Confirmation Mechanism**: Wait for plugin confirmation when switching graphs
 //! - **Timeout Handling**: 10-second timeout for graph switch confirmations
@@ -53,6 +53,14 @@
 //! 3. SessionManager updates state only after confirmation
 //!
 //! This ensures the backend's state accurately reflects what graph Logseq has loaded.
+//!
+//! ## Configurable Data Directory
+//!
+//! The SessionManager uses a configurable data directory for all persistent state:
+//! - **Session File**: Stored at `{data_dir}/last_session.json`
+//! - **Graph Registration**: Passes data_dir to GraphRegistry for consistent storage paths
+//! - **Configuration Integration**: Data directory provided during initialization from config.yaml
+//! - **CLI Override**: Respects --data-dir command line override
 
 use crate::graph_registry::GraphRegistry;
 use crate::config::LogseqConfig;
@@ -107,6 +115,7 @@ pub struct SessionManager {
     session_state: Arc<RwLock<SessionState>>,
     session_file: PathBuf,
     switch_confirmations: Arc<RwLock<HashMap<String, oneshot::Sender<()>>>>,
+    data_dir: PathBuf,
 }
 
 /// Current session state
@@ -147,12 +156,9 @@ pub struct SessionInfo {
 
 impl SessionManager {
     /// Create a new session manager
-    pub fn new(registry: Arc<Mutex<GraphRegistry>>, config: LogseqConfig) -> Self {
-        // Use absolute path for session file
-        let session_file = std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join("data")
-            .join("last_session.json");
+    pub fn new(registry: Arc<Mutex<GraphRegistry>>, config: LogseqConfig, data_dir: PathBuf) -> Self {
+        // Use provided data directory for session file
+        let session_file = data_dir.join("last_session.json");
             
         Self {
             graph_registry: registry,
@@ -160,6 +166,7 @@ impl SessionManager {
             session_state: Arc::new(RwLock::new(SessionState::Inactive)),
             session_file,
             switch_confirmations: Arc::new(RwLock::new(HashMap::new())),
+            data_dir,
         }
     }
     
@@ -461,7 +468,7 @@ impl SessionManager {
                 // Check config for this name
                 if let Some(db) = self.logseq_config.databases.iter()
                     .find(|d| d.name.as_ref() == Some(&name)) {
-                    let info = registry.register_graph(name, db.path.clone(), None)?;
+                    let info = registry.register_graph(name, db.path.clone(), None, &self.data_dir)?;
                     Ok(info.id)
                 } else {
                     Err(SessionError::DatabaseNotFound(format!("Database '{}' not found in registry or config", name)))
@@ -476,7 +483,7 @@ impl SessionManager {
                     .to_string();
                     
                 info!("Registering new database '{}' at path: {}", name, path);
-                let info = registry.register_graph(name, path, None)?;
+                let info = registry.register_graph(name, path, None, &self.data_dir)?;
                 Ok(info.id)
             }
         }
@@ -505,7 +512,7 @@ impl SessionManager {
                 });
             
             info!("Pre-registering database '{}' at {}", name, db.path);
-            registry.register_graph(name, db.path.clone(), None)?;
+            registry.register_graph(name, db.path.clone(), None, &self.data_dir)?;
         }
         Ok(())
     }

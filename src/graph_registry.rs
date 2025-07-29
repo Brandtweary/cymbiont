@@ -55,10 +55,12 @@
 //! # use cymbiont::graph_registry::GraphRegistry;
 //! # let mut registry = GraphRegistry::new();
 //! // Plugin sends graph context via headers
+//! let data_dir = std::path::Path::new("data");
 //! let (graph_info, is_new) = registry.validate_and_switch(
 //!     Some("My Graph"),
 //!     Some("path/to/graph"),
-//!     Some("optional-uuid")
+//!     Some("optional-uuid"),
+//!     data_dir
 //! ).unwrap();
 //! ```
 //!
@@ -67,10 +69,12 @@
 //! # use cymbiont::graph_registry::GraphRegistry;
 //! # let mut registry = GraphRegistry::new();
 //! // Register new graph
+//! let data_dir = std::path::Path::new("data");
 //! let graph_info = registry.register_graph(
 //!     "My Knowledge Base".to_string(),
 //!     "/path/to/graph".to_string(),
-//!     None  // Auto-generate UUID
+//!     None,  // Auto-generate UUID
+//!     data_dir
 //! ).unwrap();
 //!
 //! // Get active graph
@@ -79,9 +83,18 @@
 //! }
 //! ```
 //!
+//! ## Configurable Data Directory
+//!
+//! All storage operations now accept a configurable data directory path:
+//! - **Storage Path Resolution**: Graph data stored under `{data_dir}/graphs/{graph-id}/`
+//! - **Registry Persistence**: Registry saved to `{data_dir}/graph_registry.json`
+//! - **CLI Override**: Data directory configurable via config.yaml or --data-dir flag
+//! - **Testing Isolation**: Enables separate data directories for tests vs production
+//! - **Multi-User Support**: Allows different users to have isolated data stores
+//!
 //! ## Persistence and Recovery
 //!
-//! The registry automatically persists to `data/graph_registry.json` and implements
+//! The registry automatically persists to `{data_dir}/graph_registry.json` and implements
 //! recovery logic for resilience:
 //! - **Startup**: Loads existing registry or creates new one
 //! - **Graph Recovery**: Matches graphs by name+path if UUID is missing
@@ -184,7 +197,7 @@ impl GraphRegistry {
     }
 
     /// Register a new graph or update existing
-    pub fn register_graph(&mut self, name: String, path: String, id: Option<String>) -> Result<GraphInfo> {
+    pub fn register_graph(&mut self, name: String, path: String, id: Option<String>, data_dir: &std::path::Path) -> Result<GraphInfo> {
         // Check if we already know this graph by name/path BEFORE normalizing
         let existing_id = self.find_graph_id(&name, &path);
         
@@ -222,8 +235,8 @@ impl GraphRegistry {
             (None, None) => Uuid::new_v4().to_string(),
         };
 
-        // Generate knowledge graph path
-        let kg_path = PathBuf::from("data").join("graphs").join(&graph_id);
+        // Generate knowledge graph path using provided data_dir
+        let kg_path = data_dir.join("graphs").join(&graph_id);
 
         let graph_info = GraphInfo {
             id: graph_id.clone(),
@@ -319,7 +332,7 @@ impl GraphRegistry {
     }
 
     /// Get or create a graph based on name and path
-    pub fn get_or_create_graph(&mut self, name: String, path: String, id: Option<String>) -> Result<GraphInfo> {
+    pub fn get_or_create_graph(&mut self, name: String, path: String, id: Option<String>, data_dir: &std::path::Path) -> Result<GraphInfo> {
         // If we have an ID, try to find the graph
         if let Some(ref graph_id) = id {
             if let Some(info) = self.graphs.get_mut(graph_id) {
@@ -339,12 +352,12 @@ impl GraphRegistry {
         }
 
         // Otherwise register as new
-        self.register_graph(name, path, id)
+        self.register_graph(name, path, id, data_dir)
     }
 
     /// Validate request headers and switch active graph if needed
     /// Returns (graph_info, is_new_graph)
-    pub fn validate_and_switch(&mut self, name: Option<&str>, path: Option<&str>, id: Option<&str>) -> Result<(GraphInfo, bool)> {
+    pub fn validate_and_switch(&mut self, name: Option<&str>, path: Option<&str>, id: Option<&str>, data_dir: &std::path::Path) -> Result<(GraphInfo, bool)> {
         // Validate that we have at least name and path
         let name = name.ok_or_else(|| GraphRegistryError::ValidationError(
             "Missing X-Cymbiont-Graph-Name header".to_string()
@@ -356,7 +369,7 @@ impl GraphRegistry {
         // Get or create the graph
         let id_string = id.map(|s| s.to_string());
         let previous_count = self.graphs.len();
-        let graph_info = self.get_or_create_graph(name.to_string(), path.to_string(), id_string)?;
+        let graph_info = self.get_or_create_graph(name.to_string(), path.to_string(), id_string, data_dir)?;
         let is_new = self.graphs.len() > previous_count;
 
         // Switch to this graph if it's not already active
@@ -411,16 +424,21 @@ mod tests {
 
     #[test]
     fn test_register_new_graph() {
+        let temp_dir = tempdir().unwrap();
+        let data_dir = temp_dir.path();
+        
         let mut registry = GraphRegistry::new();
         let info = registry.register_graph(
             "TestGraph".to_string(),
             "/path/to/test".to_string(),
-            None
+            None,
+            data_dir
         ).unwrap();
 
         assert_eq!(info.name, "TestGraph");
         assert_eq!(info.path, "/path/to/test");
         assert!(!info.id.is_empty());
+        assert_eq!(info.kg_path, data_dir.join("graphs").join(&info.id));
         assert_eq!(registry.active_graph_id, Some(info.id.clone()));
     }
 
@@ -428,13 +446,15 @@ mod tests {
     fn test_save_and_load() {
         let dir = tempdir().unwrap();
         let registry_path = dir.path().join("test_registry.json");
+        let data_dir = dir.path();
 
         // Create and save
         let mut registry = GraphRegistry::new();
         let info = registry.register_graph(
             "TestGraph".to_string(),
             "/path/to/test".to_string(),
-            Some("test-id-123".to_string())
+            Some("test-id-123".to_string()),
+            data_dir
         ).unwrap();
         registry.save(&registry_path).unwrap();
 
@@ -447,20 +467,24 @@ mod tests {
 
     #[test]
     fn test_find_existing_graph() {
+        let temp_dir = tempdir().unwrap();
+        let data_dir = temp_dir.path();
         let mut registry = GraphRegistry::new();
         
         // Register first time
         let info1 = registry.register_graph(
             "TestGraph".to_string(),
             "/path/to/test".to_string(),
-            None
+            None,
+            data_dir
         ).unwrap();
 
         // Register again with same name AND same path
         let info2 = registry.register_graph(
             "TestGraph".to_string(),
             "/path/to/test".to_string(),
-            None
+            None,
+            data_dir
         ).unwrap();
 
         // Should get the same ID
@@ -470,7 +494,8 @@ mod tests {
         let info3 = registry.register_graph(
             "TestGraph".to_string(),
             "/different/path".to_string(),
-            None
+            None,
+            data_dir
         ).unwrap();
         
         // Should get a different ID (AND logic for safety)
@@ -525,7 +550,8 @@ mod tests {
         let info1 = registry.register_graph(
             "TestGraph".to_string(),
             "test_graph".to_string(),
-            None
+            None,
+            &temp.path()
         ).unwrap();
         
         // Try to register with absolute path - should get same ID
@@ -533,7 +559,8 @@ mod tests {
         let info2 = registry.register_graph(
             "TestGraph".to_string(),
             abs_path,
-            None
+            None,
+            &temp.path()
         ).unwrap();
         
         assert_eq!(info1.id, info2.id, "Should not create duplicate for relative/absolute path");
@@ -562,17 +589,22 @@ mod tests {
         let mut registry = GraphRegistry::new();
         
         // Should still work with non-existent paths
+        let temp_dir = tempdir().unwrap();
+        let data_dir = temp_dir.path();
+        
         let info1 = registry.register_graph(
             "TestGraph".to_string(),
             "nonexistent/path".to_string(),
-            None
+            None,
+            data_dir
         ).unwrap();
         
         // Should find it again
         let info2 = registry.register_graph(
             "TestGraph".to_string(),
             "nonexistent/path".to_string(),
-            None
+            None,
+            data_dir
         ).unwrap();
         
         assert_eq!(info1.id, info2.id);
@@ -584,16 +616,21 @@ mod tests {
         let mut registry = GraphRegistry::new();
         
         // These should be treated as different paths
+        let temp_dir = tempdir().unwrap();
+        let data_dir = temp_dir.path();
+        
         let info1 = registry.register_graph(
             "TestGraph".to_string(),
             "C:\\Users\\test".to_string(),
-            None
+            None,
+            data_dir
         ).unwrap();
         
         let info2 = registry.register_graph(
             "TestGraph".to_string(),
             "C:/Users/test".to_string(),
-            None
+            None,
+            data_dir
         ).unwrap();
         
         // On Unix, these are different paths
@@ -606,11 +643,15 @@ mod tests {
     fn test_find_graph_id_with_path_variations() {
         let mut registry = GraphRegistry::new();
         
+        let temp_dir = tempdir().unwrap();
+        let data_dir = temp_dir.path();
+        
         // Register a graph
         registry.register_graph(
             "TestGraph".to_string(),
             "some/relative/path".to_string(),
-            Some("test-id".to_string())
+            Some("test-id".to_string()),
+            data_dir
         ).unwrap();
         
         // Should find it with exact path

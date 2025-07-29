@@ -16,6 +16,8 @@ RUST_LOG=debug cargo run         # Run backend server with debug logging (do not
 - `--force-full-sync`: Force a full database sync (needed if block content is being modified by external tools)
 - `--graph <NAME>`: Launch with specific graph by name
 - `--graph-path <PATH>`: Launch with specific graph by path
+- `--data-dir <PATH>`: Override data directory path (defaults to config value)
+- `--shutdown-server`: Shutdown running Cymbiont server gracefully
 
 ## Architecture
 - See `cymbiont_architecture.md` for comprehensive codebase architecture
@@ -25,8 +27,13 @@ RUST_LOG=debug cargo run         # Run backend server with debug logging (do not
 - **logseq_plugin/**: JavaScript plugin for Logseq real-time sync (see logseq_plugin/CLAUDE.md)
 - **logseq_databases/**: Test graphs and multi-graph support
   - **dummy_graph/**: Test data for development
-- **data/**: Knowledge graph persistence
-  - **archived_nodes/**: Deleted node archives
+- **data/**: Knowledge graph persistence (configurable via data_dir in config.yaml)
+  - **graph_registry.json**: Graph UUID mappings and metadata
+  - **last_session.json**: Session persistence and active graph tracking
+  - **archived_nodes/**: Global deletion archives
+  - **graphs/{graph-id}/**: Per-graph isolated storage with knowledge_graph.json and transaction logs
+  - **saga_transaction_log/**: Global saga coordination (sled database)
+  - **transaction_log/**: Global transaction log (sled database)
 
 ### Project Structure
 - **src/**

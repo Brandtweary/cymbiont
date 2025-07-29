@@ -49,6 +49,9 @@ cargo run --release
 Copy `config.example.yaml` to `config.yaml` and adjust settings:
 
 ```yaml
+# Data storage directory (can be absolute or relative path)
+data_dir: data  # Default: "data" directory in project root
+
 # Backend server configuration
 backend:
   port: 3000  # Default port (will try alternatives if busy)
@@ -79,7 +82,7 @@ sync:
 
 2. The Logseq plugin will automatically connect and begin syncing
 
-3. Use CLI flags for manual operations:
+3. Use CLI flags for various operations:
    ```bash
    # Force incremental sync
    cargo run -- --force-incremental-sync
@@ -89,6 +92,18 @@ sync:
    
    # Run for specific duration
    cargo run -- --duration 300
+   
+   # Use custom data directory
+   cargo run -- --data-dir /path/to/custom/data
+   
+   # Launch with specific graph
+   cargo run -- --graph "My Graph"
+   
+   # Launch with graph by path
+   cargo run -- --graph-path "/path/to/graph"
+   
+   # Shutdown running server
+   cargo run -- --shutdown-server
    ```
 
 ## Configuration Details

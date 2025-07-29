@@ -1,4 +1,4 @@
-# Logseq Knowledge Graph Configuration
+# Cymbiont Knowledge Graph Configuration
 
 # Backend server configuration
 backend:
@@ -9,32 +9,6 @@ backend:
   # Maximum number of alternative ports to try if the default is unavailable
   # Will try ports from port to port+max_port_attempts
   max_port_attempts: 10
-
-# Logseq application configuration
-logseq:
-  # Whether to automatically launch Logseq when the backend server starts
-  auto_launch: true
-  # Optional: Path to Logseq executable (if not provided, will search common locations)
-  # executable_path: /path/to/logseq
-  
-  # Session management configuration
-  # If true, launches default_database on startup
-  # If false, launches last active database (default behavior)
-  launch_specific_database: false
-  
-  # Which database to launch when launch_specific_database is true
-  # Can be a name (if defined in databases) or a path
-  # default_database: my_work_graph
-  
-  # Pre-configured Logseq databases
-  # Path can be absolute or relative to Cymbiont project root
-  databases:
-    # Example with absolute path (typical for end users)
-    # - path: /home/user/Documents/logseq/work
-    #   name: work
-    # Example with relative path (useful for testing)
-    # - path: logseq_databases/dummy_graph
-    #   name: dummy_graph
 
 # Development-only settings (DO NOT USE IN PRODUCTION)
 development:
@@ -53,7 +27,7 @@ sync:
   full_interval_hours: 168
   
   # Whether to perform full database syncs at all (default: false)
-  # Most users don't need this - only enable if you modify Logseq files externally
+  # Most users don't need this - only enable if you modify PKM files externally
   enable_full_sync: false
 
 # Data storage directory configuration

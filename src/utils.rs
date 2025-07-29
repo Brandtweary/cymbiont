@@ -1,64 +1,23 @@
 /**
  * @module utils
- * @description Cross-cutting utility functions for the PKM Knowledge Graph backend
+ * @description Cross-cutting utility functions for the knowledge graph engine
  * 
- * This module consolidates all general-purpose utility functions that don't belong to any
- * specific domain module. It provides essential helpers for process management, datetime
- * parsing, JSON processing, network operations, and other low-level functionality used
- * throughout the application.
+ * This module provides essential helpers for process management, datetime parsing,
+ * JSON processing, and network operations used throughout the application.
  * 
- * ## Process Management Utilities
+ * ## Process Management
  * 
- * - `SERVER_INFO_FILE`: Constant for "cymbiont_server.json"
- * - `ServerInfo`: Struct containing PID, host, and port for IPC
+ * Server lifecycle management with platform-specific process control:
+ * - `terminate_previous_instance()`: Clean server startup with PID checking
+ * - `write_server_info()`: Creates discovery file for external clients
+ * - `find_available_port()`: Port allocation with configurable fallback
  * 
- * - `terminate_previous_instance()`: Clean server startup
- *   - Reads previous server info from JSON file
- *   - Checks if process still exists (platform-specific)
- *   - Sends SIGTERM (Unix) or taskkill (Windows)
- *   - Cleans up stale PID files automatically
+ * ## Data Processing
  * 
- * - `write_server_info()`: Creates server discovery file
- *   - Writes current process info for JavaScript plugin
- *   - Enables dynamic port discovery
- * 
- * - `find_available_port()`: Port allocation with fallback
- *   - Tries configured port first
- *   - Falls back to sequential ports (3001, 3002, etc.)
- *   - Respects max_port_attempts configuration
- * 
- * - `is_port_available()`: Simple TCP bind check
- * 
- * ## DateTime and JSON Utilities
- * 
- * - `parse_datetime()`: Robust datetime parsing
- *   - Supports RFC3339 format (standard)
- *   - Supports ISO 8601 format
- *   - Handles Unix timestamps (seconds and milliseconds)
- *   - Falls back to current time on parse failure
- * 
- * - `parse_properties()`: JSON to HashMap<String, String> conversion
- *   - Extracts object properties as strings
- *   - Non-string values converted via to_string()
- *   - Used for PKM block/page properties
- * 
- * - `parse_json_data<T>()`: Generic JSON deserialization
- *   - Type-safe wrapper around serde_json::from_str
- *   - Used throughout API handlers for payload parsing
- * 
- * ## Error Handling
- * 
- * Most functions return Result types for proper error propagation. Process
- * management functions log errors internally but may return bool for simpler
- * usage patterns (e.g., terminate_previous_instance).
- * 
- * ## Testing
- * 
- * The module includes comprehensive unit tests for:
- * - ServerInfo serialization/deserialization
- * - DateTime parsing with various formats
- * - JSON property extraction
- * - Port availability (with port 0 for OS allocation)
+ * Utilities for parsing and converting data formats:
+ * - `parse_datetime()`: Multi-format datetime parsing with fallback
+ * - `parse_properties()`: JSON to HashMap conversion for metadata
+ * - `parse_json_data<T>()`: Type-safe JSON deserialization
  */
 
 use std::process::Command;

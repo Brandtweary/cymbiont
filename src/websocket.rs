@@ -1,55 +1,32 @@
 /**
  * @module websocket
- * @description WebSocket server for bidirectional communication with clients
+ * @description WebSocket server for real-time client communication
  * 
- * This module implements a WebSocket server that enables real-time bidirectional
- * communication between the Cymbiont backend and external clients. It provides
- * the foundation for AI agents to create, update, and delete content in the user's
- * PKM through WebSocket commands.
+ * This module implements a WebSocket server that enables bidirectional communication
+ * between the knowledge graph engine and external clients, supporting real-time
+ * synchronization of graph operations.
  * 
- * ## Architecture
+ * ## Connection Management
  * 
- * The module uses Axum's WebSocket support with a connection-based architecture:
- * - Each connection gets a unique UUID and tracking state
- * - Connections must authenticate before receiving commands
- * - Commands are broadcast to all authenticated connections
- * - Heartbeat mechanism detects stale connections
+ * Connection-based architecture with authentication:
+ * - Unique UUID tracking for each connection
+ * - Authentication required before command processing
+ * - Heartbeat mechanism for connection health
+ * - Automatic cleanup on disconnect
  * 
  * ## Command Protocol
  * 
- * Commands use JSON with a tagged enum pattern:
- * - **Client → Server**: auth, heartbeat, test
- * - **Server → Client**: create_block, update_block, delete_block, create_page
+ * JSON-based command system with acknowledgments:
+ * - **Inbound**: auth, heartbeat, test, operation confirmations
+ * - **Outbound**: create_block, update_block, delete_block, create_page
+ * - Correlation IDs for tracking multi-step operations
  * 
- * ## Connection Lifecycle
+ * ## Saga Integration
  * 
- * 1. Client connects and receives connection ID
- * 2. Client sends auth command with token
- * 3. Server validates and marks connection as authenticated
- * 4. Server can now send PKM manipulation commands
- * 5. Heartbeat keeps connection alive (30s intervals)
- * 6. On disconnect, connection is cleaned up
- * 
- * ## Concurrency Safety
- * 
- * The module implements deadlock-proof patterns:
- * - Helper functions encapsulate all lock operations
- * - Locks are never held during async operations
- * - Connection state is cloned before sending messages
- * 
- * ## Verification Endpoints
- * 
- * The WebSocket system provides HTTP endpoints for verification:
- * - `GET /api/websocket/status` - Connection health and metrics
- * - `GET /api/websocket/recent-activity` - Command/confirmation history
- * 
- * ## Future Enhancements
- * 
- * - Command acknowledgments with external UUIDs
- * - Integration with transaction log for correlation
- * - Command batching for efficiency
- * - Connection pooling for multi-graph support
- * - Activity tracking for the recent-activity endpoint
+ * WebSocket commands integrate with the saga pattern for reliable operations:
+ * - Commands trigger saga workflows
+ * - Acknowledgments complete saga steps
+ * - Graph state updates on successful confirmations
  */
 
 use axum::{

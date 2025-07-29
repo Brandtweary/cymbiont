@@ -4,16 +4,14 @@
  * Knowledge Graph API Module
  * 
  * Provides the public API for knowledge graph operations with integrated transaction
- * logging and automatic WebSocket synchronization. This module serves as the
- * primary interface for AI agents and other consumers to interact with the knowledge
- * graph while maintaining data consistency.
+ * logging and WebSocket synchronization. This module serves as the primary interface
+ * for AI agents to interact with the knowledge graph while maintaining consistency.
  * 
- * Key responsibilities:
+ * Key features:
  * - Transaction-wrapped graph mutations
  * - Content deduplication via hash checking
- * - Automatic WebSocket sync for real-time updates
- * - Saga coordination for multi-step operations
- * - Clean public API hiding internal complexity
+ * - WebSocket synchronization for real-time updates
+ * - Saga coordination for reliable multi-step operations
  */
 
 use crate::{

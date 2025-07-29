@@ -7,18 +7,6 @@
  * parsing, JSON processing, network operations, and other low-level functionality used
  * throughout the application.
  * 
- * ## Logseq Integration Utilities
- * 
- * - `find_logseq_executable()`: Cross-platform Logseq discovery
- *   - Windows: Checks %USERPROFILE%\AppData\Local\Logseq\Logseq.exe
- *   - macOS: Checks /Applications/Logseq.app/Contents/MacOS/Logseq
- *   - Linux: Searches PATH, common AppImage locations, and user directories
- * 
- * - `launch_logseq()`: Process launching with output filtering
- *   - Spawns Logseq with piped stdout/stderr
- *   - Filters noisy Electron/xdg-mime warnings to trace level
- *   - Returns Child process handle for lifecycle management
- * 
  * ## Process Management Utilities
  * 
  * - `SERVER_INFO_FILE`: Constant for "cymbiont_server.json"
@@ -73,11 +61,9 @@
  * - Port availability (with port 0 for OS allocation)
  */
 
-use std::path::PathBuf;
-use std::process::{Command, Child};
+use std::process::Command;
 use std::fs;
 use std::error::Error;
-use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -85,150 +71,9 @@ use chrono::{DateTime, Utc};
 use serde::{Serialize, Deserialize};
 use serde::de::DeserializeOwned;
 use serde_json;
-use tracing::{info, error, debug, trace, warn};
-use crate::config::{LogseqConfig, BackendConfig};
+use tracing::{error, trace, warn};
+use crate::config::BackendConfig;
 
-// Platform-specific Logseq executable paths
-pub fn find_logseq_executable() -> Option<PathBuf> {
-    #[cfg(target_os = "windows")]
-    {
-        let user_profile = std::env::var("USERPROFILE").ok()?;
-        let path = PathBuf::from(user_profile)
-            .join("AppData")
-            .join("Local")
-            .join("Logseq")
-            .join("Logseq.exe");
-        if path.exists() {
-            return Some(path);
-        }
-    }
-    
-    #[cfg(target_os = "macos")]
-    {
-        let path = PathBuf::from("/Applications/Logseq.app/Contents/MacOS/Logseq");
-        if path.exists() {
-            return Some(path);
-        }
-    }
-    
-    #[cfg(target_os = "linux")]
-    {
-        let home = std::env::var("HOME").ok()?;
-        
-        // 1. Check if logseq is in PATH (snap install)
-        if let Ok(output) = Command::new("which").arg("logseq").output() {
-            if output.status.success() {
-                let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !path_str.is_empty() {
-                    return Some(PathBuf::from(path_str));
-                }
-            }
-        }
-        
-        // 2. Search for AppImage in common locations
-        let common_paths = vec![
-            PathBuf::from(&home).join(".local/share/applications/appimages"),
-            PathBuf::from(&home).join(".local/share/applications"),
-            PathBuf::from(&home).join("Applications"),
-            PathBuf::from(&home).join("Downloads"),
-            PathBuf::from(&home).join(".local/bin"),
-            PathBuf::from("/opt"),
-            PathBuf::from("/usr/local/bin"),
-        ];
-        
-        for dir in common_paths {
-            if let Ok(entries) = fs::read_dir(&dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if let Some(name) = path.file_name() {
-                        let name_str = name.to_string_lossy().to_lowercase();
-                        if name_str.contains("logseq") && name_str.ends_with(".appimage") {
-                            return Some(path);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    None
-}
-
-// Launch Logseq process
-pub fn launch_logseq(config: &LogseqConfig) -> Result<Option<Child>, Box<dyn Error>> {
-    if !config.auto_launch {
-        info!("Logseq auto-launch is disabled");
-        return Ok(None);
-    }
-    
-    let executable = if let Some(path) = &config.executable_path {
-        PathBuf::from(path)
-    } else if let Some(path) = find_logseq_executable() {
-        path
-    } else {
-        error!("Could not find Logseq executable. Please specify executable_path in config.yaml");
-        return Ok(None);
-    };
-    
-    info!("🚀 Launching Logseq from: {:?}", executable);
-    
-    // Automatically register URL handler on Linux
-    #[cfg(target_os = "linux")]
-    {
-        if let Err(e) = register_logseq_url_handler(&executable.to_string_lossy()) {
-            warn!("Failed to register Logseq URL handler: {}. Graph switching may not work.", e);
-        }
-    }
-    
-    let mut child = Command::new(&executable)
-        .stderr(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to launch Logseq: {}", e))?;
-    
-    // Spawn threads to handle stdout and stderr
-    if let Some(stdout) = child.stdout.take() {
-        std::thread::spawn(move || {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    // Filter out xdg-mime warnings
-                    if line.contains("xdg-mime:") && line.contains("application argument missing") {
-                        trace!("Logseq stdout (xdg-mime warning): {}", line);
-                    } else if line.contains("›") {
-                        // Electron logs with › symbol
-                        trace!("Logseq: {}", line);
-                    } else {
-                        trace!("Logseq stdout: {}", line);
-                    }
-                }
-            }
-        });
-    }
-    
-    if let Some(stderr) = child.stderr.take() {
-        std::thread::spawn(move || {
-            let reader = BufReader::new(stderr);
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    // Filter out xdg-mime warnings and rsapi init
-                    if line.contains("xdg-mime:") && line.contains("application argument missing") {
-                        trace!("Logseq stderr (xdg-mime warning): {}", line);
-                    } else if line.contains("(rsapi) init loggers") {
-                        trace!("Logseq stderr (rsapi): {}", line);
-                    } else if line.contains("Try 'xdg-mime --help'") {
-                        trace!("Logseq stderr (xdg-mime help): {}", line);
-                    } else {
-                        // Log other stderr at debug level in case something important shows up
-                        debug!("Logseq stderr: {}", line);
-                    }
-                }
-            }
-        });
-    }
-    
-    Ok(Some(child))
-}
 
 // ===== Process Management =====
 
@@ -442,160 +287,7 @@ pub fn parse_json_data<T: DeserializeOwned>(payload: &str) -> Result<T, serde_js
     serde_json::from_str::<T>(payload)
 }
 
-/// Open a URL using the platform-specific command
-pub fn open_url(url: &str) -> Result<(), Box<dyn Error>> {
-    info!("open_url called with: '{}')", url);
-    
-    #[cfg(target_os = "linux")]
-    {
-        // First check if xdg-open exists
-        let which_output = Command::new("which")
-            .arg("xdg-open")
-            .output();
-            
-        match which_output {
-            Ok(output) => {
-                if output.status.success() {
-                    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                    debug!("xdg-open found at: {}", path);
-                } else {
-                    error!("xdg-open not found in PATH");
-                }
-            }
-            Err(e) => error!("Failed to run 'which xdg-open': {}", e),
-        }
-        
-        // Check what handlers are registered for logseq://
-        let query_output = Command::new("xdg-mime")
-            .args(&["query", "default", "x-scheme-handler/logseq"])
-            .output();
-            
-        match query_output {
-            Ok(output) => {
-                let handler = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if handler.is_empty() {
-                    warn!("No handler registered for logseq:// URL scheme");
-                } else {
-                    info!("Handler for logseq:// scheme: {}", handler);
-                }
-            }
-            Err(e) => warn!("Failed to query logseq:// handler: {}", e),
-        }
-        
-        info!("Executing: xdg-open '{}'", url);
-        let output = Command::new("xdg-open")
-            .arg(url)
-            .output()
-            .map_err(|e| format!("Failed to execute xdg-open: {}", e))?;
-            
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            error!("xdg-open failed with status: {}", output.status);
-            error!("stderr: {}", stderr);
-            error!("stdout: {}", stdout);
-            return Err(format!("xdg-open failed: {}", stderr).into());
-        }
-        
-        info!("xdg-open returned successfully (but may have failed silently)");
-    }
-    
-    #[cfg(target_os = "macos")]
-    {
-        Command::new("open")
-            .arg(url)
-            .spawn()
-            .map_err(|e| format!("Failed to open URL on macOS: {}", e))?;
-    }
-    
-    #[cfg(target_os = "windows")]
-    {
-        Command::new("cmd")
-            .args(&["/C", "start", "", url])
-            .spawn()
-            .map_err(|e| format!("Failed to open URL on Windows: {}", e))?;
-    }
-    
-    Ok(())
-}
 
-/// Register Logseq as handler for logseq:// URLs (Linux only)
-#[cfg(target_os = "linux")]
-pub fn register_logseq_url_handler(logseq_path: &str) -> Result<(), Box<dyn Error>> {
-    info!("Registering Logseq URL handler...");
-    
-    // Check if already registered
-    let check_output = Command::new("xdg-mime")
-        .args(&["query", "default", "x-scheme-handler/logseq"])
-        .output()?;
-        
-    let current_handler = String::from_utf8_lossy(&check_output.stdout).trim().to_string();
-    if current_handler == "Logseq.desktop" {
-        debug!("Logseq URL handler already registered");
-        return Ok(());
-    }
-    
-    // Create .desktop file
-    let home = std::env::var("HOME")?;
-    let desktop_dir = PathBuf::from(&home).join(".local/share/applications");
-    fs::create_dir_all(&desktop_dir)?;
-    
-    let desktop_file = desktop_dir.join("Logseq.desktop");
-    let desktop_content = format!(
-        "[Desktop Entry]\n\
-        Name=Logseq\n\
-        Exec={} %u\n\
-        Terminal=false\n\
-        Type=Application\n\
-        Icon=Logseq\n\
-        StartupWMClass=Logseq\n\
-        Comment=A privacy-first, open-source platform for knowledge management and collaboration.\n\
-        MimeType=x-scheme-handler/logseq\n\
-        Categories=Utility\n",
-        logseq_path
-    );
-    
-    fs::write(&desktop_file, desktop_content)?;
-    info!("Created desktop file at: {:?}", desktop_file);
-    
-    // Update desktop database
-    let update_result = Command::new("update-desktop-database")
-        .arg(&desktop_dir)
-        .output();
-        
-    if let Err(e) = update_result {
-        warn!("Failed to update desktop database: {} (continuing anyway)", e);
-    }
-    
-    // Register MIME handler
-    let register_result = Command::new("xdg-mime")
-        .args(&["default", "Logseq.desktop", "x-scheme-handler/logseq"])
-        .output()?;
-        
-    if !register_result.status.success() {
-        let stderr = String::from_utf8_lossy(&register_result.stderr);
-        return Err(format!("Failed to register MIME handler: {}", stderr).into());
-    }
-    
-    // Verify registration
-    let verify_output = Command::new("xdg-mime")
-        .args(&["query", "default", "x-scheme-handler/logseq"])
-        .output()?;
-        
-    let registered_handler = String::from_utf8_lossy(&verify_output.stdout).trim().to_string();
-    if registered_handler == "Logseq.desktop" {
-        info!("✅ Successfully registered Logseq URL handler");
-        Ok(())
-    } else {
-        Err(format!("Registration verification failed. Expected 'Logseq.desktop', got '{}'", registered_handler).into())
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-pub fn register_logseq_url_handler(_logseq_path: &str) -> Result<(), Box<dyn Error>> {
-    // URL handler registration not implemented for this platform
-    Ok(())
-}
 
 // ===== Tests =====
 

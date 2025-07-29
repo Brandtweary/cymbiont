@@ -17,7 +17,7 @@
  * 
  * ## Core Features
  * 
- * - **Real-time Sync**: Automatically syncs with Logseq to maintain an up-to-date knowledge graph
+ * - **Real-time Sync**: Automatically syncs with PKM tools to maintain an up-to-date knowledge graph
  * - **Graph-Aware Context**: Provides AI agents with understanding of relationships between concepts
  * - **Multi-Graph Support**: Manage multiple knowledge bases simultaneously with complete isolation
  * - **Incremental Updates**: Efficiently tracks changes without full database rescans
@@ -27,7 +27,7 @@
  * 
  * Cymbiont consists of three main components:
  * 1. **Backend Server** (Rust) - This codebase: graph management, API endpoints, sync coordination
- * 2. **Logseq Plugin** (JavaScript) - Real-time sync integration with Logseq
+ * 2. **Agent Integration** - Terminal-based agents for knowledge management
  * 3. **AI Agent Integration** - Future integration with aichat-agent library for LLM capabilities
  * 
  * ## Main Module Responsibilities
@@ -39,14 +39,13 @@
  * - Application state coordination (AppState with multi-graph managers)
  * - CLI argument processing and configuration loading
  * - Data directory initialization and path resolution
- * - Logseq process launching and session management
+ * - Process lifecycle and signal handling
  * - Signal handling for clean shutdowns (Ctrl+C)
  * 
  * ### Module Coordination
  * - **config**: YAML configuration loading and CLI overrides
  * - **api**: HTTP router creation and endpoint handlers  
  * - **graph_registry**: Multi-graph identification and switching
- * - **session_manager**: Logseq database session coordination
  * - **websocket**: Real-time communication with plugin
  * - **utils**: Process management and platform utilities
  * 
@@ -102,12 +101,10 @@ mod saga;
 mod kg_api;
 mod graph_registry;
 mod edn;
-mod session_manager;
 
 use graph_manager::GraphManager;
 use graph_registry::GraphRegistry;
-use session_manager::{SessionManager, DbIdentifier};
-use config::{load_config, validate_js_plugin_config, Config};
+use config::{load_config, Config};
 use logging::init_logging;
 use api::create_router;
 use utils::{SERVER_INFO_FILE, terminate_previous_instance, write_server_info, find_available_port};
@@ -135,13 +132,6 @@ struct Args {
     #[arg(long)]
     test_websocket: Option<String>,
     
-    /// Launch with specific Logseq database by name
-    #[arg(long, conflicts_with = "graph_path")]
-    graph: Option<String>,
-    
-    /// Launch with specific Logseq database by path
-    #[arg(long)]
-    graph_path: Option<String>,
     
     /// Shutdown a running Cymbiont server gracefully
     #[arg(long)]
@@ -157,8 +147,6 @@ pub struct AppState {
     pub graph_managers: Arc<RwLock<HashMap<String, RwLock<GraphManager>>>>,
     pub graph_registry: Arc<Mutex<GraphRegistry>>,
     pub active_graph_id: Arc<RwLock<Option<String>>>,
-    pub session_manager: Arc<SessionManager>,
-    pub logseq_child: Mutex<Option<std::process::Child>>,
     pub plugin_init_tx: Mutex<Option<oneshot::Sender<()>>>,
     pub sync_complete_tx: Mutex<Option<oneshot::Sender<()>>>,
     pub ws_ready_tx: Mutex<Option<oneshot::Sender<()>>>,
@@ -236,25 +224,9 @@ impl AppState {
         *active = Some(graph_id.clone());
         drop(active); // Release the write lock before calling session manager
         
-        // Notify session manager that this graph is now active
-        if let Err(e) = self.session_manager.on_graph_active(&graph_id).await {
-            error!("Failed to update session for active graph: {}", e);
-        }
     }
 }
 
-// Implement GraphSwitchNotifier for Arc<AppState>
-#[async_trait]
-impl session_manager::GraphSwitchNotifier for Arc<AppState> {
-    async fn notify_graph_switch(&self, target_graph_id: &str, target_graph_name: &str, target_graph_path: &str) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let command = websocket::Command::GraphSwitchRequested {
-            target_graph_id: target_graph_id.to_string(),
-            target_graph_name: target_graph_name.to_string(),
-            target_graph_path: target_graph_path.to_string(),
-        };
-        websocket::broadcast_command(self, command).await
-    }
-}
 
 // Cleanup function to handle graceful shutdown
 fn cleanup_and_exit(app_state: Option<Arc<AppState>>, start_time: Instant) {
@@ -297,15 +269,6 @@ fn cleanup_and_exit(app_state: Option<Arc<AppState>>, start_time: Instant) {
             }
         }
         
-        // Terminate Logseq if it was launched by us
-        if let Ok(mut child_guard) = state.logseq_child.lock() {
-            if let Some(mut child) = child_guard.take() {
-                match child.kill() {
-                    Ok(_) => info!("✅ Logseq terminated successfully"),
-                    Err(e) => error!("Error terminating Logseq: {}", e),
-                }
-            }
-        }
     }
     
     if let Err(e) = fs::remove_file(SERVER_INFO_FILE) {
@@ -356,10 +319,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         config.data_dir = cli_data_dir.clone();
     }
     
-    // Validate JavaScript plugin configuration
-    if let Err(e) = validate_js_plugin_config(&config) {
-        warn!("Failed to validate JavaScript plugin configuration: {}", e);
-    }
     
     // Terminate any previous instance
     if fs::metadata(SERVER_INFO_FILE).is_ok() {
@@ -385,12 +344,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .map_err(|e| Box::<dyn Error>::from(format!("Graph registry error: {e:?}")))?
     ));
     
-    // Initialize session manager
-    let session_manager = Arc::new(SessionManager::new(
-        graph_registry.clone(),
-        config.logseq.clone(),
-        data_dir.clone(),
-    ));
     
     // Initialize multi-graph managers and coordinators
     let graph_managers = Arc::new(RwLock::new(HashMap::new()));
@@ -420,8 +373,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         graph_managers: graph_managers.clone(),
         graph_registry: graph_registry.clone(),
         active_graph_id: Arc::new(RwLock::new(None)),
-        session_manager: session_manager.clone(),
-        logseq_child: Mutex::new(None),
         plugin_init_tx: Mutex::new(None),
         sync_complete_tx: Mutex::new(None),
         ws_ready_tx: Mutex::new(None),
@@ -459,46 +410,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     
     info!("🚀 Backend server listening on {}", addr);
     
-    // Launch Logseq with session manager
-    let plugin_init_rx = if config.logseq.auto_launch {
-        // Determine CLI target database
-        let cli_target = if let Some(name) = args.graph {
-            Some(DbIdentifier::Name(name))
-        } else if let Some(path) = args.graph_path {
-            Some(DbIdentifier::Path(path))
-        } else {
-            None
-        };
-        
-        // Launch Logseq (this is async, but we'll handle it synchronously for now)
-        let logseq_child = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                match session_manager.launch_logseq(cli_target).await {
-                    Ok(child) => child,
-                    Err(e) => {
-                        error!("Failed to launch Logseq: {}", e);
-                        None
-                    }
-                }
-            })
-        });
-        
-        // Store the child process handle if we got one
-        if let Some(child) = logseq_child {
-            if let Ok(mut child_guard) = app_state.logseq_child.lock() {
-                *child_guard = Some(child);
-            }
-        }
-        
-        // Create initialization channel
-        let (tx, rx) = oneshot::channel::<()>();
-        if let Ok(mut tx_guard) = app_state.plugin_init_tx.lock() {
-            *tx_guard = Some(tx);
-        }
-        Some(rx)
-    } else {
-        None
-    };
+    // Create initialization channel for plugin compatibility
+    let plugin_init_rx = None;
     
     // Determine duration: explicit CLI arg takes precedence over config default
     let duration_secs = args.duration.or(config.development.default_duration);
@@ -515,7 +428,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             // Wait for plugin initialization before starting timer
             run_with_duration(listener, app, app_state.clone(), rx, duration, args.test_websocket).await?;
         } else {
-            // No Logseq, start timer immediately
+            // Start timer immediately
             debug!("Server will run for {} seconds", duration);
             run_server_with_timeout(listener, app, duration).await?;
         }
@@ -682,7 +595,7 @@ async fn test_websocket_command(app_state: &Arc<AppState>, command_type: &str) {
     }
 }
 
-// Simple timeout for when Logseq is not launched
+// Simple timeout for server
 async fn run_server_with_timeout(
     listener: tokio::net::TcpListener,
     app: Router,

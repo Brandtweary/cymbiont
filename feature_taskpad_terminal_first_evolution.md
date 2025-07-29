@@ -3,6 +3,13 @@
 ## Feature Description
 Transform Cymbiont from a Logseq-integrated PKM synchronization tool into a terminal-first knowledge graph engine designed for AI agents. This evolution preserves the core knowledge graph functionality while shedding the complexity of browser/plugin coordination, emerging as a clean, composable Unix-style utility that can be embedded, piped, or served.
 
+## Core Vision
+- **Primary Interface**: stdin/stdout for agent consumption
+- **Data Format**: JSON/EDN structured data
+- **TUI Dashboard**: Persistent pinned notes for agent context (not graph browsing)
+- **Library First**: Expose as a Rust library for embedding
+- **API Preserved**: Keep HTTP/WebSocket APIs for programmatic access
+
 ## Specifications
 - **Primary Interface**: stdin/stdout JSON/EDN protocol for agent consumption
 - **Library First**: Expose as embeddable Rust library with clean public API
@@ -29,9 +36,9 @@ Transform Cymbiont from a Logseq-integrated PKM synchronization tool into a term
 - `src/config.rs`: Configuration - simplify, remove Logseq-specific fields
 
 ### Evolution Candidates (Transform or Deprecate)
-- `src/session_manager.rs`: Currently manages Logseq sessions - deprecate entirely
-- `src/graph_registry.rs`: Multi-graph registry - simplify to single graph focus
-- `src/utils.rs`: Mixed utilities - extract useful parts, remove Logseq launches
+- `src/session_manager.rs`: Currently manages Logseq sessions - deprecate entirely (REMOVED ✓)
+- `src/graph_registry.rs`: Multi-graph registry - keep for multi-graph support
+- `src/utils.rs`: Mixed utilities - extract useful parts, remove Logseq launches (CLEANED ✓)
 - `src/edn.rs`: EDN manipulation - might be useful for import functionality
 
 ### New Growth Areas
@@ -72,6 +79,20 @@ Transform Cymbiont from a Logseq-integrated PKM synchronization tool into a term
 - [ ] Create CLI argument parser and command router
 - [ ] Implement pipe-friendly output formats
 - [ ] Add batch operation support for efficiency
+- [ ] **Unix Pipe Examples**:
+  ```bash
+  # Query knowledge graph
+  echo '{"query": "find_related", "node": "Rust"}' | cymbiont
+  
+  # Import from Logseq
+  cymbiont import --format logseq --path ~/Documents/notes
+  
+  # Stream updates to agent
+  cymbiont stream | my-agent --consume-kg
+  
+  # TUI monitoring
+  cymbiont tui
+  ```
 
 ### 5. Import System Architecture
 - [ ] Create `src/import/mod.rs` framework
@@ -169,6 +190,19 @@ This is not historical context - it's the active integration plan adapted for te
 - Semantic search using vector embeddings
 - Multi-agent coordination protocols
 - Real-time collaborative graph editing
+
+## Migration Path
+1. Existing Logseq users can one-time import their graphs
+2. API remains compatible for existing integrations
+3. WebSocket available but optional
+4. Focus shifts from sync to import/export
+
+## Success Metrics
+- Agent query latency < 10ms
+- Import 100k nodes in < 1 minute
+- Zero browser dependencies
+- 80% code coverage with unit tests
+- Clean pipe interface adhering to Unix philosophy
 
 ## Final Implementation
 *To be completed when the evolution is complete - will document the new lifeform that emerged from this transformation*

@@ -1,0 +1,3 @@
+[submodule "cymbiont-skeleton"]
+	path = cymbiont-skeleton
+	url = file:///home/brandt/projects/cymbiont-skeleton

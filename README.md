@@ -1,6 +1,8 @@
 # Cymbiont
 
-A knowledge graph-enhanced AI agent that seamlessly integrates with personal knowledge management (PKM) tools, starting with Logseq.
+> **⚠️ MAJOR PIVOT IN PROGRESS**: Cymbiont is evolving to its 1.0 release as a terminal-first knowledge graph engine for AI agents. See [CYMBIONT_1.0_PLAN.md](CYMBIONT_1.0_PLAN.md) for details.
+
+A terminal-first knowledge graph engine designed for AI agents, with import capabilities for personal knowledge management systems.
 
 ## Overview
 

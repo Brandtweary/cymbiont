@@ -37,12 +37,19 @@
  * - Locks are never held during async operations
  * - Connection state is cloned before sending messages
  * 
+ * ## Verification Endpoints
+ * 
+ * The WebSocket system provides HTTP endpoints for verification:
+ * - `GET /api/websocket/status` - Connection health and metrics
+ * - `GET /api/websocket/recent-activity` - Command/confirmation history
+ * 
  * ## Future Enhancements
  * 
  * - Command acknowledgments with Logseq UUIDs
  * - Integration with transaction log for correlation
  * - Command batching for efficiency
  * - Connection pooling for multi-graph support
+ * - Activity tracking for the recent-activity endpoint
  */
 
 use axum::{

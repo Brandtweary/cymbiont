@@ -97,6 +97,51 @@
  * Maps JavaScript log levels to appropriate tracing macros. Source defaults to
  * "JS Plugin" if not specified.
  * 
+ * ### POST /api/session/switch
+ * Switch to a different database by name or path.
+ * Request body:
+ * ```json
+ * { "name": "My Graph" }  // or
+ * { "path": "/path/to/graph" }
+ * ```
+ * Triggers WebSocket notification for graph switch confirmation.
+ * 
+ * ### GET /api/session/current
+ * Returns current session state including active graph and WebSocket connection status:
+ * ```json
+ * {
+ *   "session_state": "active",
+ *   "active_graph_id": "uuid-123",
+ *   "active_graph_name": "My Graph",
+ *   "active_graph_path": "/path/to/graph",
+ *   "websocket_connected": true
+ * }
+ * ```
+ * 
+ * ### GET /api/session/databases
+ * Returns list of all registered databases with their metadata.
+ * 
+ * ### GET /api/websocket/status
+ * Returns WebSocket connection metrics:
+ * ```json
+ * {
+ *   "connected": true,
+ *   "connection_count": 1,
+ *   "active_graph_id": "uuid-123"
+ * }
+ * ```
+ * 
+ * ### GET /api/websocket/recent-activity
+ * Returns recent WebSocket commands and confirmations (placeholder for future implementation):
+ * ```json
+ * {
+ *   "recent_commands": [],
+ *   "recent_confirmations": [],
+ *   "last_activity": null,
+ *   "message": "WebSocket activity tracking not yet implemented"
+ * }
+ * ```
+ * 
  * ## Batch Processing
  * 
  * Batch endpoints optimize performance for bulk operations:
@@ -242,6 +287,9 @@ pub fn create_router(app_state: Arc<AppState>) -> Router {
         .route("/api/session/switch", post(switch_database))
         .route("/api/session/current", get(get_current_session))
         .route("/api/session/databases", get(list_databases))
+        // WebSocket status endpoints
+        .route("/api/websocket/status", get(get_websocket_status))
+        .route("/api/websocket/recent-activity", get(get_websocket_activity))
         .layer(middleware::from_fn_with_state(
             app_state.clone(),
             graph_validation_middleware,
@@ -1130,11 +1178,20 @@ pub async fn get_current_session(
 ) -> Json<serde_json::Value> {
     let session_info = state.session_manager.get_session_info().await;
     
+    // Include WebSocket connection status
+    let ws_connected = if let Some(ws_connections) = &state.ws_connections {
+        let conns = ws_connections.read().await;
+        !conns.is_empty()
+    } else {
+        false
+    };
+    
     Json(serde_json::json!({
         "session_state": session_info.state,
         "active_graph_id": session_info.active_graph_id,
         "active_graph_name": session_info.active_graph_name,
         "active_graph_path": session_info.active_graph_path,
+        "websocket_connected": ws_connected,
     }))
 }
 
@@ -1156,6 +1213,57 @@ pub async fn list_databases(
     };
     
     Json(databases)
+}
+
+/// Get WebSocket connection status
+pub async fn get_websocket_status(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let connections = if let Some(ws_connections) = &state.ws_connections {
+        let conns = ws_connections.read().await;
+        conns.len()
+    } else {
+        0
+    };
+    
+    // Get active graph for context
+    let active_graph_id = state.get_active_graph_manager().await;
+    
+    Json(serde_json::json!({
+        "connected": connections > 0,
+        "connection_count": connections,
+        "active_graph_id": active_graph_id,
+        // TODO: Add more detailed connection info when needed
+    }))
+}
+
+/// Get recent WebSocket activity
+pub async fn get_websocket_activity(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    // TODO: Implement proper activity tracking in WebSocket module
+    // For now, return basic connection info
+    let active_connections = if let Some(ws_connections) = &state.ws_connections {
+        let conns = ws_connections.read().await;
+        conns.values()
+            .map(|conn| {
+                serde_json::json!({
+                    "id": conn.id,
+                    "authenticated": conn.authenticated
+                })
+            })
+            .collect::<Vec<_>>()
+    } else {
+        vec![]
+    };
+    
+    Json(serde_json::json!({
+        "active_connections": active_connections,
+        "recent_commands": [],
+        "recent_confirmations": [],
+        "last_activity": null,
+        "note": "Full activity tracking not yet implemented"
+    }))
 }
 
 

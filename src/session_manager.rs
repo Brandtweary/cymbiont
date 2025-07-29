@@ -1,5 +1,8 @@
 //! Session Manager: Logseq Database Session Management
 //!
+//! **DEPRECATED**: This module will be removed in Cymbiont 1.0 as part of the pivot to terminal-first architecture.
+//! Logseq integration is being phased out in favor of import-only PKM support.
+//!
 //! This module provides comprehensive session management for launching Logseq with specific databases
 //! and switching between them using the URL scheme. It coordinates with the GraphRegistry
 //! to resolve user-friendly names and paths to internal graph IDs.
@@ -42,7 +45,7 @@
 //!
 //! The module exposes HTTP endpoints via the main API:
 //! - `POST /api/session/switch`: Switch to a different graph
-//! - `GET /api/session/current`: Get current session information
+//! - `GET /api/session/current`: Get current session information (includes WebSocket status)
 //! - `GET /api/session/databases`: List all registered databases
 //!
 //! ## WebSocket Integration

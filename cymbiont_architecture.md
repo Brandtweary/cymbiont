@@ -80,8 +80,10 @@ HTTP request → Graph validation (headers) → Handler → Graph operation → 
 - `POST /log` - Plugin logging
 - `GET /ws` - WebSocket upgrade
 - `POST /api/session/switch` - Switch to different graph
-- `GET /api/session/current` - Get current session info
+- `GET /api/session/current` - Get current session info (includes WebSocket status)
 - `GET /api/session/databases` - List all registered databases
+- `GET /api/websocket/status` - WebSocket connection status and metrics
+- `GET /api/websocket/recent-activity` - Recent WebSocket commands and confirmations
 
 ### graph_manager.rs
 **Purpose**: Per-graph petgraph storage  
@@ -148,7 +150,7 @@ CLI/API request → Resolve name/path → Open logseq://graph/{name} → Wait fo
 - Graph registration with configurable data directory paths
 **API endpoints**:
 - `POST /api/session/switch` - Switch to different graph
-- `GET /api/session/current` - Get current session info
+- `GET /api/session/current` - Get current session info (includes WebSocket status)
 - `GET /api/session/databases` - List all registered databases
 
 ### websocket.rs
@@ -162,6 +164,9 @@ Client connect → Auth command → Authenticated state → Command dispatch →
 **Commands**:
 - Client→Server: `auth`, `heartbeat`, `test`, `graph_switch_confirmed`, acknowledgments
 - Server→Client: `create_block`, `update_block`, `delete_block`, `create_page`, `graph_switch_requested`
+**Verification endpoints**:
+- `GET /api/websocket/status` - Connection health and metrics
+- `GET /api/websocket/recent-activity` - Command/confirmation history
 
 ### edn.rs
 **Purpose**: EDN format manipulation  
@@ -201,6 +206,9 @@ Sync timer → Status check → Page/block query → Filter by timestamp → Bat
 - `sendToBackend()` - POST to /data
 - `checkBackendAvailabilityWithRetry()` - Health checks
 - `websocket.connect/send/registerHandler()` - WebSocket ops
+- `getWebSocketStatus()` - GET /api/websocket/status
+- `getWebSocketActivity()` - GET /api/websocket/recent-activity
+- `getCurrentSession()` - GET /api/session/current (enhanced)
 
 ### Plugin: websocket.js (window.KnowledgeGraphWebSocket)
 **Purpose**: Command handlers  
@@ -389,6 +397,10 @@ cargo run [OPTIONS]
 - Previous instance terminated via PID
 - Port discovery on conflict (3000-3010)
 - Graceful shutdown with 10s timeout
+
+## API Endpoint Documentation
+
+When adding new endpoints, update documentation in: `cymbiont_architecture.md`, `src/api.rs`, and `logseq_plugin/api.js`.
 
 ## Development Constraints
 - No debug logs in production code

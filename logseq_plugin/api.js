@@ -52,6 +52,9 @@
  * - checkIfFullSyncNeeded(): Determines if a full database sync is required
  * - updateSyncTimestamp(): Updates the last sync timestamp on the backend
  * - sendBatchToBackend(type, batch, graphName): Sends a batch of blocks or pages
+ * - getWebSocketStatus(): Gets WebSocket connection status from backend
+ * - getWebSocketActivity(): Gets recent WebSocket activity (commands/confirmations)
+ * - getCurrentSession(): Gets enhanced session info including WebSocket status
  * 
  * Dependencies:
  * - Logseq API: For displaying messages and getting graph information
@@ -679,5 +682,74 @@ window.KnowledgeGraphAPI.websocket = {
     
     this.authenticated = false;
     this.commandQueue = [];
+  }
+};
+
+/**
+ * Get WebSocket connection status
+ * @returns {Promise<Object>} - WebSocket status information
+ */
+window.KnowledgeGraphAPI.getWebSocketStatus = async function() {
+  try {
+    const url = await window.KnowledgeGraphAPI.getBackendUrl('/api/websocket/status');
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: window.KnowledgeGraphAPI.buildHeaders()
+    });
+    
+    if (response.ok) {
+      return await response.json();
+    } else {
+      throw new Error(`Failed to get WebSocket status: ${response.status}`);
+    }
+  } catch (error) {
+    console.error('Error getting WebSocket status:', error);
+    throw error;
+  }
+};
+
+/**
+ * Get recent WebSocket activity
+ * @returns {Promise<Object>} - Recent WebSocket activity
+ */
+window.KnowledgeGraphAPI.getWebSocketActivity = async function() {
+  try {
+    const url = await window.KnowledgeGraphAPI.getBackendUrl('/api/websocket/recent-activity');
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: window.KnowledgeGraphAPI.buildHeaders()
+    });
+    
+    if (response.ok) {
+      return await response.json();
+    } else {
+      throw new Error(`Failed to get WebSocket activity: ${response.status}`);
+    }
+  } catch (error) {
+    console.error('Error getting WebSocket activity:', error);
+    throw error;
+  }
+};
+
+/**
+ * Enhanced session information with WebSocket status
+ * @returns {Promise<Object>} - Session information including WebSocket status
+ */
+window.KnowledgeGraphAPI.getCurrentSession = async function() {
+  try {
+    const url = await window.KnowledgeGraphAPI.getBackendUrl('/api/session/current');
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: window.KnowledgeGraphAPI.buildHeaders()
+    });
+    
+    if (response.ok) {
+      return await response.json();
+    } else {
+      throw new Error(`Failed to get session info: ${response.status}`);
+    }
+  } catch (error) {
+    console.error('Error getting session info:', error);
+    throw error;
   }
 };

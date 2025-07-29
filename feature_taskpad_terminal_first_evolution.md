@@ -59,6 +59,13 @@ Transform Cymbiont from a Logseq-integrated PKM synchronization tool into a term
 - [ ] Design `KnowledgeGraph` struct and core traits
 - [ ] Extract core modules into `src/core/` subdirectory
 - [ ] Implement feature gates in `Cargo.toml`
+- [ ] **Library Architecture Plan**:
+  - Core modules exposed: GraphManager, TransactionLog, PKMData structures
+  - Optional features: `api` (HTTP/WebSocket), `tui` (terminal interface), `import-*` (PKM importers)
+  - Clean separation: HTTP API becomes optional transport layer, not core requirement
+  - Direct embedding: AIChat agents can use library without HTTP overhead
+  - Public traits: Define `GraphStorage`, `QueryEngine`, `Importer` traits
+  - Builder pattern: `KnowledgeGraph::builder().with_storage(path).build()`
 
 ### 4. Interface Evolution
 - [ ] Design stdin/stdout JSON command protocol
@@ -103,6 +110,29 @@ Transform Cymbiont from a Logseq-integrated PKM synchronization tool into a term
 - [ ] Profile and eliminate bottlenecks
 
 ## Development Notes
+
+### 2025-01-29: Library Extraction Strategy
+After the logseq-removal agent successfully removed 5,526 lines of browser-specific code, we've identified that the remaining HTTP/WebSocket infrastructure is actually valuable for agent communication. Rather than removing it entirely, we're adopting a library-first architecture where:
+
+1. **Core functionality lives in lib.rs** - GraphManager, TransactionLog, PKMData structures become the public API
+2. **HTTP/WebSocket become optional** - Behind an `api` feature flag for remote agents
+3. **Direct embedding preferred** - AIChat agents can use the Rust library directly, avoiding HTTP overhead
+4. **Clean module structure**:
+   ```rust
+   // lib.rs
+   pub mod graph;      // GraphManager, GraphRegistry  
+   pub mod storage;    // TransactionLog, persistence
+   pub mod pkm;        // PKMData structures
+   pub mod query;      // Future query language
+   
+   #[cfg(feature = "api")]
+   pub mod api;        // HTTP endpoints
+   
+   #[cfg(feature = "websocket")]
+   pub mod websocket;  // Real-time protocol
+   ```
+
+This approach preserves the valuable work already done while making Cymbiont more flexible for different use cases.
 
 ### 2025-01-29: Birth of a New Paradigm
 The decision to pivot from Logseq integration to terminal-first architecture represents a fundamental evolution in Cymbiont's design philosophy. Rather than fighting the complexity of browser automation and plugin state management, we're embracing the Unix philosophy of composable tools. This isn't a failure of the original vision, but a recognition that AI agents need different interfaces than human users.

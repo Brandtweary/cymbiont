@@ -896,6 +896,11 @@ impl GraphManager {
             .any(|edge| edge.weight().edge_type == *edge_type)
     }
     
+    /// Get a node by its graph index (for internal use)
+    pub fn get_node(&self, idx: NodeIndex) -> Option<&NodeData> {
+        self.graph.node_weight(idx)
+    }
+    
     /// Resolve a PKM reference to graph indices and add appropriate edges
     fn resolve_and_add_reference(&mut self, source_idx: NodeIndex, reference: &PKMReference) -> GraphResult<()> {
         match reference.r#type.as_str() {

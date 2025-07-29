@@ -377,13 +377,21 @@ async function validateConfigProperties() {
     // Check for hidden property in config
     const graphConfigs = await logseq.App.getCurrentGraphConfigs();
     const hiddenProps = graphConfigs['block-hidden-properties'];
-    const hasHiddenProperty = hiddenProps && 
-      (Array.isArray(hiddenProps) ? hiddenProps.includes(':cymbiont-updated-ms') : 
-       typeof hiddenProps === 'string' && hiddenProps.includes(':cymbiont-updated-ms'));
+    KnowledgeGraphAPI.log.debug('Hidden props from config', {hiddenProps});
+    const hasHiddenProperty = !!(hiddenProps && 
+      (Array.isArray(hiddenProps) ? hiddenProps.includes('cymbiont-updated-ms') : 
+       typeof hiddenProps === 'string' && hiddenProps.includes('cymbiont-updated-ms')));
     
     // Check for graph ID
     const graphId = graphConfigs['cymbiont/graph-id'];
     const hasGraphId = !!graphId;
+    
+    KnowledgeGraphAPI.log.debug('Config check results', {
+      hasHiddenProperty: hasHiddenProperty,
+      hasGraphId: hasGraphId,
+      hiddenPropsType: typeof hiddenProps,
+      graphIdValue: graphId
+    });
     
     // If either is missing, request backend validation
     if (!hasHiddenProperty || !hasGraphId) {
@@ -392,14 +400,23 @@ async function validateConfigProperties() {
         hasGraphId
       });
       
+      const requestBody = {
+        graph_id: window.cymbiontGraphContext.cymbiont_id || '',
+        has_hidden_property: hasHiddenProperty,
+        has_graph_id: hasGraphId
+      };
+      KnowledgeGraphAPI.log.debug('About to send request body', {
+        hasHiddenPropertyValue: hasHiddenProperty,
+        hasHiddenPropertyType: typeof hasHiddenProperty,
+        requestBodyKeys: Object.keys(requestBody),
+        stringified: JSON.stringify(requestBody)
+      });
+      KnowledgeGraphAPI.log.debug('Sending config validation request', requestBody);
+      
       const response = await fetch(await KnowledgeGraphAPI.getBackendUrl('/config/validate'), {
         method: 'POST',
         headers: KnowledgeGraphAPI.buildHeaders(),
-        body: JSON.stringify({
-          graph_id: window.cymbiontGraphContext.cymbiont_id || '',
-          has_hidden_property: hasHiddenProperty,
-          has_graph_id: hasGraphId
-        })
+        body: JSON.stringify(requestBody)
       });
       
       if (response.ok) {

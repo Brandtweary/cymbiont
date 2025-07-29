@@ -16,10 +16,25 @@ logseq:
   auto_launch: true
   # Optional: Path to Logseq executable (if not provided, will search common locations)
   # executable_path: /path/to/logseq
-  # Optional: Path to the graph directory to update config.edn before launch
-  # This is a temporary workaround until proper session management is implemented
-  # WARNING: Assumes this is the graph that Logseq will open by default
-  # graph_path: /path/to/your/graph
+  
+  # Session management configuration
+  # If true, launches default_database on startup
+  # If false, launches last active database (default behavior)
+  launch_specific_database: false
+  
+  # Which database to launch when launch_specific_database is true
+  # Can be a name (if defined in databases) or a path
+  # default_database: my_work_graph
+  
+  # Pre-configured Logseq databases
+  # Path can be absolute or relative to Cymbiont project root
+  databases:
+    # Example with absolute path (typical for end users)
+    # - path: /home/user/Documents/logseq/work
+    #   name: work
+    # Example with relative path (useful for testing)
+    # - path: logseq_databases/dummy_graph
+    #   name: dummy_graph
 
 # Development-only settings (DO NOT USE IN PRODUCTION)
 development:
@@ -40,3 +55,9 @@ sync:
   # Whether to perform full database syncs at all (default: false)
   # Most users don't need this - only enable if you modify Logseq files externally
   enable_full_sync: false
+
+# Data storage directory configuration
+# Directory where Cymbiont stores knowledge graph data, transaction logs, etc.
+# Can be absolute or relative path (default: "data")
+# Useful for storing data outside the Cymbiont installation directory
+# data_dir: data

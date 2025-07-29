@@ -51,6 +51,18 @@
  * Incremental sync only processes blocks/pages modified since last sync.
  * Full sync re-processes the entire PKM, catching external file modifications.
  * 
+ * ### Data Directory Configuration
+ * - `data_dir`: Path for data storage (default: "data")
+ * 
+ * The data directory stores all persistent state including graph registries,
+ * session information, knowledge graphs, and transaction logs. Can be specified
+ * as absolute or relative path. Relative paths are resolved from the current
+ * working directory. This setting enables:
+ * - Storing data outside the Cymbiont installation directory
+ * - Data isolation for testing environments
+ * - Multi-user deployments with separate data stores
+ * - CLI override via --data-dir flag
+ * 
  * ## JavaScript Plugin Validation
  * 
  * The `validate_js_plugin_config()` function ensures the JavaScript plugin's
@@ -98,6 +110,8 @@ pub struct Config {
     pub development: DevelopmentConfig,
     #[serde(default)]
     pub sync: SyncConfig,
+    #[serde(default = "default_data_dir")]
+    pub data_dir: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -112,8 +126,28 @@ pub struct LogseqConfig {
     pub auto_launch: bool,
     #[serde(default)]
     pub executable_path: Option<String>,
+    
+    // If true, launches default_database on startup
+    // If false, launches last active database (default behavior)
     #[serde(default)]
-    pub graph_path: Option<String>,
+    pub launch_specific_database: bool,
+    
+    // Which database to launch when launch_specific_database is true
+    // Can be a name (if defined in databases) or a path
+    #[serde(default)]
+    pub default_database: Option<String>,
+    
+    // Pre-configured Logseq databases
+    // Path is required, name is optional for friendly CLI access
+    #[serde(default)]
+    pub databases: Vec<LogseqDatabase>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct LogseqDatabase {
+    pub path: String,
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -148,6 +182,10 @@ fn default_enable_full_sync() -> bool {
     false
 }
 
+fn default_data_dir() -> String {
+    "data".to_string()
+}
+
 // Default configuration
 impl Default for Config {
     fn default() -> Self {
@@ -156,15 +194,12 @@ impl Default for Config {
                 port: 3000,
                 max_port_attempts: 10,
             },
-            logseq: LogseqConfig {
-                auto_launch: false,
-                executable_path: None,
-                graph_path: None,
-            },
+            logseq: LogseqConfig::default(),
             development: DevelopmentConfig {
                 default_duration: None,
             },
             sync: SyncConfig::default(),
+            data_dir: default_data_dir(),
         }
     }
 }
@@ -174,7 +209,9 @@ impl Default for LogseqConfig {
         LogseqConfig {
             auto_launch: false,
             executable_path: None,
-            graph_path: None,
+            launch_specific_database: false,
+            default_database: None,
+            databases: Vec::new(),
         }
     }
 }
@@ -337,11 +374,14 @@ mod tests {
         assert_eq!(config.backend.max_port_attempts, 10);
         assert_eq!(config.logseq.auto_launch, false);
         assert_eq!(config.logseq.executable_path, None);
-        assert_eq!(config.logseq.graph_path, None);
+        assert_eq!(config.logseq.launch_specific_database, false);
+        assert_eq!(config.logseq.default_database, None);
+        assert!(config.logseq.databases.is_empty());
         assert_eq!(config.development.default_duration, None);
         assert_eq!(config.sync.incremental_interval_hours, 2);
         assert_eq!(config.sync.full_interval_hours, 168);
         assert_eq!(config.sync.enable_full_sync, false);
+        assert_eq!(config.data_dir, "data");
     }
 
     #[test]
@@ -354,7 +394,9 @@ mod tests {
         let config = LogseqConfig::default();
         assert_eq!(config.auto_launch, false);
         assert_eq!(config.executable_path, None);
-        assert_eq!(config.graph_path, None);
+        assert_eq!(config.launch_specific_database, false);
+        assert_eq!(config.default_database, None);
+        assert!(config.databases.is_empty());
     }
 
     #[test]
@@ -376,5 +418,33 @@ mod tests {
         assert_eq!(default_incremental_interval_hours(), 2);
         assert_eq!(default_full_interval_hours(), 168);
         assert_eq!(default_enable_full_sync(), false);
+    }
+
+    #[test]
+    fn test_data_dir_default() {
+        assert_eq!(default_data_dir(), "data");
+    }
+
+    #[test]
+    fn test_data_dir_serde_default() {
+        let yaml = r#"
+backend:
+  port: 3000
+  max_port_attempts: 10
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.data_dir, "data");
+    }
+
+    #[test]
+    fn test_data_dir_custom() {
+        let yaml = r#"
+backend:
+  port: 3000
+  max_port_attempts: 10
+data_dir: /custom/path
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.data_dir, "/custom/path");
     }
 }

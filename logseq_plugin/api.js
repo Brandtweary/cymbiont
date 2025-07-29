@@ -52,6 +52,9 @@
  * - checkIfFullSyncNeeded(): Determines if a full database sync is required
  * - updateSyncTimestamp(): Updates the last sync timestamp on the backend
  * - sendBatchToBackend(type, batch, graphName): Sends a batch of blocks or pages
+ * - getWebSocketStatus(): Gets WebSocket connection status from backend
+ * - getWebSocketActivity(): Gets recent WebSocket activity (commands/confirmations)
+ * - getCurrentSession(): Gets enhanced session info including WebSocket status
  * 
  * Dependencies:
  * - Logseq API: For displaying messages and getting graph information
@@ -583,9 +586,75 @@ window.KnowledgeGraphAPI.websocket = {
         }
         break;
         
+      case 'graph_switch_requested':
+        // Backend is switching graphs - start polling for change
+        console.info(`WebSocket: Graph switch requested to ${response.target_graph_name}`);
+        this.startGraphChangeDetection(response.target_graph_id, response.target_graph_name, response.target_graph_path);
+        break;
+        
       default:
         console.warn('WebSocket: Unknown response type:', response.type);
     }
+  },
+  
+  /**
+   * Start polling for graph change detection
+   * @param {string} targetGraphId - Expected graph ID after switch
+   * @param {string} targetGraphName - Expected graph name after switch
+   * @param {string} targetGraphPath - Expected graph path after switch
+   */
+  async startGraphChangeDetection(targetGraphId, targetGraphName, targetGraphPath) {
+    const maxAttempts = 20; // 10 seconds with 500ms intervals
+    let attempts = 0;
+    let lastGraphPath = null;
+    
+    const checkInterval = setInterval(async () => {
+      try {
+        const currentGraph = await logseq.App.getCurrentGraph();
+        
+        if (currentGraph && currentGraph.path) {
+          // Check if graph actually changed
+          if (currentGraph.path !== lastGraphPath) {
+            lastGraphPath = currentGraph.path;
+            
+            // Graph changed - send confirmation
+            clearInterval(checkInterval);
+            
+            // Read the graph ID from config.edn for the current graph
+            let graphId = '';
+            try {
+              const graphConfigs = await logseq.App.getCurrentGraphConfigs();
+              graphId = graphConfigs['cymbiont/graph-id'] || '';
+            } catch (error) {
+              console.error('WebSocket: Failed to read graph ID from config:', error);
+            }
+            
+            this.send({
+              type: 'graph_switch_confirmed',
+              graph_id: graphId,
+              graph_name: currentGraph.name,
+              graph_path: currentGraph.path
+            });
+            
+            console.info(`WebSocket: Graph switch confirmed - ${currentGraph.name}`);
+            window.KnowledgeGraphAPI.log.info('Graph switch confirmed', {
+              graph_id: graphId,
+              graph_name: currentGraph.name,
+              graph_path: currentGraph.path
+            });
+          }
+        }
+        
+        if (++attempts >= maxAttempts) {
+          clearInterval(checkInterval);
+          console.error('WebSocket: Graph switch detection timeout');
+          window.KnowledgeGraphAPI.log.error('Graph switch detection timeout after 10 seconds');
+        }
+      } catch (error) {
+        clearInterval(checkInterval);
+        console.error('WebSocket: Error during graph change detection:', error);
+      }
+    }, 500);
   },
   
   /**
@@ -613,5 +682,74 @@ window.KnowledgeGraphAPI.websocket = {
     
     this.authenticated = false;
     this.commandQueue = [];
+  }
+};
+
+/**
+ * Get WebSocket connection status
+ * @returns {Promise<Object>} - WebSocket status information
+ */
+window.KnowledgeGraphAPI.getWebSocketStatus = async function() {
+  try {
+    const url = await window.KnowledgeGraphAPI.getBackendUrl('/api/websocket/status');
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: window.KnowledgeGraphAPI.buildHeaders()
+    });
+    
+    if (response.ok) {
+      return await response.json();
+    } else {
+      throw new Error(`Failed to get WebSocket status: ${response.status}`);
+    }
+  } catch (error) {
+    console.error('Error getting WebSocket status:', error);
+    throw error;
+  }
+};
+
+/**
+ * Get recent WebSocket activity
+ * @returns {Promise<Object>} - Recent WebSocket activity
+ */
+window.KnowledgeGraphAPI.getWebSocketActivity = async function() {
+  try {
+    const url = await window.KnowledgeGraphAPI.getBackendUrl('/api/websocket/recent-activity');
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: window.KnowledgeGraphAPI.buildHeaders()
+    });
+    
+    if (response.ok) {
+      return await response.json();
+    } else {
+      throw new Error(`Failed to get WebSocket activity: ${response.status}`);
+    }
+  } catch (error) {
+    console.error('Error getting WebSocket activity:', error);
+    throw error;
+  }
+};
+
+/**
+ * Enhanced session information with WebSocket status
+ * @returns {Promise<Object>} - Session information including WebSocket status
+ */
+window.KnowledgeGraphAPI.getCurrentSession = async function() {
+  try {
+    const url = await window.KnowledgeGraphAPI.getBackendUrl('/api/session/current');
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: window.KnowledgeGraphAPI.buildHeaders()
+    });
+    
+    if (response.ok) {
+      return await response.json();
+    } else {
+      throw new Error(`Failed to get session info: ${response.status}`);
+    }
+  } catch (error) {
+    console.error('Error getting session info:', error);
+    throw error;
   }
 };

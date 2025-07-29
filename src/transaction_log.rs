@@ -59,12 +59,16 @@
 //! ## Content Hash Deduplication
 //!
 //! The content hash index prevents duplicate processing:
-//! ```rust
+//! ```rust,no_run
+//! # use cymbiont::transaction_log::{TransactionLog, Transaction};
+//! # fn check_duplicate(log: &TransactionLog, content_hash: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
 //! // Check if content already processed
-//! if let Some(existing_tx_id) = log.get_transaction_by_content_hash(&content_hash)? {
-//!     // Skip duplicate operation
-//!     return Ok(existing_tx_id);
+//! if let Some(existing_tx) = log.find_transaction_by_content_hash(content_hash)? {
+//!     // Skip duplicate operation - return the transaction ID
+//!     return Ok(Some(existing_tx.id));
 //! }
+//! # Ok(None)
+//! # }
 //! ```
 //!
 //! This is critical for preventing echoed operations when real-time sync processes

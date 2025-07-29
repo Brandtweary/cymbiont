@@ -1,0 +1,46 @@
+# Test configuration for Cymbiont
+# This config is used by integration tests
+
+# Backend server configuration
+backend:
+  host: 127.0.0.1
+  port: 3000
+  max_port_attempts: 10
+
+# Logseq application configuration
+logseq:
+  auto_launch: true
+  # Session management configuration
+  launch_specific_database: false
+  # Pre-configured test databases
+  databases:
+    - path: logseq_databases/dummy_graph
+      name: dummy_graph
+    - path: logseq_databases/dummy_graph_2
+      name: dummy_graph_2
+    - path: logseq_databases/test_graph_empty
+      name: test_graph_empty
+    - path: logseq_databases/test_graph_switching
+      name: test_graph_switching
+    - path: logseq_databases/test_graph_sync
+      name: test_graph_sync
+    - path: logseq_databases/test_graph_websocket
+      name: test_graph_websocket
+    - path: logseq_databases/test_graph_multi_1
+      name: test_graph_multi_1
+    - path: logseq_databases/test_graph_multi_2
+      name: test_graph_multi_2
+
+# Development settings for tests
+development:
+  # Default to null for indefinite running in integration tests
+  default_duration: null
+
+# Sync configuration
+sync:
+  incremental_interval_hours: 2
+  full_interval_hours: 168
+  enable_full_sync: false
+
+# Data directory for test isolation
+data_dir: test_data

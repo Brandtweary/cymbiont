@@ -1,6 +1,8 @@
 # Cymbiont
 
-A knowledge graph-enhanced AI agent that seamlessly integrates with personal knowledge management (PKM) tools, starting with Logseq.
+> **⚠️ MAJOR PIVOT IN PROGRESS**: Cymbiont is evolving to its 1.0 release as a terminal-first knowledge graph engine for AI agents. See [CYMBIONT_1.0_PLAN.md](CYMBIONT_1.0_PLAN.md) for details.
+
+A terminal-first knowledge graph engine designed for AI agents, with import capabilities for personal knowledge management systems.
 
 ## Overview
 
@@ -49,6 +51,9 @@ cargo run --release
 Copy `config.example.yaml` to `config.yaml` and adjust settings:
 
 ```yaml
+# Data storage directory (can be absolute or relative path)
+data_dir: data  # Default: "data" directory in project root
+
 # Backend server configuration
 backend:
   port: 3000  # Default port (will try alternatives if busy)
@@ -79,7 +84,7 @@ sync:
 
 2. The Logseq plugin will automatically connect and begin syncing
 
-3. Use CLI flags for manual operations:
+3. Use CLI flags for various operations:
    ```bash
    # Force incremental sync
    cargo run -- --force-incremental-sync
@@ -89,6 +94,18 @@ sync:
    
    # Run for specific duration
    cargo run -- --duration 300
+   
+   # Use custom data directory
+   cargo run -- --data-dir /path/to/custom/data
+   
+   # Launch with specific graph
+   cargo run -- --graph "My Graph"
+   
+   # Launch with graph by path
+   cargo run -- --graph-path "/path/to/graph"
+   
+   # Shutdown running server
+   cargo run -- --shutdown-server
    ```
 
 ## Configuration Details

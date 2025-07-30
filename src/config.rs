@@ -24,12 +24,12 @@
  * Top-level container aggregating all configuration sections.
  * 
  * ### BackendConfig
- * - `port`: Base port for HTTP server (default: 3000)
+ * - `port`: Base port for HTTP server (default: 8888)
  * - `max_port_attempts`: Port search range (default: 10)
  * - `server_info_file`: Filename for server discovery info (default: "cymbiont_server.json")
  *   
- * When port 3000 is busy, the server tries 3001, 3002, etc., up to
- * 3000 + max_port_attempts. This enables multiple instances during development.
+ * When port 8888 is busy, the server tries 8889, 8890, etc., up to
+ * 8888 + max_port_attempts. This enables multiple instances during development.
  * 
  * The server_info_file allows multiple Cymbiont instances to run simultaneously
  * without interfering with each other's discovery mechanisms.
@@ -114,7 +114,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             backend: BackendConfig {
-                port: 3000,
+                port: 8888,
                 max_port_attempts: 10,
                 server_info_file: default_server_info_file(),
             },
@@ -230,7 +230,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
-        assert_eq!(config.backend.port, 3000);
+        assert_eq!(config.backend.port, 8888);
         assert_eq!(config.backend.max_port_attempts, 10);
         assert_eq!(config.development.default_duration, None);
         // Sync configuration removed - tests preserved for reference
@@ -271,7 +271,7 @@ mod tests {
     fn test_data_dir_serde_default() {
         let yaml = r#"
 backend:
-  port: 3000
+  port: 8888
   max_port_attempts: 10
 "#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
@@ -282,7 +282,7 @@ backend:
     fn test_data_dir_custom() {
         let yaml = r#"
 backend:
-  port: 3000
+  port: 8888
   max_port_attempts: 10
 data_dir: /custom/path
 "#;

@@ -278,20 +278,20 @@ mod tests {
         let info = ServerInfo {
             pid: 12345,
             host: "127.0.0.1".to_string(),
-            port: 3000,
+            port: 8888,
         };
         
         // Test serialization
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("12345"));
         assert!(json.contains("127.0.0.1"));
-        assert!(json.contains("3000"));
+        assert!(json.contains("8888"));
         
         // Test deserialization
         let deserialized: ServerInfo = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.pid, 12345);
         assert_eq!(deserialized.host, "127.0.0.1");
-        assert_eq!(deserialized.port, 3000);
+        assert_eq!(deserialized.port, 8888);
     }
 
     #[test]

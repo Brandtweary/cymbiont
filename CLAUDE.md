@@ -18,9 +18,6 @@ RUST_LOG=debug cargo run         # Run backend server with debug logging (do not
 - `--import-logseq <PATH>`: Import Logseq graph directory (then continues running)
 - `--shutdown`: Shutdown running Cymbiont instance gracefully
 
-## Architecture
-- See `cymbiont_architecture.md` for comprehensive codebase architecture
-
 ### Core Directories
 - **src/**: Cymbiont server - graph management, API endpoints
 - **logseq_databases/**: Test graphs
@@ -53,13 +50,20 @@ RUST_LOG=debug cargo run         # Run backend server with debug logging (do not
     - **kg_api.rs**: Public API for knowledge graph operations (currently unused)
     - **server.rs**: Server utility functions
 - **tests/**: Integration tests
+- **.gitignore**: Git ignore patterns
+- **.gitmodules**: Git submodule configuration
 - **Cargo.toml**: Dependencies and metadata
+- **config.example.yaml**: Example configuration template
+- **config.yaml**: Runtime configuration (overrides defaults, not tracked)
+- **cymbiont_architecture.md**: Comprehensive codebase architecture
+- **README.md**: User documentation and setup guide
 
 ## Codebase Guidelines
 - Cymbiont is an application, not a library - do not create lib.rs
 - Logging: use `tracing` macros - `error!()`, `warn!()`, `info!()`, `debug!()`, `trace!()`
 - Error handling: use `thiserror` for custom error types; define module-specific `Error` enums and `type Result<T>` aliases
 - Don't make live LLM calls during tests
+- **ALWAYS check for existing config.yaml first** - it overrides code defaults
 
 ### Log Level Guidelines
 - **INFO**: Use sparingly, only for messages you would want to see on every single run

@@ -35,7 +35,7 @@
  * ```text
  * ERROR pkm_knowledge_graph::api:310: Failed to parse block data
  * WARN  pkm_knowledge_graph::utils:351: Could not parse datetime
- * INFO  pkm_knowledge_graph: 🚀 Server listening on 127.0.0.1:3000
+ * INFO  pkm_knowledge_graph: 🚀 Server listening on 127.0.0.1:8888
  * DEBUG pkm_knowledge_graph: 📦 Processing batch of 25 pages
  * ```
  * 

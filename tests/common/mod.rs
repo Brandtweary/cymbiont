@@ -28,7 +28,7 @@ pub fn setup_test_env() -> TestEnv {
     fs::create_dir_all(test_data_dir).expect("Failed to create test data directory");
     
     // Create unique config file with unique port
-    let test_port = 3000 + test_id as u16;
+    let test_port = 8888 + test_id as u16;
     let config_path = PathBuf::from(format!("config.test.{}.yaml", test_id));
     let config_content = format!(
         r#"# Cymbiont Test Configuration for test {}

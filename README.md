@@ -126,7 +126,7 @@ data_dir: data                    # Where graphs are stored
 
 backend:
   host: "localhost"
-  port: 3000
+  port: 8888
   max_port_attempts: 10
   server_info_file: "cymbiont_server.json"  # Server discovery file
 
@@ -147,12 +147,12 @@ cargo run -- --server
 
 Cymbiont provides HTTP and WebSocket APIs:
 
-- **HTTP API**: RESTful endpoints at `http://localhost:3000`
-- **WebSocket**: Real-time communication at `ws://localhost:3000/ws`
+- **HTTP API**: RESTful endpoints at `http://localhost:8888`
+- **WebSocket**: Real-time communication at `ws://localhost:8888/ws`
 
 **HTTP Import Example:**
 ```bash
-curl -X POST http://localhost:3000/import/logseq \
+curl -X POST http://localhost:8888/import/logseq \
   -H "Content-Type: application/json" \
   -d '{"path": "/path/to/logseq/graph", "graph_name": "my-graph"}'
 ```

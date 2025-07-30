@@ -176,7 +176,7 @@ Data directory configurable via `config.yaml` or `--data-dir` CLI flag:
 data_dir: data                    # Storage directory
 backend:
   host: "localhost"
-  port: 3000
+  port: 8888
   max_port_attempts: 10
   server_info_file: "cymbiont_server.json"  # Server discovery file (enables multi-instance)
 development:

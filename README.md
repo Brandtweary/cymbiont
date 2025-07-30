@@ -46,11 +46,6 @@ git clone https://github.com/Brandtweary/cymbiont.git
 cd cymbiont
 ```
 
-**Or install via Cargo:**
-```bash
-cargo install cymbiont
-```
-
 ### Quick Start
 
 1. **Build the project**:
@@ -58,14 +53,17 @@ cargo install cymbiont
    cargo build --release
    ```
 
-2. **Check your setup** (displays current graph status):
+2. **Run Cymbiont**:
    ```bash
    cargo run
    ```
 
-3. **Import your Logseq notes** (if you have them):
+3. **Import your notes** (if you have them):
    ```bash
+   # Logseq import (available now)
    cargo run -- --import-logseq ~/Documents/logseq-notes
+   
+   # Roam and Obsidian support planned
    ```
 
 4. **Run as a server** (for programmatic access):
@@ -115,7 +113,13 @@ cargo run -- --shutdown
 
 ### Configuration
 
-Create a `config.yaml` file to customize settings:
+Create a configuration file:
+
+```bash
+cp config.example.yaml config.yaml
+```
+
+Or create `config.yaml` manually with these settings:
 
 ```yaml
 data_dir: data                    # Where graphs are stored

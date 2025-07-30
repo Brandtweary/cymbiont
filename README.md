@@ -21,14 +21,16 @@ Cymbiont currently provides the core engine that makes this vision possible:
 - **🏗️ Robust Graph Storage**: Petgraph-based engine with typed nodes and edges
 - **🔄 ACID Transactions**: Write-ahead logging ensures data integrity  
 - **🗂️ Multi-Graph Support**: Isolated storage for different knowledge domains
+- **📥 Logseq Import**: Complete import system with reference resolution
 - **🌐 Real-time Updates**: WebSocket protocol for live synchronization
 - **🔌 HTTP API**: RESTful interface for data ingestion and querying
+- **⚙️ Multi-Instance**: Concurrent instances with isolated discovery
 
 ## Future Capabilities
 
 The roadmap includes:
 - **Terminal-first interface** for Unix-style composition and piping
-- **Import adapters** for Logseq, Obsidian, Roam Research, and more
+- **Additional import adapters** for Obsidian, Roam Research, and more
 - **Natural language queries** powered by integrated LLM agents
 - **Export formats** for interoperability with existing tools
 
@@ -65,6 +67,27 @@ cargo run -- --server
 
 The server will start on `localhost:3000` by default.
 
+### Import Knowledge Graphs
+
+Import your existing Logseq graph:
+
+```bash
+# Import entire Logseq directory
+cargo run -- --import-logseq ~/Documents/logseq-notes
+
+# Or via HTTP API (with server running)
+curl -X POST http://localhost:3000/import/logseq \
+  -H "Content-Type: application/json" \
+  -d '{"path": "/path/to/logseq/graph", "graph_name": "my-graph"}'
+```
+
+The import process:
+- Parses all `.md` files in the directory
+- Extracts blocks and page hierarchies
+- Resolves `((block-id))` references
+- Creates a complete knowledge graph
+- Reports comprehensive statistics and any errors
+
 ### Configuration
 
 Create a `config.yaml` file to customize settings:
@@ -76,6 +99,7 @@ backend:
   host: "localhost"
   port: 3000
   max_port_attempts: 10
+  server_info_file: "cymbiont_server.json"  # Server discovery file
 
 development:
   default_duration: null          # Run indefinitely
@@ -84,11 +108,14 @@ development:
 ### CLI Options
 
 ```bash
-cargo run -- --help                    # View all options
-cargo run -- --data-dir ./custom       # Use custom data directory
-cargo run -- --server                  # Start HTTP/WebSocket server
-cargo run -- --server --duration 60    # Run server for 60 seconds
-cargo run -- --shutdown                # Gracefully stop running instance
+cargo run -- --help                        # View all options
+cargo run -- --data-dir ./custom           # Use custom data directory
+cargo run -- --config custom.yaml          # Use specific configuration file
+cargo run -- --import-logseq ~/Documents/notes  # Import Logseq graph
+cargo run -- --server                      # Start HTTP/WebSocket server
+cargo run -- --server --duration 60        # Run server for 60 seconds
+cargo run -- --shutdown                    # Gracefully stop running instance
+cargo run -- --shutdown --config custom.yaml  # Target specific instance
 ```
 
 

@@ -4,7 +4,7 @@
  * 
  * This module provides a flexible configuration system that supports both file-based
  * and default configurations, with special emphasis on maintaining consistency between
- * the Rust backend and JavaScript plugin components.
+ * the Rust backend and external client components.
  * 
  * ## Configuration Loading Strategy
  * 

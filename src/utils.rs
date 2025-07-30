@@ -39,7 +39,7 @@ use crate::config::BackendConfig;
 // Constants
 pub const SERVER_INFO_FILE: &str = "cymbiont_server.json";
 
-// Server info written to file for JS plugin
+// Server info written to file for external clients
 #[derive(Serialize, Deserialize)]
 pub struct ServerInfo {
     pub pid: u32,
@@ -167,6 +167,25 @@ pub fn write_server_info(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
     let json = serde_json::to_string_pretty(&info)?;
     fs::write(SERVER_INFO_FILE, json)?;
     Ok(())
+}
+
+/// Write just a PID file for process management
+pub fn write_pid_file() -> Result<(), Box<dyn Error>> {
+    let pid = std::process::id();
+    fs::write(".cymbiont.pid", pid.to_string())?;
+    Ok(())
+}
+
+/// Read PID from file
+pub fn read_pid_file() -> Result<u32, Box<dyn Error>> {
+    let pid_str = fs::read_to_string(".cymbiont.pid")?;
+    let pid = pid_str.trim().parse::<u32>()?;
+    Ok(pid)
+}
+
+/// Remove PID file
+pub fn remove_pid_file() {
+    let _ = fs::remove_file(".cymbiont.pid");
 }
 
 // Helper function to find an available port

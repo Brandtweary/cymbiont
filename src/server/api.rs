@@ -81,7 +81,7 @@ use std::hash::{Hash, Hasher};
 use crate::AppState;
 use crate::pkm_data::{PKMBlockData, PKMPageData};
 use crate::utils::parse_json_data;
-use crate::websocket::websocket_handler;
+use crate::server::websocket::websocket_handler;
 
 // ===== API Types =====
 
@@ -154,7 +154,7 @@ pub async fn root() -> &'static str {
     "PKM Knowledge Graph Backend Server"
 }
 
-// Endpoint to receive data from the PKM plugin
+// Endpoint to receive data from PKM clients
 pub async fn receive_data(
     State(state): State<Arc<AppState>>,
     Json(data): Json<PKMData>,

@@ -21,8 +21,8 @@ use crate::{
     transaction_log::Operation,
     transaction::TransactionError,
     saga::SagaError,
-    websocket::{Command, broadcast_command},
 };
+use super::websocket::{Command, broadcast_command};
 use std::sync::Arc;
 use std::collections::HashMap;
 use tracing::{warn, error, debug};

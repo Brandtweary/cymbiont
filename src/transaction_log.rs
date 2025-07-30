@@ -58,21 +58,9 @@
 //!
 //! ## Content Hash Deduplication
 //!
-//! The content hash index prevents duplicate processing:
-//! ```rust,no_run
-//! # use cymbiont::transaction_log::{TransactionLog, Transaction};
-//! # fn check_duplicate(log: &TransactionLog, content_hash: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
-//! // Check if content already processed
-//! if let Some(existing_tx) = log.find_transaction_by_content_hash(content_hash)? {
-//!     // Skip duplicate operation - return the transaction ID
-//!     return Ok(Some(existing_tx.id));
-//! }
-//! # Ok(None)
-//! # }
-//! ```
-//!
-//! This is critical for preventing echoed operations when processing 
-//! content that was originally created via WebSocket commands.
+//! The content hash index prevents duplicate processing. This is critical for 
+//! preventing echoed operations when processing content that was originally 
+//! created via WebSocket commands.
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -156,6 +144,7 @@ impl Transaction {
 }
 
 pub struct TransactionLog {
+    #[allow(dead_code)] // The db handle must be kept alive even though we only access trees
     db: sled::Db,
     transactions_tree: sled::Tree,
     content_hash_index: sled::Tree,
@@ -245,6 +234,8 @@ impl TransactionLog {
         Ok(())
     }
     
+    // TODO: Remove allow(dead_code) once transaction recovery is implemented
+    #[allow(dead_code)]
     pub fn list_pending_transactions(&self) -> Result<Vec<Transaction>> {
         let mut pending = Vec::new();
         
@@ -260,6 +251,8 @@ impl TransactionLog {
         Ok(pending)
     }
     
+    // TODO: Remove allow(dead_code) once content deduplication is implemented
+    #[allow(dead_code)]
     pub fn find_transaction_by_content_hash(&self, content_hash: &str) -> Result<Option<Transaction>> {
         match self.content_hash_index.get(content_hash.as_bytes())? {
             Some(tx_id_bytes) => {
@@ -270,6 +263,8 @@ impl TransactionLog {
         }
     }
     
+    // TODO: Remove allow(dead_code) once explicit flush control is needed
+    #[allow(dead_code)]
     pub fn flush(&self) -> Result<()> {
         self.db.flush()?;
         Ok(())

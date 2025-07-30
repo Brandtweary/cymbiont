@@ -4,20 +4,23 @@
 ```
 cymbiont/
 ├── src/                           # Core knowledge graph engine
-│   ├── main.rs                    # Server entry point and lifecycle
+│   ├── main.rs                    # CLI entry point with --server flag
+│   ├── app_state.rs               # Centralized application state
 │   ├── config.rs                  # YAML configuration management
 │   ├── logging.rs                 # Custom tracing formatter
-│   ├── api.rs                     # HTTP endpoints for data ingestion
 │   ├── utils.rs                   # Process management and utilities
 │   ├── graph_manager.rs           # Petgraph-based knowledge graph storage
 │   ├── graph_registry.rs          # Multi-graph UUID management
 │   ├── pkm_data.rs                # PKM data structures
-│   ├── websocket.rs               # Real-time WebSocket communication
-│   ├── kg_api.rs                  # High-level graph operations API (unused)
 │   ├── transaction_log.rs         # Write-ahead logging with sled
 │   ├── transaction.rs             # Transaction coordination
 │   ├── saga.rs                    # Multi-step workflow patterns
-│   └── lib.rs                     # Library interface
+│   └── server/                    # Server-specific functionality
+│       ├── mod.rs                 # Server module exports
+│       ├── api.rs                 # HTTP endpoints for data ingestion
+│       ├── websocket.rs           # Real-time WebSocket communication
+│       ├── kg_api.rs              # High-level graph operations API (unused)
+│       └── server.rs              # Server utilities and lifecycle
 ├── data/                          # Graph persistence (configurable path)
 │   ├── graph_registry.json        # Graph UUID registry
 │   ├── graphs/{graph-id}/         # Per-graph storage
@@ -30,15 +33,20 @@ cymbiont/
 ## Module Requirements and Data Flow
 
 ### main.rs
-**Purpose**: Server entry point and lifecycle management  
-**Key functionality**: AppState initialization, HTTP server startup
-**AppState**: `{ graph_managers: HashMap<String, RwLock<GraphManager>>, active_graph_id }`
+**Purpose**: CLI entry point with optional server functionality  
+**Key functionality**: Parse args, branch on --server flag, display graph info
+**Server mode**: Delegates to server::run_server_with_duration()
 
 ### config.rs
 **Purpose**: YAML configuration loading with CLI overrides  
 **Key types**: `Config`, `BackendConfig`, `DevelopmentConfig`
 
-### api.rs
+### app_state.rs
+**Purpose**: Centralized application state management  
+**Key types**: `AppState` with graph managers, registry, WebSocket connections
+**Methods**: `new_cli()`, `new_server()`, `get_or_create_graph_manager()`
+
+### server/api.rs
 **Purpose**: HTTP API endpoints  
 **Active endpoints**:
 - `GET /` - Health check
@@ -56,9 +64,13 @@ cymbiont/
 **Purpose**: Multi-graph UUID tracking and management  
 **Key operations**: `get_or_create_graph()`, `validate_and_switch()`, `register_graph()`
 
-### kg_api.rs  
+### server/kg_api.rs  
 **Purpose**: High-level graph operations API (currently unused - marked as dead code)
 **Operations**: `add_block()`, `update_block()`, `delete_block()`, `create_page()`
+
+### server/server.rs
+**Purpose**: Server utility functions for clean main.rs separation  
+**Functions**: `handle_shutdown_command()`, `run_server_with_duration()`
 
 ### transaction_log.rs
 **Purpose**: Write-ahead logging with sled database  
@@ -68,14 +80,11 @@ cymbiont/
 **Purpose**: Transaction lifecycle coordination  
 **States**: `Active` → `WaitingForAck` → `Committed`
 
-### websocket.rs
+### server/websocket.rs
 **Purpose**: Real-time WebSocket communication  
 **Protocol**: Auth, heartbeat, command acknowledgments
 **Commands**: `create_block`, `update_block`, `delete_block`, `create_page`
 
-### lib.rs
-**Purpose**: Library interface exposing core modules
-**Exports**: `GraphManager`, `PKMBlockData`, `PKMPageData`, transaction modules
 
 ## Data Structures
 
@@ -152,10 +161,11 @@ development:
 ## CLI Usage
 
 ```bash
-cargo run [OPTIONS]
-  --duration <SECONDS>           # Run for specific duration  
+cymbiont [OPTIONS]
+  --server                      # Run as HTTP/WebSocket server
   --data-dir <PATH>             # Override data directory
-  --shutdown-server             # Graceful shutdown
+  --duration <SECONDS>          # Run for specific duration
+  --shutdown                    # Graceful shutdown of running instance
 ```
 
 ## Key Flows

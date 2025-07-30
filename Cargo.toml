@@ -7,13 +7,8 @@ description = "A knowledge graph-enhanced AI agent for personal knowledge manage
 repository = "https://github.com/Brandtweary/cymbiont"
 license = "AGPL-3.0"
 
-[[bin]]
-name = "cymbiont"
-path = "src/main.rs"
 
-[lib]
-name = "cymbiont"
-path = "src/lib.rs"
+
 
 [dependencies]
 async-trait = "0.1"

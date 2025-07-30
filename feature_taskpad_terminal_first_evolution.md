@@ -50,29 +50,27 @@ Transform Cymbiont from a Logseq-integrated PKM synchronization tool into a term
 ## Development Plan
 
 ### 1. Merge Resolution & State Stabilization
-- [ ] Preserve `feature_taskpad_aichat_agent_integration.md` historical context
-- [ ] Complete the merge by accepting the architectural pivot
-- [ ] Update CLAUDE.local.md to reflect evolution (not crisis)
+- [x] Preserve `feature_taskpad_aichat_agent_integration.md` historical context (PRESERVED ✓)
+- [x] Complete the merge by accepting the architectural pivot (MERGED TO MAIN ✓)
+- [x] Update CLAUDE.local.md to reflect evolution (not crisis) (UPDATED ✓)
 - [ ] Tag pre-evolution state for historical reference
 
 ### 2. Deprecation Wave
-- [ ] Add deprecation headers to `session_manager.rs`
-- [ ] Mark `logseq_plugin/` directory as deprecated
-- [ ] Update integration tests with deprecation notices
-- [ ] Document deprecation timeline in README
+- [x] Add deprecation headers to `session_manager.rs` (REMOVED ENTIRELY ✓)
+- [x] Mark `logseq_plugin/` directory as deprecated (REMOVED ENTIRELY ✓)
+- [x] Update integration tests with deprecation notices (REMOVED ✓)
+- [x] Document deprecation timeline in README (UPDATED ✓)
 
 ### 3. Core Extraction & Library Design
-- [ ] Create `src/lib.rs` with public API surface
-- [ ] Design `KnowledgeGraph` struct and core traits
-- [ ] Extract core modules into `src/core/` subdirectory
-- [ ] Implement feature gates in `Cargo.toml`
-- [ ] **Library Architecture Plan**:
-  - Core modules exposed: GraphManager, TransactionLog, PKMData structures
-  - Optional features: `api` (HTTP/WebSocket), `tui` (terminal interface), `import-*` (PKM importers)
-  - Clean separation: HTTP API becomes optional transport layer, not core requirement
-  - Direct embedding: AIChat agents can use library without HTTP overhead
-  - Public traits: Define `GraphStorage`, `QueryEngine`, `Importer` traits
-  - Builder pattern: `KnowledgeGraph::builder().with_storage(path).build()`
+- [x] Create `src/lib.rs` with public API surface (COMPLETED ✓)
+- [x] Implement clean separation of server and core functionality (COMPLETED ✓)
+- [x] Create `src/app_state.rs` for centralized state management (COMPLETED ✓)
+- [x] Establish dual binary architecture (cymbiont + cymbiont-server) (COMPLETED ✓)
+- [x] **Library Architecture Complete**: Clean separation achieved with dual binaries
+  - Core functionality: Terminal-first CLI with AppState coordination
+  - Network layer: Optional HTTP/WebSocket server in separate binary
+  - Library interface: All core modules exposed via lib.rs
+  - No feature flag complexity: Physical separation instead of conditional compilation
 
 ### 4. Interface Evolution
 - [ ] Design stdin/stdout JSON command protocol
@@ -107,7 +105,7 @@ Transform Cymbiont from a Logseq-integrated PKM synchronization tool into a term
 - [ ] Create keyboard navigation system
 
 ### 7. API Adaptation
-- [ ] Remove Logseq-specific HTTP endpoints
+- [x] Remove Logseq-specific HTTP endpoints (COMPLETED ✓)
 - [ ] Simplify WebSocket protocol for agent streaming
 - [ ] Add new agent-focused query endpoints
 - [ ] Implement efficient batch query API
@@ -124,7 +122,17 @@ Transform Cymbiont from a Logseq-integrated PKM synchronization tool into a term
 - [ ] Create migration guide for existing users
 - [ ] Write agent integration cookbook
 
-### 10. Final Cleanup & Optimization
+### 10. Re-evaluate Transaction Log and Sagas
+- [ ] Review transaction recovery methods (marked with `#[allow(dead_code)]`)
+- [ ] Assess if content deduplication is still needed without Logseq
+- [ ] Determine if saga pattern is overkill for terminal-first architecture
+- [ ] Consider simpler append-only log alternative
+- [ ] Remove or refactor marked functions in:
+  - `transaction.rs`: `find_pending_transaction_by_content`, `handle_acknowledgment`, `recover_pending_transactions`
+  - `transaction_log.rs`: `list_pending_transactions`, `find_transaction_by_content_hash`, `flush`
+  - `saga.rs`: `get_saga` method
+
+### 11. Final Cleanup & Optimization
 - [ ] Remove all dead code paths
 - [ ] Optimize for sub-10ms query performance
 - [ ] Minimize binary size with feature gates
@@ -132,28 +140,21 @@ Transform Cymbiont from a Logseq-integrated PKM synchronization tool into a term
 
 ## Development Notes
 
-### 2025-01-29: Library Extraction Strategy
-After the logseq-removal agent successfully removed 5,526 lines of browser-specific code, we've identified that the remaining HTTP/WebSocket infrastructure is actually valuable for agent communication. Rather than removing it entirely, we're adopting a library-first architecture where:
+### 2025-01-29: Library Extraction Strategy Resolution
+After the logseq-removal agent successfully removed 5,526 lines of browser-specific code, we initially planned to expose Cymbiont as a library. However, we discovered that:
 
-1. **Core functionality lives in lib.rs** - GraphManager, TransactionLog, PKMData structures become the public API
-2. **HTTP/WebSocket become optional** - Behind an `api` feature flag for remote agents
-3. **Direct embedding preferred** - AIChat agents can use the Rust library directly, avoiding HTTP overhead
-4. **Clean module structure**:
-   ```rust
-   // lib.rs
-   pub mod graph;      // GraphManager, GraphRegistry  
-   pub mod storage;    // TransactionLog, persistence
-   pub mod pkm;        // PKMData structures
-   pub mod query;      // Future query language
-   
-   #[cfg(feature = "api")]
-   pub mod api;        // HTTP endpoints
-   
-   #[cfg(feature = "websocket")]
-   pub mod websocket;  // Real-time protocol
-   ```
+1. **Everything is tightly coupled** - GraphManager needs TransactionLog, which needs sled, which needs file paths, etc.
+2. **Cymbiont is a stateful service** - Not a stateless library that can be easily embedded
+3. **HTTP/WebSocket APIs are sufficient** - External applications can integrate via these standard protocols
+4. **Single binary with --server flag** - Much simpler than dual binaries or complex feature flags
 
-This approach preserves the valuable work already done while making Cymbiont more flexible for different use cases.
+We opted NOT to provide a library interface because:
+- The coupling is intentional and necessary for data integrity
+- Trying to extract a "clean" API would require major architectural changes
+- HTTP/WebSocket access is more universal than Rust library embedding
+- This matches the pattern of other complex systems (databases, search engines, etc.)
+
+The final architecture is a single binary that defaults to CLI mode and can run as a server with `--server`.
 
 ### 2025-01-29: Birth of a New Paradigm
 The decision to pivot from Logseq integration to terminal-first architecture represents a fundamental evolution in Cymbiont's design philosophy. Rather than fighting the complexity of browser automation and plugin state management, we're embracing the Unix philosophy of composable tools. This isn't a failure of the original vision, but a recognition that AI agents need different interfaces than human users.
@@ -190,6 +191,7 @@ This is not historical context - it's the active integration plan adapted for te
 - Semantic search using vector embeddings
 - Multi-agent coordination protocols
 - Real-time collaborative graph editing
+
 
 ## Migration Path
 1. Existing Logseq users can one-time import their graphs

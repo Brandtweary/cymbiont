@@ -172,6 +172,8 @@ impl SagaCoordinator {
         Ok(())
     }
     
+    // TODO: Remove allow(dead_code) once saga recovery is implemented
+    #[allow(dead_code)]
     pub async fn get_saga(&self, saga_id: &str) -> Result<Saga> {
         let sagas = self.sagas.read().await;
         sagas.get(saga_id)

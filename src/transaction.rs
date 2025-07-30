@@ -32,8 +32,12 @@ pub enum TransactionError {
     LogError(#[from] TransactionLogError),
     
     #[error("Transaction not found: {0}")]
+    // TODO: Remove allow(dead_code) once transaction recovery is implemented
+    #[allow(dead_code)]
     TransactionNotFound(String),
     
+    // TODO: Remove allow(dead_code) once operation retry logic is implemented
+    #[allow(dead_code)]
     #[error("Operation failed: {0}")]
     OperationFailed(String),
 }
@@ -111,11 +115,15 @@ impl TransactionCoordinator {
         pending.contains_key(content_hash)
     }
     
+    // TODO: Remove allow(dead_code) once transaction recovery is implemented
+    #[allow(dead_code)]
     pub async fn find_pending_transaction_by_content(&self, content_hash: &str) -> Option<String> {
         let pending = self.pending_operations.read().await;
         pending.get(content_hash).cloned()
     }
     
+    // TODO: Remove allow(dead_code) once acknowledgment handling is implemented
+    #[allow(dead_code)]
     pub async fn handle_acknowledgment(
         &self,
         correlation_id: &str,
@@ -147,6 +155,8 @@ impl TransactionCoordinator {
         Ok(())
     }
     
+    // TODO: Remove allow(dead_code) once crash recovery is implemented
+    #[allow(dead_code)]
     pub async fn recover_pending_transactions(&self) -> Result<Vec<String>> {
         let pending = self.log.list_pending_transactions()?;
         let mut recovered = Vec::new();

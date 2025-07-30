@@ -50,38 +50,15 @@
 //!
 //! ## Usage Patterns
 //!
-//! ### Plugin Initialization
-//! ```rust,no_run
-//! # use cymbiont::graph_registry::GraphRegistry;
-//! # let mut registry = GraphRegistry::new();
-//! // Plugin sends graph context via headers
-//! let data_dir = std::path::Path::new("data");
-//! let (graph_info, is_new) = registry.validate_and_switch(
-//!     Some("My Graph"),
-//!     Some("path/to/graph"),
-//!     Some("optional-uuid"),
-//!     data_dir
-//! ).unwrap();
-//! ```
+//! ### Client Initialization
+//! When a client connects, it sends graph context via headers. The registry
+//! validates this context and switches to the appropriate graph, creating
+//! a new one if necessary.
 //!
 //! ### Graph Management
-//! ```rust,no_run
-//! # use cymbiont::graph_registry::GraphRegistry;
-//! # let mut registry = GraphRegistry::new();
-//! // Register new graph
-//! let data_dir = std::path::Path::new("data");
-//! let graph_info = registry.register_graph(
-//!     "My Knowledge Base".to_string(),
-//!     "/path/to/graph".to_string(),
-//!     None,  // Auto-generate UUID
-//!     data_dir
-//! ).unwrap();
-//!
-//! // Get active graph
-//! if let Some(active_id) = registry.get_active_graph_id() {
-//!     let graph_info = registry.get_graph(&active_id).unwrap();
-//! }
-//! ```
+//! Graphs can be registered with explicit UUIDs for consistency or can have
+//! UUIDs auto-generated. The registry ensures unique identification across
+//! all graphs in the system.
 //!
 //! ## Configurable Data Directory
 //!
@@ -125,9 +102,6 @@ pub enum GraphRegistryError {
     
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
-    
-    #[error("Graph not found: {0}")]
-    GraphNotFound(String),
     
     #[error("Validation error: {0}")]
     ValidationError(String),
@@ -315,21 +289,6 @@ impl GraphRegistry {
         self.graphs.get(id)
     }
 
-    /// Get the active graph
-    pub fn get_active_graph(&self) -> Option<&GraphInfo> {
-        self.active_graph_id.as_ref()
-            .and_then(|id| self.graphs.get(id))
-    }
-
-    /// Set the active graph
-    pub fn set_active_graph(&mut self, id: &str) -> Result<()> {
-        if self.graphs.contains_key(id) {
-            self.active_graph_id = Some(id.to_string());
-            Ok(())
-        } else {
-            Err(GraphRegistryError::GraphNotFound(id.to_string()))
-        }
-    }
 
     /// Get or create a graph based on name and path
     pub fn get_or_create_graph(&mut self, name: String, path: String, id: Option<String>, data_dir: &std::path::Path) -> Result<GraphInfo> {
@@ -381,22 +340,6 @@ impl GraphRegistry {
         Ok((graph_info, is_new))
     }
 
-    /// Mark a graph's config.edn as having been updated with property hiding
-    pub fn mark_config_updated(&mut self, graph_id: &str) -> Result<()> {
-        if let Some(graph_info) = self.graphs.get_mut(graph_id) {
-            graph_info.config_updated = true;
-            Ok(())
-        } else {
-            Err(GraphRegistryError::GraphNotFound(graph_id.to_string()))
-        }
-    }
-
-    /// Check if a graph's config.edn has been updated
-    pub fn is_config_updated(&self, graph_id: &str) -> bool {
-        self.graphs.get(graph_id)
-            .map(|info| info.config_updated)
-            .unwrap_or(false)
-    }
     
     /// Get all registered graphs
     pub fn get_all_graphs(&self) -> Vec<GraphInfo> {

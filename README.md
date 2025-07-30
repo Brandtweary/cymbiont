@@ -1,6 +1,6 @@
 # Cymbiont
 
-> **A knowledge graph engine designed for self-organizing AI agents**
+> **A knowledge graph engine for self-organizing AI agents**
 
 Cymbiont is building the infrastructure for a new kind of knowledge management system—one where AI agents work directly with your personal knowledge graphs, learning patterns in how you think and connecting ideas across domains. Instead of static notes or rigid databases, Cymbiont creates living knowledge structures that grow more useful over time.
 
@@ -30,10 +30,18 @@ The roadmap includes:
 - **Terminal-first interface** for Unix-style composition and piping
 - **Import adapters** for Logseq, Obsidian, Roam Research, and more
 - **Natural language queries** powered by integrated LLM agents
-- **Library interface** for embedding in other Rust applications
 - **Export formats** for interoperability with existing tools
 
 ## Getting Started
+
+### Integration
+
+Cymbiont provides HTTP and WebSocket APIs for external applications:
+
+- **HTTP API**: RESTful endpoints at `http://localhost:3000` for CRUD operations
+- **WebSocket**: Real-time bidirectional communication at `ws://localhost:3000/ws`
+
+Use any HTTP client or WebSocket library to interact with your knowledge graphs programmatically.
 
 ### Building
 
@@ -43,10 +51,16 @@ cargo build --release
 
 ### Running
 
-Start the knowledge graph server:
+View current knowledge graph status:
 
 ```bash
 cargo run
+```
+
+Start the HTTP/WebSocket server:
+
+```bash
+cargo run -- --server
 ```
 
 The server will start on `localhost:3000` by default.
@@ -70,9 +84,11 @@ development:
 ### CLI Options
 
 ```bash
-cargo run -- --help              # View all options
-cargo run -- --data-dir ./custom # Use custom data directory
-cargo run -- --duration 60       # Run for 60 seconds
+cargo run -- --help                    # View all options
+cargo run -- --data-dir ./custom       # Use custom data directory
+cargo run -- --server                  # Start HTTP/WebSocket server
+cargo run -- --server --duration 60    # Run server for 60 seconds
+cargo run -- --shutdown                # Gracefully stop running instance
 ```
 
 

@@ -93,7 +93,7 @@ pub enum Command {
     Test {
         message: String,
     },
-    // Acknowledgment messages from plugin to server
+    // Acknowledgment messages from client to server
     BlockCreated {
         correlation_id: String,
         block_uuid: String,
@@ -299,7 +299,7 @@ async fn handle_command(
         Command::CreatePage { .. } |
         Command::GraphSwitchRequested { .. } => {
             // These commands are only sent FROM server TO client
-            // The plugin should never send these to the server
+            // The client should never send these to the server
             error!("Unexpected command from client: {:?}", command);
             send_error_response(connection_id, state, "Client should not send PKM manipulation commands").await?;
         }

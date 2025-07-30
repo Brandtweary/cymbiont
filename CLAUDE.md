@@ -9,11 +9,12 @@ cargo test                       # Run tests (quiet by default)
 RUST_LOG=debug cargo run         # Run backend server with debug logging (do not alter default 3s duration or set a timeout)
 ```
 
-## CLI Flags (Cymbiont Server)
+## CLI Flags
 
-- `--duration <SECONDS>`: Run server for a specific duration in seconds (to run indefinitely, set default_duration to null in config.yaml )
+- `--server`: Run as HTTP/WebSocket server
+- `--duration <SECONDS>`: Run for a specific duration in seconds (to run indefinitely, set default_duration to null in config.yaml)
 - `--data-dir <PATH>`: Override data directory path (defaults to config value)
-- `--shutdown-server`: Shutdown running Cymbiont server gracefully
+- `--shutdown`: Shutdown running Cymbiont instance gracefully
 
 ## Architecture
 - See `cymbiont_architecture.md` for comprehensive codebase architecture
@@ -29,20 +30,22 @@ RUST_LOG=debug cargo run         # Run backend server with debug logging (do not
 
 ### Project Structure
 - **src/**
-  - **main.rs**: Server orchestration and lifecycle management
-  - **api.rs**: HTTP endpoints and request handlers for data ingestion
+  - **main.rs**: CLI entry point with optional server mode (--server flag)
   - **graph_manager.rs**: Petgraph-based knowledge graph storage engine
   - **config.rs**: YAML configuration loading and validation
   - **utils.rs**: Process management, datetime parsing, general utilities
   - **logging.rs**: Custom formatter (file:line only for ERROR/WARN)
   - **pkm_data.rs**: Shared data structures (PKMBlockData, PKMPageData)
-  - **websocket.rs**: WebSocket server for real-time communication
   - **transaction_log.rs**: Write-ahead logging with sled database
   - **transaction.rs**: Transaction coordinator and state management
   - **saga.rs**: Saga pattern for multi-step workflows
-  - **kg_api.rs**: Public API for knowledge graph operations (currently unused)
   - **graph_registry.rs**: Multi-graph identification and management
-  - **lib.rs**: Library interface for embedding
+  - **app_state.rs**: Centralized application state management
+  - **server/**: Server-specific functionality
+    - **api.rs**: HTTP endpoints and request handlers
+    - **websocket.rs**: WebSocket server for real-time communication
+    - **kg_api.rs**: Public API for knowledge graph operations (currently unused)
+    - **server.rs**: Server utility functions
 - **tests/**: Integration tests
 - **Cargo.toml**: Dependencies and metadata
 

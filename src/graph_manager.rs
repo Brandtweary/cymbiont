@@ -460,72 +460,7 @@ impl GraphManager {
     }
     
     
-    /// Update the last incremental sync timestamp
-    pub fn update_incremental_sync_timestamp(&mut self) -> GraphResult<()> {
-        let now = Utc::now().timestamp_millis();
-        self.last_incremental_sync = Some(now);
-        self.save_graph()
-    }
     
-    /// Update the last full sync timestamp
-    pub fn update_full_sync_timestamp(&mut self) -> GraphResult<()> {
-        let now = Utc::now().timestamp_millis();
-        self.last_full_sync = Some(now);
-        self.save_graph()
-    }
-    
-    /// Verify PKM IDs and archive any nodes that no longer exist in the PKM
-    pub fn verify_and_archive_missing_nodes(&mut self, page_ids: &[String], block_ids: &[String]) -> GraphResult<(usize, String)> {
-        use std::collections::HashSet;
-        
-        // Convert ID lists to HashSets for O(1) lookup
-        let page_set: HashSet<&str> = page_ids.iter().map(|s| s.as_str()).collect();
-        let block_set: HashSet<&str> = block_ids.iter().map(|s| s.as_str()).collect();
-        
-        // Find nodes to archive
-        let mut nodes_to_archive = Vec::new();
-        let mut archived_pages = 0;
-        let mut archived_blocks = 0;
-        
-        trace!("Checking for nodes to archive: {} pages and {} blocks in PKM", 
-               page_ids.len(), block_ids.len());
-        
-        for (pkm_id, &node_idx) in &self.pkm_to_node {
-            if let Some(node) = self.graph.node_weight(node_idx) {
-                match node.node_type {
-                    NodeType::Page => {
-                        // Check both original and lowercase version
-                        let normalized_id = node.pkm_id.to_lowercase();
-                        if !page_set.contains(node.pkm_id.as_str()) && !page_set.contains(normalized_id.as_str()) {
-                            trace!("🗄️ Archiving deleted page: {}", node.pkm_id);
-                            nodes_to_archive.push((pkm_id.clone(), node_idx, node.clone()));
-                            archived_pages += 1;
-                        }
-                    },
-                    NodeType::Block => {
-                        if !block_set.contains(node.pkm_id.as_str()) {
-                            trace!("🗄️ Archiving deleted block: {}", node.pkm_id);
-                            nodes_to_archive.push((pkm_id.clone(), node_idx, node.clone()));
-                            archived_blocks += 1;
-                        }
-                    }
-                }
-            }
-        }
-        
-        if nodes_to_archive.is_empty() {
-            return Ok((0, "No nodes to archive".to_string()));
-        }
-        
-        // Use the unified archive_nodes method
-        let nodes_for_archival: Vec<(String, NodeIndex)> = nodes_to_archive
-            .into_iter()
-            .map(|(pkm_id, node_idx, _)| (pkm_id, node_idx))
-            .collect();
-        
-        let archive_message = self.archive_nodes(nodes_for_archival)?;
-        Ok((archived_pages + archived_blocks, archive_message))
-    }
     
     /// Build archive JSON for a single node
     fn build_node_archive_json(&self, pkm_id: &str, node_idx: NodeIndex, node: &NodeData) -> serde_json::Value {
@@ -1205,41 +1140,6 @@ mod tests {
         assert_eq!(edges1_after.len(), 1);
     }
     
-    #[test]
-    fn test_sync_status() {
-        let (mut manager, _temp_dir) = create_test_manager();
-        let config = crate::config::SyncConfig::default();
-        
-        // Initially no sync
-        let status = manager.get_sync_status(&config);
-        assert_eq!(status["incremental_sync_needed"], true);
-        assert_eq!(status["true_full_sync_needed"], false); // Disabled by default
-        assert_eq!(status["node_count"], 0);
-        assert_eq!(status["edge_count"], 0);
-        
-        // Add some data
-        let page = create_test_page("TestPage");
-        manager.create_or_update_node_from_pkm_page(&page).unwrap();
-        
-        // Update incremental sync timestamp
-        manager.update_incremental_sync_timestamp().unwrap();
-        
-        let status = manager.get_sync_status(&config);
-        assert_eq!(status["incremental_sync_needed"], false);
-        assert_eq!(status["node_count"], 1);
-        assert!(status["last_incremental_sync"].as_i64().is_some());
-        
-        // Test with full sync enabled
-        let mut full_config = config;
-        full_config.enable_full_sync = true;
-        let status = manager.get_sync_status(&full_config);
-        assert_eq!(status["true_full_sync_needed"], true); // No previous full sync
-        
-        // Update full sync timestamp
-        manager.update_full_sync_timestamp().unwrap();
-        let status = manager.get_sync_status(&full_config);
-        assert_eq!(status["true_full_sync_needed"], false);
-    }
     
     #[test]
     fn test_real_graph_traversal() {

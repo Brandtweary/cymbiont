@@ -36,12 +36,25 @@ The roadmap includes:
 
 ## Getting Started
 
+### Installation
+
+**Prerequisites:** You'll need [Rust](https://rustup.rs/) installed on your system.
+
+**Download from GitHub:**
+```bash
+git clone https://github.com/Brandtweary/cymbiont.git
+cd cymbiont
+```
+
+**Or install via Cargo:**
+```bash
+cargo install cymbiont
+```
+
 ### Quick Start
 
-1. **Clone and build**:
+1. **Build the project**:
    ```bash
-   git clone https://github.com/Brandtweary/cymbiont.git
-   cd cymbiont
    cargo build --release
    ```
 

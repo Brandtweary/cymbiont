@@ -36,57 +36,69 @@ The roadmap includes:
 
 ## Getting Started
 
-### Integration
+### Quick Start
 
-Cymbiont provides HTTP and WebSocket APIs for external applications:
+1. **Clone and build**:
+   ```bash
+   git clone https://github.com/Brandtweary/cymbiont.git
+   cd cymbiont
+   cargo build --release
+   ```
 
-- **HTTP API**: RESTful endpoints at `http://localhost:3000` for CRUD operations
-- **WebSocket**: Real-time bidirectional communication at `ws://localhost:3000/ws`
+2. **Check your setup** (displays current graph status):
+   ```bash
+   cargo run
+   ```
 
-Use any HTTP client or WebSocket library to interact with your knowledge graphs programmatically.
+3. **Import your Logseq notes** (if you have them):
+   ```bash
+   cargo run -- --import-logseq ~/Documents/logseq-notes
+   ```
 
-### Building
+4. **Run as a server** (for programmatic access):
+   ```bash
+   cargo run -- --server
+   ```
+
+That's it! Cymbiont will handle graph storage, transactions, and data persistence automatically.
+
+### Import Your Knowledge
+
+If you have an existing Logseq graph, you can import it in seconds:
 
 ```bash
-cargo build --release
+# Import your Logseq directory
+cargo run -- --import-logseq ~/Documents/my-notes
+
+# The import will:
+# - Parse all .md files 
+# - Extract blocks and pages
+# - Resolve ((block-id)) references
+# - Create a complete knowledge graph
+# - Show you detailed statistics
 ```
 
-### Running
-
-View current knowledge graph status:
+### Basic Commands
 
 ```bash
+# View current graphs and status
 cargo run
+
+# Import knowledge from Logseq
+cargo run -- --import-logseq /path/to/notes
+
+# Use custom data directory
+cargo run -- --data-dir ./my-graphs
+
+# Use specific config file
+cargo run -- --config custom.yaml
+
+# Run for development/testing (auto-exit after 60s)
+cargo run -- --duration 60
+
+# Stop a running instance
+cargo run -- --shutdown
 ```
-
-Start the HTTP/WebSocket server:
-
-```bash
-cargo run -- --server
-```
-
-The server will start on `localhost:3000` by default.
-
-### Import Knowledge Graphs
-
-Import your existing Logseq graph:
-
-```bash
-# Import entire Logseq directory
-cargo run -- --import-logseq ~/Documents/logseq-notes
-
-# Or via HTTP API (with server running)
-curl -X POST http://localhost:3000/import/logseq \
-  -H "Content-Type: application/json" \
-  -d '{"path": "/path/to/logseq/graph", "graph_name": "my-graph"}'
-```
-
-The import process:
-- Parses all `.md` files in the directory
-- Extracts blocks and page hierarchies
-- Resolves `((block-id))` references
-- Creates a complete knowledge graph
-- Reports comprehensive statistics and any errors
 
 ### Configuration
 
@@ -105,7 +117,45 @@ development:
   default_duration: null          # Run indefinitely
 ```
 
-### CLI Options
+## Advanced Usage
+
+### Programmatic Access
+
+For developers building applications on top of Cymbiont:
+
+```bash
+# Start the server
+cargo run -- --server
+```
+
+Cymbiont provides HTTP and WebSocket APIs:
+
+- **HTTP API**: RESTful endpoints at `http://localhost:3000`
+- **WebSocket**: Real-time communication at `ws://localhost:3000/ws`
+
+**HTTP Import Example:**
+```bash
+curl -X POST http://localhost:3000/import/logseq \
+  -H "Content-Type: application/json" \
+  -d '{"path": "/path/to/logseq/graph", "graph_name": "my-graph"}'
+```
+
+### Multiple Instances
+
+Run multiple Cymbiont instances simultaneously:
+
+```bash
+# Instance 1 (default config)
+cargo run -- --server
+
+# Instance 2 (custom config)  
+cargo run -- --server --config instance2.yaml
+
+# Shutdown specific instance
+cargo run -- --shutdown --config instance2.yaml
+```
+
+### All CLI Options
 
 ```bash
 cargo run -- --help                        # View all options

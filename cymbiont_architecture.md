@@ -11,10 +11,15 @@ cymbiont/
 │   ├── utils.rs                   # Process management and utilities
 │   ├── graph_manager.rs           # Petgraph-based knowledge graph storage
 │   ├── graph_registry.rs          # Multi-graph UUID management
-│   ├── pkm_data.rs                # PKM data structures
 │   ├── transaction_log.rs         # Write-ahead logging with sled
 │   ├── transaction.rs             # Transaction coordination
 │   ├── saga.rs                    # Multi-step workflow patterns
+│   ├── import/                    # Data import functionality
+│   │   ├── mod.rs                 # Import module exports and errors
+│   │   ├── pkm_data.rs            # PKM data structures
+│   │   ├── logseq.rs              # Logseq-specific parsing
+│   │   ├── import_utils.rs        # Import coordination
+│   │   └── reference_resolver.rs  # Block reference resolution
 │   └── server/                    # Server-specific functionality
 │       ├── mod.rs                 # Server module exports
 │       ├── api.rs                 # HTTP endpoints for data ingestion
@@ -27,7 +32,9 @@ cymbiont/
 │   │   ├── knowledge_graph.json   # Serialized petgraph
 │   │   └── transaction_log/       # WAL database
 │   └── transaction_log/           # Global transaction log
-└── tests/                         # Test suite (TODO: need to add integration tests)
+└── tests/                         # Integration tests with isolation
+    ├── common/                    # Shared test utilities
+    └── test_*.rs                  # Integration test suites
 ```
 
 ## Module Requirements and Data Flow
@@ -51,13 +58,14 @@ cymbiont/
 **Active endpoints**:
 - `GET /` - Health check
 - `POST /data` - PKM data ingestion (blocks, pages, batches)
+- `POST /import/logseq` - Logseq graph import
 - `GET /ws` - WebSocket upgrade
 - `GET /api/websocket/status` - Connection metrics
 
 ### graph_manager.rs
 **Purpose**: Core knowledge graph storage using petgraph  
 **Key features**: StableGraph with nodes (Pages/Blocks), edges (relationships), JSON persistence
-**Node types**: `Page { name, properties }`, `Block { uuid, content, properties }`
+**Node types**: `Page { name, properties }`, `Block { uuid, content, reference_content, properties }`
 **Edge types**: `PageRef`, `BlockRef`, `Tag`, `Property`, `ParentChild`, `PageToBlock`
 
 ### graph_registry.rs
@@ -84,6 +92,22 @@ cymbiont/
 **Purpose**: Real-time WebSocket communication  
 **Protocol**: Auth, heartbeat, command acknowledgments
 **Commands**: `create_block`, `update_block`, `delete_block`, `create_page`
+
+### import/logseq.rs
+**Purpose**: Logseq-specific parsing and transformation  
+**Key features**: Reads .md files, parses frontmatter, extracts blocks and hierarchies
+
+### import/pkm_data.rs
+**Purpose**: PKM data structures for import processing  
+**Key types**: `PKMBlockData`, `PKMPageData`, `PKMReference`
+
+### import/import_utils.rs
+**Purpose**: High-level import coordination  
+**Key operations**: `import_logseq_graph()` - full graph import with error collection
+
+### import/reference_resolver.rs
+**Purpose**: Block reference resolution during import  
+**Key features**: Resolves `((block-id))` references, prevents circular references
 
 
 ## Data Structures
@@ -154,6 +178,7 @@ backend:
   host: "localhost"
   port: 3000
   max_port_attempts: 10
+  server_info_file: "cymbiont_server.json"  # Server discovery file (enables multi-instance)
 development:
   default_duration: null          # Run duration (null = indefinite)
 ```
@@ -164,6 +189,8 @@ development:
 cymbiont [OPTIONS]
   --server                      # Run as HTTP/WebSocket server
   --data-dir <PATH>             # Override data directory
+  --config <PATH>               # Use specific configuration file
+  --import-logseq <PATH>        # Import Logseq graph directory
   --duration <SECONDS>          # Run for specific duration
   --shutdown                    # Graceful shutdown of running instance
 ```
@@ -172,6 +199,10 @@ cymbiont [OPTIONS]
 
 **Data Ingestion**: HTTP POST → Graph headers validation → Multi-graph switching → PKM parsing → Graph mutation → Auto-save
 
+**Logseq Import**: CLI/HTTP → Path validation → .md file discovery → Frontmatter parsing → Block extraction → Reference resolution → Graph creation
+
 **Transaction**: Operation → Content hash → WAL log → Graph update → Commit/rollback
 
 **WebSocket**: Client auth → Command dispatch → Graph operation → Broadcast to clients
+
+**Multi-Instance**: Configurable `server_info_file` enables concurrent server instances with isolated discovery

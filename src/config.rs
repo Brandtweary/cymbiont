@@ -26,9 +26,13 @@
  * ### BackendConfig
  * - `port`: Base port for HTTP server (default: 3000)
  * - `max_port_attempts`: Port search range (default: 10)
+ * - `server_info_file`: Filename for server discovery info (default: "cymbiont_server.json")
  *   
  * When port 3000 is busy, the server tries 3001, 3002, etc., up to
  * 3000 + max_port_attempts. This enables multiple instances during development.
+ * 
+ * The server_info_file allows multiple Cymbiont instances to run simultaneously
+ * without interfering with each other's discovery mechanisms.
  * 
  * ### DevelopmentConfig
  * - `default_duration`: Auto-exit after N seconds (default: None)
@@ -85,6 +89,8 @@ pub struct Config {
 pub struct BackendConfig {
     pub port: u16,
     pub max_port_attempts: u16,
+    #[serde(default = "default_server_info_file")]
+    pub server_info_file: String,
 }
 
 
@@ -99,6 +105,10 @@ fn default_data_dir() -> String {
     "data".to_string()
 }
 
+fn default_server_info_file() -> String {
+    "cymbiont_server.json".to_string()
+}
+
 // Default configuration
 impl Default for Config {
     fn default() -> Self {
@@ -106,6 +116,7 @@ impl Default for Config {
             backend: BackendConfig {
                 port: 3000,
                 max_port_attempts: 10,
+                server_info_file: default_server_info_file(),
             },
             development: DevelopmentConfig {
                 default_duration: None,
@@ -125,17 +136,50 @@ impl Default for DevelopmentConfig {
 
 
 // Load configuration from file
-pub fn load_config() -> Config {
+pub fn load_config(config_path: Option<String>) -> Config {
+    // If explicit path provided, use it
+    if let Some(path) = config_path {
+        let config_file = PathBuf::from(path);
+        match fs::read_to_string(&config_file) {
+            Ok(contents) => {
+                match serde_yaml::from_str(&contents) {
+                    Ok(config) => {
+                        debug!("📄 Loaded configuration from {:?}", config_file);
+                        return config;
+                    },
+                    Err(e) => {
+                        error!("Error parsing {:?}: {}", config_file, e);
+                    }
+                }
+            },
+            Err(e) => {
+                error!("Error reading {:?}: {}", config_file, e);
+            }
+        }
+        // Fall through to default if explicit path fails
+    }
+    
+    // Otherwise use the original logic
+    // Check if we're in test mode via environment variable
+    let is_test_mode = std::env::var("CYMBIONT_TEST_MODE").is_ok();
+    
     // Determine the executable directory
     let exe_path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
     let exe_dir = exe_path.parent().unwrap_or_else(|| Path::new("."));
     
-    // Try to find config.yaml in parent directories
+    // Try to find config file in parent directories
     let mut config_path = PathBuf::from(exe_dir);
     let mut found = false;
     
+    // Determine which config file to look for
+    let config_filename = if is_test_mode {
+        "config.test.yaml"
+    } else {
+        "config.yaml"
+    };
+    
     // First check if config exists in the current directory
-    if config_path.join("config.yaml").exists() {
+    if config_path.join(config_filename).exists() {
         found = true;
     } else {
         // Try up to 3 parent directories
@@ -145,16 +189,16 @@ pub fn load_config() -> Config {
                 None => break,
             };
             
-            if config_path.join("config.yaml").exists() {
+            if config_path.join(config_filename).exists() {
                 found = true;
                 break;
             }
         }
     }
     
-    // If config.yaml was found, try to load it
+    // If config file was found, try to load it
     if found {
-        let config_file = config_path.join("config.yaml");
+        let config_file = config_path.join(config_filename);
         match fs::read_to_string(&config_file) {
             Ok(contents) => {
                 match serde_yaml::from_str(&contents) {
@@ -163,12 +207,12 @@ pub fn load_config() -> Config {
                         return config;
                     },
                     Err(e) => {
-                        error!("Error parsing config.yaml: {}", e);
+                        error!("Error parsing {}: {}", config_filename, e);
                     }
                 }
             },
             Err(e) => {
-                error!("Error reading config.yaml: {}", e);
+                error!("Error reading {}: {}", config_filename, e);
             }
         }
     }

@@ -47,18 +47,18 @@ pub struct AppState {
 
 impl AppState {
     /// Create new AppState for CLI usage (no server components)
-    pub async fn new_cli(data_dir_override: Option<String>) -> Result<Arc<Self>, Box<dyn Error + Send + Sync>> {
-        Self::new_internal(data_dir_override, false).await
+    pub async fn new_cli(config_path: Option<String>, data_dir_override: Option<String>) -> Result<Arc<Self>, Box<dyn Error + Send + Sync>> {
+        Self::new_internal(config_path, data_dir_override, false).await
     }
     
     /// Create new AppState for server usage (with WebSocket components)  
-    pub async fn new_server(data_dir_override: Option<String>) -> Result<Arc<Self>, Box<dyn Error + Send + Sync>> {
-        Self::new_internal(data_dir_override, true).await
+    pub async fn new_server(config_path: Option<String>, data_dir_override: Option<String>) -> Result<Arc<Self>, Box<dyn Error + Send + Sync>> {
+        Self::new_internal(config_path, data_dir_override, true).await
     }
     
-    async fn new_internal(data_dir_override: Option<String>, with_server: bool) -> Result<Arc<Self>, Box<dyn Error + Send + Sync>> {
+    async fn new_internal(config_path: Option<String>, data_dir_override: Option<String>, with_server: bool) -> Result<Arc<Self>, Box<dyn Error + Send + Sync>> {
         // Load configuration
-        let mut config = load_config();
+        let mut config = load_config(config_path);
         
         // Apply data_dir override if provided
         if let Some(cli_data_dir) = &data_dir_override {

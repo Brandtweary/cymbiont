@@ -11,28 +11,31 @@ use tracing::{info, debug, error};
 
 use crate::{
     AppState,
-    utils::{write_server_info, find_available_port, terminate_previous_instance, SERVER_INFO_FILE},
+    utils::{write_server_info, find_available_port, terminate_previous_instance},
     server::api::create_router,
 };
 
 /// Run server with all the necessary setup and teardown
 pub async fn run_server_with_duration(
+    config_path: Option<String>,
     data_dir: Option<String>,
     duration: Option<u64>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let start_time = Instant::now();
     
-    // Terminate any previous instance
-    if std::fs::metadata(SERVER_INFO_FILE).is_ok() {
-        terminate_previous_instance();
-        let _ = std::fs::remove_file(SERVER_INFO_FILE);
-    }
-    
     // Create application state with server support
-    let app_state = AppState::new_server(data_dir).await?;
+    let app_state = AppState::new_server(config_path, data_dir).await?;
+    let server_info_file = &app_state.config.backend.server_info_file;
+    
+    // Terminate any previous instance
+    if std::fs::metadata(server_info_file).is_ok() {
+        terminate_previous_instance(server_info_file);
+        let _ = std::fs::remove_file(server_info_file);
+    }
     
     // Set up exit handler
     let app_state_clone = app_state.clone();
+    let server_info_file_clone = server_info_file.clone();
     ctrlc::set_handler(move || {
         info!("🛑 Received shutdown signal");
         // Save all graphs
@@ -42,7 +45,7 @@ pub async fn run_server_with_duration(
                 app_state_clone.cleanup_and_save().await;
             });
         });
-        cleanup_server_info();
+        cleanup_server_info(&server_info_file_clone);
         let total_runtime = start_time.elapsed();
         info!("🧹 Total runtime: {:.2}s", total_runtime.as_secs_f64());
         exit(0);
@@ -57,7 +60,7 @@ pub async fn run_server_with_duration(
         .map_err(|e| Box::<dyn Error + Send + Sync>::from(e.to_string()))?;
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     
-    write_server_info("127.0.0.1", port)
+    write_server_info("127.0.0.1", port, server_info_file)
         .map_err(|e| Box::<dyn Error + Send + Sync>::from(e.to_string()))?;
     
     let listener = tokio::net::TcpListener::bind(addr).await
@@ -87,7 +90,7 @@ pub async fn run_server_with_duration(
     
     // Cleanup
     app_state.cleanup_and_save().await;
-    cleanup_server_info();
+    cleanup_server_info(server_info_file);
     let total_runtime = start_time.elapsed();
     info!("🧹 Total runtime: {:.2}s", total_runtime.as_secs_f64());
     
@@ -95,8 +98,8 @@ pub async fn run_server_with_duration(
 }
 
 /// Clean up server info file
-fn cleanup_server_info() {
-    if let Err(e) = std::fs::remove_file(SERVER_INFO_FILE) {
+fn cleanup_server_info(filename: &str) {
+    if let Err(e) = std::fs::remove_file(filename) {
         debug!("Could not remove server info file: {}", e);
     }
 }

@@ -25,7 +25,7 @@ Integrate the aichat-agent library as a git submodule in Cymbiont to provide LLM
 - Current usage: HTTP API only, needs public API for direct access
 
 ### Cymbiont Data Structures
-- `src/pkm_data.rs`: Shared data types (`PKMBlockData`, `PKMPageData`)
+- `src/import/pkm_data.rs`: Shared data types (`PKMBlockData`, `PKMPageData`)
 - Current usage: Serialization for HTTP API, will be used in function signatures
 
 ### Agent Functions Directory

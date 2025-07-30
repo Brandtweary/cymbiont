@@ -118,7 +118,7 @@
  * - Complex graph traversal scenarios
  */
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
@@ -130,7 +130,7 @@ use petgraph::visit::EdgeRef;
 use thiserror::Error;
 use tracing::{info, warn, error, debug, trace};
 
-use crate::pkm_data::{PKMBlockData, PKMPageData, PKMReference};
+use crate::import::pkm_data::{PKMBlockData, PKMPageData, PKMReference};
 use crate::utils::{parse_datetime, parse_properties};
 
 /// Type alias for our knowledge graph
@@ -181,6 +181,9 @@ pub struct NodeData {
     
     /// Content of the node (block content or page name)
     pub content: String,
+    
+    /// Expanded content with block references resolved
+    pub reference_content: Option<String>,
     
     /// Node properties (key-value pairs)
     pub properties: HashMap<String, String>,
@@ -567,6 +570,7 @@ impl GraphManager {
             pkm_id: pkm_id.clone(),
             node_type: NodeType::Block,
             content: block_data.content.clone(),
+            reference_content: block_data.reference_content.clone(),
             properties: parse_properties(&block_data.properties),
             created_at: parse_datetime(&block_data.created),
             updated_at: parse_datetime(&block_data.updated),
@@ -656,6 +660,7 @@ impl GraphManager {
             pkm_id: page_name.clone(),
             node_type: NodeType::Page,
             content: page_name.clone(),
+            reference_content: None,
             properties: parse_properties(&page_data.properties),
             created_at: parse_datetime(&page_data.created),
             updated_at: parse_datetime(&page_data.updated),
@@ -714,6 +719,7 @@ impl GraphManager {
             pkm_id: page_name.to_string(),
             node_type: NodeType::Page,
             content: page_name.to_string(),
+            reference_content: None,
             properties: HashMap::new(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -763,6 +769,7 @@ impl GraphManager {
                         pkm_id: reference.id.clone(),
                         node_type: NodeType::Block,
                         content: String::new(),
+                        reference_content: None,
                         properties: HashMap::new(),
                         created_at: Utc::now(),
                         updated_at: Utc::now(),
@@ -808,6 +815,31 @@ impl GraphManager {
         
         Ok(())
     }
+    
+    /// Build a map of block ID to block content for reference resolution
+    pub fn build_block_content_map(&self) -> HashMap<String, String> {
+        let mut block_map = HashMap::new();
+        
+        for node_idx in self.graph.node_indices() {
+            if let Some(node) = self.graph.node_weight(node_idx) {
+                if matches!(node.node_type, NodeType::Block) {
+                    block_map.insert(node.pkm_id.clone(), node.content.clone());
+                }
+            }
+        }
+        
+        block_map
+    }
+    
+    /// Resolve block references in content and return expanded version
+    pub fn resolve_references(&self, content: &str, current_block_id: Option<&str>) -> String {
+        use crate::import::reference_resolver::resolve_block_references;
+        
+        let block_map = self.build_block_content_map();
+        let mut visited = HashSet::new();
+        
+        resolve_block_references(content, &block_map, &mut visited, current_block_id)
+    }
 }
 
 // Helper functions (from datastore)
@@ -837,6 +869,7 @@ mod tests {
             page: Some("TestPage".to_string()),
             properties: serde_json::json!({}),
             references: vec![],
+            reference_content: None,
         }
     }
     

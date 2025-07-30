@@ -50,6 +50,8 @@ pub struct PKMBlockData {
     pub properties: serde_json::Value,
     #[serde(default)]
     pub references: Vec<PKMReference>,
+    #[serde(default)]
+    pub reference_content: Option<String>,
 }
 
 impl PKMBlockData {
@@ -201,6 +203,7 @@ mod tests {
             page: None,
             properties: serde_json::Value::Object(serde_json::Map::new()),
             references: vec![],
+            reference_content: None,
         };
         
         // Valid block should pass

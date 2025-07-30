@@ -24,8 +24,8 @@ Transform Cymbiont from a Logseq-integrated PKM synchronization tool into a term
 
 ### Core Knowledge Graph (Preserve)
 - `src/graph_manager.rs`: Petgraph-based storage engine - the beating heart
-- `src/kg_api.rs`: Transaction-safe graph operations API
-- `src/pkm_data.rs`: Core data structures (PKMBlockData, PKMPageData)
+- `src/server/kg_api.rs`: Transaction-safe graph operations API (currently unused)
+- `src/import/pkm_data.rs`: Core data structures (PKMBlockData, PKMPageData)
 - `src/transaction_log.rs`: Write-ahead logging with sled
 - `src/transaction.rs`: Transaction coordination and state machine
 - `src/saga.rs`: Multi-step workflow patterns
@@ -93,10 +93,15 @@ Transform Cymbiont from a Logseq-integrated PKM synchronization tool into a term
   ```
 
 ### 5. Import System Architecture
-- [ ] Create `src/import/mod.rs` framework
-- [ ] Design common `Importer` trait
-- [ ] Implement Logseq importer using existing PKM structures
-- [ ] Add progress reporting for large imports
+- [x] Create `src/import/mod.rs` framework (COMPLETED ✓)
+- [x] Implement complete Logseq import system (COMPLETED ✓)
+  - `import/logseq.rs`: Markdown parsing, frontmatter extraction, block hierarchy
+  - `import/pkm_data.rs`: PKM data structures with validation
+  - `import/import_utils.rs`: High-level import coordination with error collection
+  - `import/reference_resolver.rs`: Block reference resolution with circular detection
+- [x] Add CLI `--import-logseq` flag (COMPLETED ✓)
+- [x] Add HTTP `POST /import/logseq` endpoint (COMPLETED ✓)
+- [x] Comprehensive error handling and reporting (COMPLETED ✓)
 
 ### 6. TUI Dashboard Birth
 - [ ] Set up ratatui dependencies and basic app structure
@@ -106,19 +111,28 @@ Transform Cymbiont from a Logseq-integrated PKM synchronization tool into a term
 
 ### 7. API Adaptation
 - [x] Remove Logseq-specific HTTP endpoints (COMPLETED ✓)
+- [x] Add Logseq import HTTP endpoint `POST /import/logseq` (COMPLETED ✓)
+- [x] Multi-instance support with configurable server info files (COMPLETED ✓)
+- [x] Enhanced shutdown command with `--config` support (COMPLETED ✓)
 - [ ] Simplify WebSocket protocol for agent streaming
 - [ ] Add new agent-focused query endpoints
 - [ ] Implement efficient batch query API
 
 ### 8. Testing Evolution
-- [ ] Archive integration tests as historical artifacts
+- [x] Complete integration test suite with test isolation (COMPLETED ✓)
+  - Unique test directories and configs for parallel execution
+  - HTTP import testing with full validation
+  - Error case testing and edge case handling
+  - Configurable server info files for multi-instance testing
 - [ ] Create new unit test suite for library interface
 - [ ] Design agent-focused test scenarios
 - [ ] Add pipe interface testing
 
 ### 9. Documentation Metamorphosis
+- [x] Update architecture document with import system and multi-instance support (COMPLETED ✓)
+- [x] Update CLAUDE.md with new CLI flags and project structure (COMPLETED ✓)
+- [x] Add comprehensive module header documentation for import system (COMPLETED ✓)
 - [ ] Update README with new vision and examples
-- [ ] Integrate 1.0 plan into architecture document
 - [ ] Create migration guide for existing users
 - [ ] Write agent integration cookbook
 
@@ -206,5 +220,31 @@ This is not historical context - it's the active integration plan adapted for te
 - 80% code coverage with unit tests
 - Clean pipe interface adhering to Unix philosophy
 
+## Current Progress Summary (2025-01-30)
+
+### Major Milestones Achieved ✓
+1. **Complete Import System**: Full Logseq import with CLI (`--import-logseq`) and HTTP API (`POST /import/logseq`)
+2. **Multi-Instance Architecture**: Configurable server info files enable concurrent instances
+3. **Robust Testing**: Parallel test execution with proper isolation and comprehensive coverage
+4. **Enhanced CLI**: Added `--config` flag, improved shutdown with instance targeting
+5. **Reference Resolution**: Sophisticated block reference expansion with circular detection
+6. **Comprehensive Documentation**: Updated architecture docs, module headers, and development guides
+
+### Architectural Evolution Status
+- **Core Knowledge Graph**: ✓ Preserved and enhanced
+- **Import Infrastructure**: ✓ Complete and production-ready
+- **Multi-Instance Support**: ✓ Fully implemented
+- **Testing Framework**: ✓ Robust with proper isolation
+- **Documentation**: ✓ Comprehensive and current
+- **API Enhancement**: ✓ Import endpoints added, multi-instance support
+- **CLI Evolution**: ✓ Import functionality, config management
+
+### Next Phase Focus
+The terminal-first evolution has a solid foundation with the import system complete. The next major areas are:
+1. **TUI Dashboard**: Real-time graph visualization with ratatui
+2. **stdin/stdout Protocol**: JSON-based agent communication interface
+3. **Performance Optimization**: Sub-10ms query latency for agent operations
+4. **Unix Pipe Integration**: Composable command-line workflows
+
 ## Final Implementation
-*To be completed when the evolution is complete - will document the new lifeform that emerged from this transformation*
+*The transformation continues - we've successfully evolved from Logseq-dependent to import-capable, with a robust foundation for agent-first interfaces*

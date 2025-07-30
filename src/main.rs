@@ -8,26 +8,36 @@
  * ## Usage
  * 
  * ```bash
- * # Basic usage (shows graph info)
+ * # Basic usage (shows graph info then runs indefinitely)
  * cymbiont
  * 
  * # Override data directory
  * cymbiont --data-dir /path/to/data
  * 
- * # For HTTP/WebSocket server functionality, use:
- * cymbiont-server
+ * # Import Logseq graph (then continues running)
+ * cymbiont --import-logseq /path/to/logseq/graph
+ * 
+ * # Run for specific duration (for testing)
+ * cymbiont --duration 10
+ * 
+ * # Run as HTTP/WebSocket server
+ * cymbiont --server
  * ```
  * 
- * ## Architecture
+ * ## Lifecycle Behavior
  * 
- * This CLI tool focuses on the core knowledge graph functionality without
- * network dependencies. For HTTP API and WebSocket features, use the
- * `cymbiont-server` binary instead.
+ * The CLI always runs continuously after performing any requested operations:
+ * - With --duration flag or config: Runs for specified seconds then exits
+ * - Without duration: Runs indefinitely until Ctrl+C
+ * - With --import-logseq: Performs import, then continues running
+ * 
+ * This design allows the CLI to serve as a persistent knowledge graph engine
+ * that can handle future interactive features while maintaining simplicity.
  */
 
 use std::error::Error;
 use clap::Parser;
-use tracing::{info, error};
+use tracing::{info, error, warn};
 
 // Internal modules
 mod app_state;
@@ -35,7 +45,7 @@ mod config;
 mod graph_manager;
 mod graph_registry;
 mod logging;
-mod pkm_data;
+mod import;
 mod saga;
 mod server;
 mod transaction;
@@ -56,6 +66,14 @@ struct Args {
     /// Override data directory path (defaults to config value)
     #[arg(long)]
     data_dir: Option<String>,
+    
+    /// Path to configuration file
+    #[arg(long)]
+    config: Option<String>,
+    
+    /// Import a Logseq graph from directory
+    #[arg(long, value_name = "PATH")]
+    import_logseq: Option<String>,
     
     // Server-specific args (only used when --server is provided)
     /// Run server for a specific duration in seconds (for testing)
@@ -105,13 +123,17 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             }
         }
         
-        // Fall back to server info file (server mode)
-        if let Ok(info_str) = std::fs::read_to_string(utils::SERVER_INFO_FILE) {
+        // Determine server info file from config
+        let config = config::load_config(args.config);
+        let server_info_file = &config.backend.server_info_file;
+        
+        // Try to shutdown server using configured server info file
+        if let Ok(info_str) = std::fs::read_to_string(server_info_file) {
             if let Ok(info) = serde_json::from_str::<utils::ServerInfo>(&info_str) {
                 info!("Shutting down Cymbiont server (PID: {})...", info.pid);
-                if utils::terminate_previous_instance() {
+                if utils::terminate_previous_instance(server_info_file) {
                     info!("Server shutdown successfully");
-                    let _ = std::fs::remove_file(utils::SERVER_INFO_FILE);
+                    let _ = std::fs::remove_file(server_info_file);
                     return Ok(());
                 } else {
                     error!("Failed to shutdown server");
@@ -127,13 +149,29 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     // Branch based on server flag
     if args.server {
         // Run server with all setup/teardown handled internally
-        server::run_server_with_duration(args.data_dir, args.duration).await?;
+        server::run_server_with_duration(args.config, args.data_dir, args.duration).await?;
     } else {
         // Run as CLI
-        let app_state = AppState::new_cli(args.data_dir.clone()).await?;
+        let app_state = AppState::new_cli(args.config, args.data_dir.clone()).await?;
         
         info!("🧠 Cymbiont CLI initialized");
         info!("📁 Data directory: {}", app_state.config.data_dir);
+        
+        // Handle Logseq import if requested
+        if let Some(logseq_path) = args.import_logseq {
+            let path = std::path::Path::new(&logseq_path);
+            let result = import::import_logseq_graph(&app_state, path, None).await?;
+            
+            // Report any errors that occurred during import
+            if !result.errors.is_empty() {
+                warn!("Import completed with {} errors:", result.errors.len());
+                for err in &result.errors {
+                    warn!("  - {}", err);
+                }
+            }
+            
+            info!("✅ Import complete. Continuing to run...");
+        }
         
         let graphs = {
             let registry_guard = app_state.graph_registry.lock().unwrap();

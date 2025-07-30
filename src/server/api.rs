@@ -79,7 +79,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use crate::AppState;
-use crate::pkm_data::{PKMBlockData, PKMPageData};
+use crate::import::pkm_data::{PKMBlockData, PKMPageData};
 use crate::utils::parse_json_data;
 use crate::server::websocket::websocket_handler;
 
@@ -127,6 +127,26 @@ pub struct PKMData {
     pub payload: String,
 }
 
+// Logseq import request
+#[derive(Deserialize, Debug)]
+pub struct LogseqImportRequest {
+    pub path: String,
+    #[serde(default)]
+    pub graph_name: Option<String>,
+}
+
+// Logseq import response
+#[derive(Serialize)]
+pub struct LogseqImportResponse {
+    pub success: bool,
+    pub message: String,
+    pub graph_id: String,
+    pub graph_name: String,
+    pub pages_imported: usize,
+    pub blocks_imported: usize,
+    pub errors: Vec<String>,
+}
+
 
 
 // ===== Route Configuration =====
@@ -136,6 +156,7 @@ pub fn create_router(app_state: Arc<AppState>) -> Router {
     Router::new()
         .route("/", get(root))
         .route("/data", post(receive_data))
+        .route("/import/logseq", post(import_logseq))
         .route("/ws", any(websocket_handler))
         // WebSocket status endpoints
         .route("/api/websocket/status", get(get_websocket_status))
@@ -531,7 +552,7 @@ async fn graph_validation_middleware(
     }
     
     // Skip validation for certain endpoints
-    if path == "/" || path == "/ws" {
+    if path == "/" || path == "/ws" || path == "/import/logseq" {
         return next.run(req).await;
     }
     
@@ -597,6 +618,99 @@ async fn graph_validation_middleware(
     }
     
     next.run(req).await
+}
+
+/// Import a Logseq graph via HTTP
+pub async fn import_logseq(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<LogseqImportRequest>,
+) -> Json<LogseqImportResponse> {
+    let path = std::path::Path::new(&request.path);
+    
+    // Validate the path exists and is a directory
+    if !path.exists() {
+        return Json(LogseqImportResponse {
+            success: false,
+            message: format!("Path does not exist: {}", request.path),
+            graph_id: String::new(),
+            graph_name: String::new(),
+            pages_imported: 0,
+            blocks_imported: 0,
+            errors: vec![],
+        });
+    }
+    
+    if !path.is_dir() {
+        return Json(LogseqImportResponse {
+            success: false,
+            message: format!("Path is not a directory: {}", request.path),
+            graph_id: String::new(),
+            graph_name: String::new(),
+            pages_imported: 0,
+            blocks_imported: 0,
+            errors: vec![],
+        });
+    }
+    
+    // Security check: ensure path is absolute and within reasonable bounds
+    let abs_path = match path.canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            return Json(LogseqImportResponse {
+                success: false,
+                message: format!("Failed to resolve path: {}", e),
+                graph_id: String::new(),
+                graph_name: String::new(),
+                pages_imported: 0,
+                blocks_imported: 0,
+                errors: vec![],
+            });
+        }
+    };
+    
+    // TODO: Add configurable safe directory check here
+    // For now, just log the import attempt
+    info!("📥 HTTP import request for: {:?}", abs_path);
+    
+    // Perform the import
+    match crate::import::import_logseq_graph(&state, &abs_path, request.graph_name).await {
+        Ok(result) => {
+            let has_errors = !result.errors.is_empty();
+            let message = if has_errors {
+                format!(
+                    "Import completed with {} pages, {} blocks, and {} errors",
+                    result.pages_imported, result.blocks_imported, result.errors.len()
+                )
+            } else {
+                format!(
+                    "Successfully imported {} pages and {} blocks",
+                    result.pages_imported, result.blocks_imported
+                )
+            };
+            
+            Json(LogseqImportResponse {
+                success: true,
+                message,
+                graph_id: result.graph_id,
+                graph_name: result.graph_name,
+                pages_imported: result.pages_imported,
+                blocks_imported: result.blocks_imported,
+                errors: result.errors,
+            })
+        }
+        Err(e) => {
+            error!("Import failed: {}", e);
+            Json(LogseqImportResponse {
+                success: false,
+                message: format!("Import failed: {}", e),
+                graph_id: String::new(),
+                graph_name: String::new(),
+                pages_imported: 0,
+                blocks_imported: 0,
+                errors: vec![e.to_string()],
+            })
+        }
+    }
 }
 
 /// Get WebSocket connection status

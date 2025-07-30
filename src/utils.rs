@@ -37,7 +37,6 @@ use crate::config::BackendConfig;
 // ===== Process Management =====
 
 // Constants
-pub const SERVER_INFO_FILE: &str = "cymbiont_server.json";
 
 // Server info written to file for external clients
 #[derive(Serialize, Deserialize)]
@@ -53,9 +52,9 @@ pub fn is_port_available(port: u16) -> bool {
 }
 
 // Try to terminate a previous instance of our server
-pub fn terminate_previous_instance() -> bool {
+pub fn terminate_previous_instance(filename: &str) -> bool {
     // Check if server info file exists
-    if let Ok(info_str) = fs::read_to_string(SERVER_INFO_FILE) {
+    if let Ok(info_str) = fs::read_to_string(filename) {
         if let Ok(info) = serde_json::from_str::<ServerInfo>(&info_str) {
             let pid = info.pid.to_string();
         
@@ -158,14 +157,14 @@ pub fn terminate_previous_instance() -> bool {
 }
 
 // Write server info including actual port
-pub fn write_server_info(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
+pub fn write_server_info(host: &str, port: u16, filename: &str) -> Result<(), Box<dyn Error>> {
     let info = ServerInfo {
         pid: std::process::id(),
         host: host.to_string(),
         port,
     };
     let json = serde_json::to_string_pretty(&info)?;
-    fs::write(SERVER_INFO_FILE, json)?;
+    fs::write(filename, json)?;
     Ok(())
 }
 

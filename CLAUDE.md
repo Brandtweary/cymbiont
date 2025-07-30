@@ -14,6 +14,8 @@ RUST_LOG=debug cargo run         # Run backend server with debug logging (do not
 - `--server`: Run as HTTP/WebSocket server
 - `--duration <SECONDS>`: Run for a specific duration in seconds (to run indefinitely, set default_duration to null in config.yaml)
 - `--data-dir <PATH>`: Override data directory path (defaults to config value)
+- `--config <PATH>`: Use specific configuration file
+- `--import-logseq <PATH>`: Import Logseq graph directory (then continues running)
 - `--shutdown`: Shutdown running Cymbiont instance gracefully
 
 ## Architecture
@@ -21,7 +23,7 @@ RUST_LOG=debug cargo run         # Run backend server with debug logging (do not
 
 ### Core Directories
 - **src/**: Cymbiont server - graph management, API endpoints
-- **logseq_databases/**: Test graphs and multi-graph support
+- **logseq_databases/**: Test graphs
   - **dummy_graph/**: Test data for development
 - **data/**: Knowledge graph persistence (configurable via data_dir in config.yaml)
   - **graph_registry.json**: Graph UUID mappings and metadata
@@ -35,7 +37,11 @@ RUST_LOG=debug cargo run         # Run backend server with debug logging (do not
   - **config.rs**: YAML configuration loading and validation
   - **utils.rs**: Process management, datetime parsing, general utilities
   - **logging.rs**: Custom formatter (file:line only for ERROR/WARN)
-  - **pkm_data.rs**: Shared data structures (PKMBlockData, PKMPageData)
+  - **import/**: Data import functionality
+    - **pkm_data.rs**: PKM data structures (PKMBlockData, PKMPageData)
+    - **logseq.rs**: Logseq-specific parsing
+    - **import_utils.rs**: Import coordination
+    - **reference_resolver.rs**: Block reference resolution
   - **transaction_log.rs**: Write-ahead logging with sled database
   - **transaction.rs**: Transaction coordinator and state management
   - **saga.rs**: Saga pattern for multi-step workflows
@@ -50,6 +56,7 @@ RUST_LOG=debug cargo run         # Run backend server with debug logging (do not
 - **Cargo.toml**: Dependencies and metadata
 
 ## Codebase Guidelines
+- Cymbiont is an application, not a library - do not create lib.rs
 - Logging: use `tracing` macros - `error!()`, `warn!()`, `info!()`, `debug!()`, `trace!()`
 - Error handling: use `thiserror` for custom error types; define module-specific `Error` enums and `type Result<T>` aliases
 - Don't make live LLM calls during tests

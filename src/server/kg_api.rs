@@ -17,7 +17,7 @@
 use crate::{
     AppState,
     graph_manager::{GraphManager, GraphNodeIndex},
-    pkm_data::{PKMBlockData, PKMPageData},
+    import::pkm_data::{PKMBlockData, PKMPageData},
     transaction_log::Operation,
     transaction::TransactionError,
     saga::SagaError,
@@ -98,6 +98,17 @@ impl KgApi {
             correlation_map.insert(correlation_id.clone(), saga_id.clone());
         }
         
+        // Resolve references before creating the block
+        let reference_content = {
+            let managers = self.app_state.graph_managers.read().await;
+            if let Some(manager_lock) = managers.get(&active_graph_id) {
+                let graph_manager = manager_lock.read().await;
+                Some(graph_manager.resolve_references(&content, Some(&temp_id)))
+            } else {
+                None
+            }
+        };
+        
         // Create the block data
         let block_data = PKMBlockData {
             id: temp_id.clone(),
@@ -109,6 +120,7 @@ impl KgApi {
             children: vec![], // New blocks have no children initially
             created: chrono::Utc::now().to_rfc3339(),
             updated: chrono::Utc::now().to_rfc3339(),
+            reference_content,
         };
         
         // Add to graph (transaction already created by saga)
@@ -187,6 +199,9 @@ impl KgApi {
             if let Some(&node_idx) = graph_manager.get_node_index(&block_id) {
                 // Get existing block data
                 if let Some(node) = graph_manager.get_node(node_idx) {
+                    // Resolve references for the new content
+                    let reference_content = Some(graph_manager.resolve_references(&content, Some(&block_id)));
+                    
                     // Create updated block data
                     let updated_block = PKMBlockData {
                         id: block_id.clone(),
@@ -198,6 +213,7 @@ impl KgApi {
                         children: vec![], // Preserve existing children
                         created: node.created_at.to_rfc3339(),
                         updated: chrono::Utc::now().to_rfc3339(),
+                        reference_content,
                     };
                     
                     // Update the node

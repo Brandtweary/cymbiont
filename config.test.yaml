@@ -1,23 +1,18 @@
-# Test configuration for Cymbiont
-# This config is used by integration tests
+# Cymbiont Test Configuration
 
 # Backend server configuration
 backend:
+  # Host setting (ignored for security - server always binds to localhost)
   host: 127.0.0.1
+  # Port for the backend server
   port: 3000
+  # Maximum number of alternative ports to try if the default is unavailable
   max_port_attempts: 10
 
-
-# Development settings for tests
+# Development-only settings
 development:
-  # Default to null for indefinite running in integration tests
-  default_duration: null
+  # 3 second duration for tests
+  default_duration: 3
 
-# Sync configuration
-sync:
-  incremental_interval_hours: 2
-  full_interval_hours: 168
-  enable_full_sync: false
-
-# Data directory for test isolation
+# Data storage directory - use test_data to keep test data separate
 data_dir: test_data

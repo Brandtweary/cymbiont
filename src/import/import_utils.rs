@@ -64,24 +64,23 @@ pub async fn import_logseq_graph(
             .to_string()
     });
     
-    // Get the data directory from config
-    let data_dir = std::path::Path::new(&app_state.config.data_dir);
+    // Use the resolved data directory from app state
+    let data_dir = &app_state.data_dir;
     
     // Register the graph with the registry and get its ID
     let graph_id = {
         let mut registry = app_state.graph_registry.lock()
             .map_err(|e| format!("Failed to lock graph registry: {}", e))?;
         
-        let graph_info = registry.get_or_create_graph(
-            graph_name.clone(),
-            logseq_path.to_string_lossy().to_string(),
+        let graph_info = registry.register_graph(
             None,  // Let registry generate ID
+            Some(graph_name.clone()),
+            Some(format!("Imported from: {}", logseq_path.display())),
             data_dir
         )?;
         
         // Save the registry after creating the graph
-        let registry_path = data_dir.join("graph_registry.json");
-        registry.save(&registry_path)?;
+        registry.save()?;
         
         graph_info.id
     };

@@ -12,7 +12,7 @@ use tracing::{info, debug, error};
 use crate::{
     AppState,
     utils::{write_server_info, find_available_port, terminate_previous_instance},
-    server::api::create_router,
+    server::http_api::create_router,
 };
 
 /// Run server with all the necessary setup and teardown
@@ -38,12 +38,12 @@ pub async fn run_server_with_duration(
     let server_info_file_clone = server_info_file.clone();
     ctrlc::set_handler(move || {
         info!("🛑 Received shutdown signal");
+        info!("🔍 SHUTDOWN: Signal handler triggered");
         // Save all graphs
-        tokio::task::block_in_place(|| {
-            let handle = tokio::runtime::Handle::current();
-            handle.block_on(async {
-                app_state_clone.cleanup_and_save().await;
-            });
+        // Create a new runtime since we're not in an async context
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            app_state_clone.cleanup_and_save().await;
         });
         cleanup_server_info(&server_info_file_clone);
         let total_runtime = start_time.elapsed();

@@ -5,7 +5,6 @@ use chrono::Utc;
 use regex::Regex;
 use serde_json::json;
 use tracing::{info, warn};
-
 use super::pkm_data::{PKMBlockData, PKMPageData, PKMReference};
 use super::{ImportError, Result};
 use super::reference_resolver::resolve_block_references;
@@ -369,7 +368,7 @@ fn convert_blocks_to_pkm(
 }
 
 /// Extract references from block content
-fn extract_references(content: &str) -> Vec<PKMReference> {
+pub fn extract_references(content: &str) -> Vec<PKMReference> {
     let mut references = Vec::new();
     
     // Extract page references [[page]]
@@ -482,18 +481,6 @@ mod tests {
         let content = "- Parent block\n\t- Child block 1\n\t- Child block 2\n\t\t- Grandchild block";
         let blocks = parse_logseq_file(content).unwrap();
         
-        // Debug: print what we actually got
-        println!("Parsed {} root blocks", blocks.len());
-        fn print_block(block: &LogseqBlock, depth: usize) {
-            println!("{}- '{}' (indent: {})", 
-                     "  ".repeat(depth), block.content, block.indent_level);
-            for child in &block.children {
-                print_block(child, depth + 1);
-            }
-        }
-        for block in &blocks {
-            print_block(block, 0);
-        }
         
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].content, "Parent block");

@@ -18,13 +18,7 @@
  * - Properties are stored as raw JSON values for flexibility
  * - References are pre-extracted by JavaScript for performance
  * - Optional fields use Option<T> with serde(default) for robustness
- * 
- * ## Validation
- * 
- * Both PKMBlockData and PKMPageData implement a validate() method that ensures:
- * - Required fields are non-empty (id/name, timestamps)
- * - Data integrity before graph storage
- * 
+ 
  * The validation is intentionally lightweight, focusing on critical fields
  * while allowing flexibility for different PKM data sources.
  */
@@ -54,40 +48,6 @@ pub struct PKMBlockData {
     pub reference_content: Option<String>,
 }
 
-impl PKMBlockData {
-    /// Validate the block data to ensure it meets our requirements
-    pub fn validate(&self) -> Result<(), String> {
-        let mut errors = Vec::new();
-        
-        if self.id.is_empty() {
-            errors.push("Block ID is empty".to_string());
-        }
-        
-        if self.content.is_empty() {
-            errors.push("Block content is empty".to_string());
-        }
-        
-        if self.created.is_empty() {
-            errors.push("Created timestamp is empty".to_string());
-        }
-        
-        if self.updated.is_empty() {
-            errors.push("Updated timestamp is empty".to_string());
-        }
-        
-        if let Some(parent) = &self.parent {
-            if parent.is_empty() {
-                errors.push("Parent ID is empty".to_string());
-            }
-        }
-        
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors.join(", "))
-        }
-    }
-}
 
 /// PKM page data received from the frontend
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -105,30 +65,6 @@ pub struct PKMPageData {
     pub blocks: Vec<String>,
 }
 
-impl PKMPageData {
-    /// Validate the page data to ensure it meets our requirements
-    pub fn validate(&self) -> Result<(), String> {
-        let mut errors = Vec::new();
-        
-        if self.name.is_empty() {
-            errors.push("Page name is empty".to_string());
-        }
-        
-        if self.created.is_empty() {
-            errors.push("Created timestamp is empty".to_string());
-        }
-        
-        if self.updated.is_empty() {
-            errors.push("Updated timestamp is empty".to_string());
-        }
-        
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors.join(", "))
-        }
-    }
-}
 
 /// Reference within PKM content
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -191,47 +127,6 @@ where
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_pkm_block_data_validation() {
-        let mut block = PKMBlockData {
-            id: "test-id".to_string(),
-            content: "Test content".to_string(),
-            created: "2024-01-01".to_string(),
-            updated: "2024-01-01".to_string(),
-            parent: None,
-            children: vec![],
-            page: None,
-            properties: serde_json::Value::Object(serde_json::Map::new()),
-            references: vec![],
-            reference_content: None,
-        };
-        
-        // Valid block should pass
-        assert!(block.validate().is_ok());
-        
-        // Empty ID should fail
-        block.id = "".to_string();
-        assert!(block.validate().is_err());
-    }
-
-    #[test]
-    fn test_pkm_page_data_validation() {
-        let mut page = PKMPageData {
-            name: "Test Page".to_string(),
-            normalized_name: Some("test page".to_string()),
-            created: "2024-01-01".to_string(),
-            updated: "2024-01-01".to_string(),
-            properties: serde_json::Value::Object(serde_json::Map::new()),
-            blocks: vec![],
-        };
-        
-        // Valid page should pass
-        assert!(page.validate().is_ok());
-        
-        // Empty name should fail
-        page.name = "".to_string();
-        assert!(page.validate().is_err());
-    }
 
     #[test]
     fn test_pkm_reference_struct() {

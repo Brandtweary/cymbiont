@@ -36,9 +36,8 @@
 //!
 //! ```text
 //! 1. append_transaction() → Active (logged to WAL)
-//! 2. WebSocket broadcast → WaitingForAck
-//! 3. Acknowledgment received → Committed
-//! 4. Cleanup → Remove from pending index
+//! 2. Operation completes → Committed
+//! 3. Cleanup → Remove from pending index
 //! ```
 //!
 //! ## Performance Characteristics
@@ -53,7 +52,7 @@
 //! On startup, the transaction coordinator:
 //! 1. Scans pending index for incomplete transactions
 //! 2. Retries Active transactions (apply to graph)
-//! 3. Times out WaitingForAck transactions (30s default)
+//! 3. Times out old transactions
 //! 4. Marks Committed transactions as complete
 //!
 //! ## Content Hash Deduplication
@@ -89,7 +88,6 @@ pub type Result<T> = std::result::Result<T, TransactionLogError>;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum TransactionState {
     Active,
-    WaitingForAck,
     Committed,
     Aborted,
 }
@@ -99,8 +97,6 @@ pub enum Operation {
     CreateNode { node_type: String, content: String, temp_id: Option<String> },
     UpdateNode { node_id: String, content: String },
     DeleteNode { node_id: String },
-    SendWebSocket { command: String, correlation_id: String },
-    ReceivedAck { correlation_id: String, success: bool, external_uuid: Option<String> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,7 +107,6 @@ pub struct Transaction {
     pub created_at: u64,
     pub updated_at: u64,
     pub content_hash: Option<String>,
-    pub saga_id: Option<String>,
     pub error_message: Option<String>,
 }
 
@@ -137,7 +132,6 @@ impl Transaction {
             created_at: now,
             updated_at: now,
             content_hash,
-            saga_id: None,
             error_message: None,
         }
     }
@@ -207,8 +201,6 @@ impl TransactionLog {
         // Validate state transition
         match (&transaction.state, &new_state) {
             (TransactionState::Active, _) => {}, // Active can transition to any state
-            (TransactionState::WaitingForAck, TransactionState::Committed) |
-            (TransactionState::WaitingForAck, TransactionState::Aborted) => {},
             (from, to) => {
                 return Err(TransactionLogError::InvalidStateTransition(
                     format!("Cannot transition from {:?} to {:?}", from, to)
@@ -234,8 +226,7 @@ impl TransactionLog {
         Ok(())
     }
     
-    // TODO: Remove allow(dead_code) once transaction recovery is implemented
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Used by recover_pending_transactions() for crash recovery
     pub fn list_pending_transactions(&self) -> Result<Vec<Transaction>> {
         let mut pending = Vec::new();
         
@@ -249,25 +240,6 @@ impl TransactionLog {
         }
         
         Ok(pending)
-    }
-    
-    // TODO: Remove allow(dead_code) once content deduplication is implemented
-    #[allow(dead_code)]
-    pub fn find_transaction_by_content_hash(&self, content_hash: &str) -> Result<Option<Transaction>> {
-        match self.content_hash_index.get(content_hash.as_bytes())? {
-            Some(tx_id_bytes) => {
-                let tx_id = String::from_utf8_lossy(&tx_id_bytes);
-                Ok(Some(self.get_transaction(&tx_id)?))
-            }
-            None => Ok(None),
-        }
-    }
-    
-    // TODO: Remove allow(dead_code) once explicit flush control is needed
-    #[allow(dead_code)]
-    pub fn flush(&self) -> Result<()> {
-        self.db.flush()?;
-        Ok(())
     }
 }
 
@@ -323,11 +295,6 @@ mod tests {
         let transaction = Transaction::new(operation);
         let tx_id = log.append_transaction(transaction).unwrap();
         
-        // Update to WaitingForAck
-        log.update_transaction_state(&tx_id, TransactionState::WaitingForAck).unwrap();
-        let updated = log.get_transaction(&tx_id).unwrap();
-        assert_eq!(updated.state, TransactionState::WaitingForAck);
-        
         // Update to Committed
         log.update_transaction_state(&tx_id, TransactionState::Committed).unwrap();
         let final_state = log.get_transaction(&tx_id).unwrap();
@@ -358,23 +325,4 @@ mod tests {
         assert_eq!(remaining_pending.len(), 2);
     }
     
-    #[test]
-    fn test_content_hash_lookup() {
-        let (log, _temp_dir) = create_test_log();
-        
-        let content = "Unique test content";
-        let operation = Operation::CreateNode {
-            node_type: "block".to_string(),
-            content: content.to_string(),
-            temp_id: None,
-        };
-        
-        let transaction = Transaction::new(operation);
-        let content_hash = transaction.content_hash.clone().unwrap();
-        let tx_id = log.append_transaction(transaction).unwrap();
-        
-        let found = log.find_transaction_by_content_hash(&content_hash).unwrap();
-        assert!(found.is_some());
-        assert_eq!(found.unwrap().id, tx_id);
-    }
 }

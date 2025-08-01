@@ -299,6 +299,7 @@ impl GraphManager {
             auto_save_enabled: true,
         };
         
+        
         // Try to load existing graph
         let loaded_existing = match manager.load_graph() {
             Ok(_) => {
@@ -399,7 +400,7 @@ impl GraphManager {
         };
         
         let json = serde_json::to_string_pretty(&serialized)?;
-        let mut file = File::create(graph_path)?;
+        let mut file = File::create(&graph_path)?;
         file.write_all(json.as_bytes())?;
         
         // Transaction-aware: The transaction log saves its own state
@@ -440,7 +441,8 @@ impl GraphManager {
             if let Err(e) = self.save_graph() {
                 error!("Error during automatic save: {}", e);
             } else {
-                debug!("💾 Automatic save completed");
+                self.operations_since_save = 0;
+                self.last_save_time = Utc::now();
             }
         }
     }
@@ -638,6 +640,7 @@ impl GraphManager {
         let normalized_name_owned = page_name.to_lowercase();
         let normalized_name = page_data.normalized_name.as_ref()
             .unwrap_or(&normalized_name_owned);
+        
         
         // Check if node exists under original name or normalized name
         let existing_node = self.pkm_to_node.get(page_name)

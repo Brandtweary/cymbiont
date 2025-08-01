@@ -1,8 +1,8 @@
 # Cymbiont
 
-> **A local-first knowledge graph engine for self-organizing AI agents**
+> **A knowledge graph engine for self-organizing AI agents**
 
-Transform your notes into an intelligent, queryable network. Cymbiont is building the infrastructure for a new kind of knowledge management system—one where local AI agents work directly with your personal knowledge graphs, learning patterns in how you think and connecting ideas across domains. Instead of static notes or rigid databases, Cymbiont creates living knowledge structures that evolve and adapt.
+Transform your notes into an intelligent, queryable network. Cymbiont is building the infrastructure for a new kind of knowledge management system—one where local AI agents work directly with your personal knowledge graphs, learning patterns in your notes and connecting ideas across domains. Instead of static notes or rigid databases, Cymbiont creates living knowledge structures that evolve and adapt.
 
 ## Vision
 

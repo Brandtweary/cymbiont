@@ -14,11 +14,8 @@ use tracing::{info, error};
 
 use crate::{
     graph_manager::GraphManager,
-    graph_registry::GraphRegistry,
     config::{load_config, Config},
-    transaction_log::TransactionLog,
-    transaction::{TransactionCoordinator},
-    saga::{SagaCoordinator, WorkflowSagas},
+    storage::{GraphRegistry, TransactionLog, TransactionCoordinator},
 };
 
 // Re-export the real WsConnection from server module
@@ -31,14 +28,10 @@ pub struct AppState {
     pub graph_registry: Arc<Mutex<GraphRegistry>>,
     pub active_graph_id: Arc<RwLock<Option<String>>>,
     pub config: Config,
+    pub data_dir: PathBuf,  // Resolved absolute path
     
-    // Transaction and saga management (always present)
+    // Transaction management (always present)
     pub transaction_coordinators: Arc<RwLock<HashMap<String, Arc<TransactionCoordinator>>>>,
-    // TODO: Remove allow(dead_code) once saga system is fully implemented
-    #[allow(dead_code)]
-    pub saga_coordinator: Arc<SagaCoordinator>,
-    pub workflow_sagas: Arc<WorkflowSagas>,
-    pub correlation_to_saga: Arc<RwLock<HashMap<String, String>>>,
     
     // Server-specific components (optional)
     pub ws_ready_tx: Mutex<Option<oneshot::Sender<()>>>,
@@ -80,7 +73,7 @@ impl AppState {
         // Initialize graph registry
         let registry_path = data_dir.join("graph_registry.json");
         let graph_registry = Arc::new(Mutex::new(
-            GraphRegistry::load_or_create(&registry_path)
+            GraphRegistry::load_or_create(&registry_path, &data_dir)
                 .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Graph registry error: {e:?}")))?
         ));
         
@@ -88,15 +81,6 @@ impl AppState {
         let graph_managers = Arc::new(RwLock::new(HashMap::new()));
         let transaction_coordinators = Arc::new(RwLock::new(HashMap::new()));
         
-        // Initialize saga coordinator (shared across all graphs)
-        let dummy_transaction_log = Arc::new(TransactionLog::new(data_dir.join("saga_transaction_log"))
-            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Saga transaction log error: {e:?}")))?);
-        let dummy_coordinator = Arc::new(TransactionCoordinator::new(dummy_transaction_log));
-        let saga_coordinator = Arc::new(SagaCoordinator::new(dummy_coordinator.clone()));
-        let workflow_sagas = Arc::new(WorkflowSagas::new(
-            saga_coordinator.clone(),
-            dummy_coordinator.clone(),
-        ));
         
         // Create WebSocket connections if server mode
         let ws_connections = if with_server {
@@ -105,18 +89,29 @@ impl AppState {
             None
         };
         
+        // Get the active graph from registry
+        let initial_active_graph = {
+            let registry = graph_registry.lock()
+                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to lock registry: {}", e)))?;
+            registry.get_active_graph_id().map(|s| s.to_string())
+        };
+        
         let app_state = Arc::new(AppState {
             graph_managers,
             graph_registry,
-            active_graph_id: Arc::new(RwLock::new(None)),
+            active_graph_id: Arc::new(RwLock::new(initial_active_graph.clone())),
             config,
+            data_dir: data_dir.clone(),
             transaction_coordinators,
-            saga_coordinator,
-            workflow_sagas,
-            correlation_to_saga: Arc::new(RwLock::new(HashMap::new())),
             ws_ready_tx: Mutex::new(None),
             ws_connections,
         });
+        
+        // If there's an active graph, ensure its manager is loaded
+        if let Some(graph_id) = initial_active_graph {
+            app_state.get_or_create_graph_manager(&graph_id).await?;
+            info!("Loaded active graph: {}", graph_id);
+        }
         
         Ok(app_state)
     }
@@ -141,15 +136,8 @@ impl AppState {
             return Ok(());
         }
         
-        // Create new GraphManager using config data_dir
-        let base_data_dir = if std::path::Path::new(&self.config.data_dir).is_absolute() {
-            PathBuf::from(&self.config.data_dir)
-        } else {
-            std::env::current_dir()
-                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to get current directory: {e}")))?
-                .join(&self.config.data_dir)
-        };
-        let data_dir = base_data_dir.join("graphs").join(graph_id);
+        // Create new GraphManager using the resolved data_dir
+        let data_dir = self.data_dir.join("graphs").join(graph_id);
         fs::create_dir_all(&data_dir)?;
         
         let graph_manager = GraphManager::new(data_dir.clone())
@@ -187,11 +175,15 @@ impl AppState {
     
     /// Save all graphs and registry on shutdown
     pub async fn cleanup_and_save(&self) {
+        
         // Save all loaded graphs
         let managers = self.graph_managers.read().await;
+        
         for (graph_id, manager_lock) in managers.iter() {
             match manager_lock.write().await.save_graph() {
-                Ok(_) => info!("✅ Saved graph: {}", graph_id),
+                Ok(_) => {
+                    info!("✅ Saved graph: {}", graph_id);
+                }
                 Err(e) => error!("Failed to save graph {}: {}", graph_id, e),
             }
         }
@@ -199,19 +191,45 @@ impl AppState {
         
         // Save graph registry
         if let Ok(registry_guard) = self.graph_registry.lock() {
-            let base_data_dir = if std::path::Path::new(&self.config.data_dir).is_absolute() {
-                PathBuf::from(&self.config.data_dir)
-            } else {
-                std::env::current_dir()
-                    .unwrap_or_else(|_| PathBuf::from("."))
-                    .join(&self.config.data_dir)
-            };
-            let registry_path = base_data_dir.join("graph_registry.json");
-            if let Err(e) = registry_guard.save(&registry_path) {
+            if let Err(e) = registry_guard.save() {
                 error!("Failed to save graph registry: {}", e);
             } else {
                 info!("✅ Graph registry saved");
             }
         }
+    }
+    
+    /// Execute an operation with transaction on the active graph
+    pub async fn with_active_graph_transaction<F, T>(
+        &self,
+        operation: crate::storage::Operation,
+        executor: F,
+    ) -> Result<T, Box<dyn Error + Send + Sync>>
+    where
+        F: FnOnce(&mut GraphManager) -> std::result::Result<T, String>,
+    {
+        // Get active graph ID
+        let active_id = self.get_active_graph_manager().await
+            .ok_or_else(|| "No active graph".to_string())?;
+        
+        // Get transaction coordinator
+        let coordinators = self.transaction_coordinators.read().await;
+        let coordinator = coordinators.get(&active_id)
+            .ok_or_else(|| "Transaction coordinator not found".to_string())?;
+        
+        // Clone coordinator to use in closure
+        let coordinator = Arc::clone(coordinator);
+        
+        // Get graph manager and execute within transaction
+        let managers = self.graph_managers.read().await;
+        let manager_lock = managers.get(&active_id)
+            .ok_or_else(|| "Graph manager not found".to_string())?;
+        let mut manager = manager_lock.write().await;
+        
+        // Execute with transaction
+        coordinator.execute_with_transaction(operation, || {
+            executor(&mut *manager)
+        }).await
+        .map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)
     }
 }

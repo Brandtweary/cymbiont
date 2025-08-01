@@ -4,7 +4,7 @@
  * 
  * This module implements a WebSocket server that enables bidirectional communication
  * between the knowledge graph engine and external clients, supporting real-time
- * synchronization of graph operations.
+ * graph operations with immediate execution.
  * 
  * ## Connection Management
  * 
@@ -16,17 +16,18 @@
  * 
  * ## Command Protocol
  * 
- * JSON-based command system with acknowledgments:
- * - **Inbound**: auth, heartbeat, test, operation confirmations
- * - **Outbound**: create_block, update_block, delete_block, create_page
- * - Correlation IDs for tracking multi-step operations
+ * JSON-based request/response system:
+ * - **Client→Server**: `Auth`, `Heartbeat`, `CreateBlock`, `UpdateBlock`, `DeleteBlock`, `CreatePage`, etc.
+ * - **Server→Client**: `Success`, `Error`, `Heartbeat`
+ * - Commands execute immediately with transaction wrapping
+ * - Correlation IDs for tracking operations
  * 
- * ## Saga Integration
+ * ## Transaction Integration
  * 
- * WebSocket commands integrate with the saga pattern for reliable operations:
- * - Commands trigger saga workflows
- * - Acknowledgments complete saga steps
- * - Graph state updates on successful confirmations
+ * WebSocket commands integrate with the transaction system for ACID guarantees:
+ * - Commands execute within transactions
+ * - Automatic rollback on operation failures
+ * - Content deduplication via hash checking
  */
 
 use axum::{
@@ -44,7 +45,7 @@ use std::{
     time::Duration,
 };
 use tokio::time::interval;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::AppState;
@@ -93,37 +94,15 @@ pub enum Command {
     Test {
         message: String,
     },
-    // Acknowledgment messages from client to server
-    BlockCreated {
-        correlation_id: String,
-        block_uuid: String,
-        temp_id: String,
-    },
-    BlockUpdated {
-        correlation_id: String,
-        success: bool,
-        error: Option<String>,
-    },
-    BlockDeleted {
-        correlation_id: String,
-        success: bool,
-        error: Option<String>,
-    },
-    PageCreated {
-        correlation_id: String,
-        success: bool,
-        error: Option<String>,
-    },
-    // Graph switch confirmation messages
-    GraphSwitchRequested {
-        target_graph_id: String,
-        target_graph_name: String,
-        target_graph_path: String,
-    },
-    GraphSwitchConfirmed {
+    SwitchGraph {
         graph_id: String,
-        graph_name: String,
-        graph_path: String,
+    },
+    CreateGraph {
+        name: Option<String>,
+        description: Option<String>,
+    },
+    DeleteGraph {
+        graph_id: String,
     },
 }
 
@@ -217,11 +196,14 @@ async fn handle_message(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match msg {
         Message::Text(text) => {
+            debug!("WebSocket received text: '{}'", text);
             match serde_json::from_str::<Command>(&text) {
                 Ok(command) => {
+                    debug!("WebSocket parsed command: {:?}", command);
                     handle_command(command, connection_id, state).await?;
                 }
                 Err(e) => {
+                    debug!("WebSocket parse error: {:?}", e);
                     return Err(Box::new(e));
                 }
             }
@@ -248,12 +230,7 @@ async fn handle_command(
     if !matches!(command, 
         Command::Auth { .. } | 
         Command::Heartbeat | 
-        Command::Test { .. } |
-        Command::BlockCreated { .. } |
-        Command::BlockUpdated { .. } |
-        Command::BlockDeleted { .. } |
-        Command::PageCreated { .. } |
-        Command::GraphSwitchConfirmed { .. }
+        Command::Test { .. }
     ) {
         if !is_authenticated(connection_id, state).await {
             warn!("Rejecting command from unauthenticated connection {}: {:?}", connection_id, command);
@@ -293,15 +270,82 @@ async fn handle_command(
             // Client sent a heartbeat/pong - just acknowledge receipt, don't respond
             // This prevents infinite heartbeat loops
         }
-        Command::CreateBlock { .. } | 
-        Command::UpdateBlock { .. } | 
-        Command::DeleteBlock { .. } | 
-        Command::CreatePage { .. } |
-        Command::GraphSwitchRequested { .. } => {
-            // These commands are only sent FROM server TO client
-            // The client should never send these to the server
-            error!("Unexpected command from client: {:?}", command);
-            send_error_response(connection_id, state, "Client should not send PKM manipulation commands").await?;
+        Command::CreateBlock { content, parent_id, page_name, correlation_id: _, temp_id: _ } => {
+            // Call kg_api to create the block
+            info!("📝 CreateBlock command received via WebSocket");
+            
+            use crate::server::kg_api::KgApi;
+            let kg_api = KgApi::new(state.clone());
+            
+            match kg_api.add_block(content, parent_id, page_name, None).await {
+                Ok(block_id) => {
+                    let data = serde_json::json!({ "block_id": block_id });
+                    send_success_response(connection_id, state, Some(data)).await?;
+                }
+                Err(e) => {
+                    send_error_response(connection_id, state, &format!("Failed to create block: {}", e)).await?;
+                }
+            }
+        }
+        Command::UpdateBlock { block_id, content, correlation_id: _ } => {
+            // Call kg_api to update the block
+            info!("✏️ UpdateBlock command received via WebSocket: {}", block_id);
+            
+            use crate::server::kg_api::KgApi;
+            let kg_api = KgApi::new(state.clone());
+            
+            match kg_api.update_block(block_id.clone(), content).await {
+                Ok(()) => {
+                    let data = serde_json::json!({ "block_id": block_id });
+                    send_success_response(connection_id, state, Some(data)).await?;
+                }
+                Err(e) => {
+                    send_error_response(connection_id, state, &format!("Failed to update block: {}", e)).await?;
+                }
+            }
+        }
+        Command::DeleteBlock { block_id, correlation_id: _ } => {
+            // Call kg_api to delete the block
+            info!("🗑️ DeleteBlock command received via WebSocket: {}", block_id);
+            
+            use crate::server::kg_api::KgApi;
+            let kg_api = KgApi::new(state.clone());
+            
+            match kg_api.delete_block(block_id.clone()).await {
+                Ok(()) => {
+                    let data = serde_json::json!({ "block_id": block_id });
+                    send_success_response(connection_id, state, Some(data)).await?;
+                }
+                Err(e) => {
+                    send_error_response(connection_id, state, &format!("Failed to delete block: {}", e)).await?;
+                }
+            }
+        }
+        Command::CreatePage { name, properties, correlation_id: _ } => {
+            // Call kg_api to create the page
+            info!("📄 CreatePage command received via WebSocket: {}", name);
+            
+            use crate::server::kg_api::KgApi;
+            let kg_api = KgApi::new(state.clone());
+            
+            // Convert HashMap<String, String> to serde_json::Value
+            let properties_json = properties.map(|props| {
+                serde_json::Value::Object(
+                    props.into_iter()
+                        .map(|(k, v)| (k, serde_json::Value::String(v)))
+                        .collect()
+                )
+            });
+            
+            match kg_api.create_page(name.clone(), properties_json).await {
+                Ok(()) => {
+                    let data = serde_json::json!({ "page_name": name });
+                    send_success_response(connection_id, state, Some(data)).await?;
+                }
+                Err(e) => {
+                    send_error_response(connection_id, state, &format!("Failed to create page: {}", e)).await?;
+                }
+            }
         }
         Command::Test { message } => {
             // Test command - just echo back the message with some stats
@@ -317,75 +361,54 @@ async fn handle_command(
             
             send_success_response(connection_id, state, Some(response_data)).await?;
         }
-        Command::BlockCreated { correlation_id, block_uuid, temp_id } => {
-            // Handle block creation acknowledgment
-            info!("📥 Block creation acknowledgment: correlation_id={}, uuid={}, temp_id={}", 
-                  correlation_id, block_uuid, temp_id);
+        Command::SwitchGraph { graph_id } => {
+            // Switch the active graph
+            info!("🔄 SwitchGraph command received via WebSocket: {}", graph_id);
             
-            // Look up saga from correlation ID
-            let saga_id = {
-                let correlation_map = state.correlation_to_saga.read().await;
-                correlation_map.get(&correlation_id).cloned()
-            };
+            use crate::server::kg_api::KgApi;
+            let kg_api = KgApi::new(state.clone());
             
-            if let Some(saga_id) = saga_id {
-                // Update the node's PKM ID from temp to real
-                {
-                    // Get active graph
-                    let active_graph_id = state.get_active_graph_manager().await;
-                    if let Some(graph_id) = active_graph_id {
-                        let managers = state.graph_managers.read().await;
-                        if let Some(manager_lock) = managers.get(&graph_id) {
-                            let mut graph_manager = manager_lock.write().await;
-                            if let Some(&node_idx) = graph_manager.pkm_to_node.get(&temp_id) {
-                                if let Some(node) = graph_manager.graph.node_weight_mut(node_idx) {
-                                    // Update the node's PKM ID
-                                    node.pkm_id = block_uuid.clone();
-                                }
-                                // Update the mapping
-                                graph_manager.pkm_to_node.remove(&temp_id);
-                                graph_manager.pkm_to_node.insert(block_uuid.clone(), node_idx);
-                            }
-                        }
-                    }
+            match kg_api.switch_graph(graph_id).await {
+                Ok(graph_info) => {
+                    send_success_response(connection_id, state, Some(graph_info)).await?;
                 }
-                
-                // Complete the saga
-                match state.workflow_sagas.handle_block_acknowledgment(&saga_id, &temp_id, true, Some(block_uuid)).await {
-                    Ok(_) => {
-                        info!("✅ Saga {} completed successfully", saga_id);
-                        // Clean up correlation mapping
-                        state.correlation_to_saga.write().await.remove(&correlation_id);
-                    }
-                    Err(e) => {
-                        error!("Failed to complete saga {}: {:?}", saga_id, e);
-                    }
+                Err(e) => {
+                    send_error_response(connection_id, state, &format!("Failed to switch graph: {}", e)).await?;
                 }
-            } else {
-                warn!("No saga found for correlation_id: {}", correlation_id);
             }
         }
-        Command::BlockUpdated { correlation_id, success, error } => {
-            info!("📥 Block update acknowledgment: correlation_id={}, success={}, error={:?}", 
-                  correlation_id, success, error);
-            // TODO: Handle update acknowledgments
-        }
-        Command::BlockDeleted { correlation_id, success, error } => {
-            info!("📥 Block delete acknowledgment: correlation_id={}, success={}, error={:?}", 
-                  correlation_id, success, error);
-            // TODO: Handle delete acknowledgments
-        }
-        Command::PageCreated { correlation_id, success, error } => {
-            info!("📥 Page creation acknowledgment: correlation_id={}, success={}, error={:?}", 
-                  correlation_id, success, error);
-            // TODO: Handle page creation acknowledgments
-        }
-        Command::GraphSwitchConfirmed { graph_id, graph_name, graph_path } => {
-            info!("📥 Graph switch confirmed: graph_id={}, name={}, path={}", 
-                  graph_id, graph_name, graph_path);
+        Command::CreateGraph { name, description } => {
+            // Create a new graph
+            info!("📊 CreateGraph command received via WebSocket");
             
-            // Notify session manager that graph switch was confirmed
-            // Graph switch confirmation - no longer needed without session manager
+            use crate::server::kg_api::KgApi;
+            let kg_api = KgApi::new(state.clone());
+            
+            match kg_api.create_graph(name, description).await {
+                Ok(graph_info) => {
+                    send_success_response(connection_id, state, Some(graph_info)).await?;
+                }
+                Err(e) => {
+                    send_error_response(connection_id, state, &format!("Failed to create graph: {}", e)).await?;
+                }
+            }
+        }
+        Command::DeleteGraph { graph_id } => {
+            // Delete a graph
+            info!("🗑️ DeleteGraph command received via WebSocket: {}", graph_id);
+            
+            use crate::server::kg_api::KgApi;
+            let kg_api = KgApi::new(state.clone());
+            
+            match kg_api.delete_graph(graph_id.clone()).await {
+                Ok(()) => {
+                    let data = serde_json::json!({ "deleted_graph_id": graph_id });
+                    send_success_response(connection_id, state, Some(data)).await?;
+                }
+                Err(e) => {
+                    send_error_response(connection_id, state, &format!("Failed to delete graph: {}", e)).await?;
+                }
+            }
         }
     }
     
@@ -489,41 +512,6 @@ async fn send_error_response(
     send_response(connection_id, state, response).await
 }
 
-/// Get all authenticated connection senders (safe, releases lock before use)
-async fn get_authenticated_senders(
-    state: &Arc<AppState>,
-) -> Vec<(String, tokio::sync::mpsc::UnboundedSender<Message>)> {
-    if let Some(ref connections) = state.ws_connections {
-        let conns = connections.read().await;
-        conns.iter()
-            .filter(|(_, conn)| conn.authenticated)
-            .map(|(id, conn)| (id.clone(), conn.sender.clone()))
-            .collect()
-    } else {
-        vec![]
-    }
-}
-
-/// Broadcast command to all authenticated connections
-pub async fn broadcast_command(
-    state: &Arc<AppState>,
-    command: Command,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Get senders without holding lock
-    let senders = get_authenticated_senders(state).await;
-    
-    // Serialize once
-    let msg = serde_json::to_string(&command)?;
-    
-    // Send to all authenticated connections (no lock held)
-    for (id, sender) in senders {
-        if let Err(e) = sender.send(Message::Text(msg.clone())) {
-            warn!("Failed to send to connection {}: {:?}", id, e);
-        }
-    }
-    
-    Ok(())
-}
 
 #[cfg(test)]
 mod tests {
@@ -579,23 +567,4 @@ mod tests {
         assert!(matches!(cmd, Command::Heartbeat));
     }
 
-    #[test]
-    fn test_acknowledgment_commands() {
-        let json = r#"{
-            "type": "block_created",
-            "correlation_id": "corr-123",
-            "block_uuid": "uuid-456",
-            "temp_id": "temp-789"
-        }"#;
-        
-        let cmd: Command = serde_json::from_str(json).unwrap();
-        match cmd {
-            Command::BlockCreated { correlation_id, block_uuid, temp_id } => {
-                assert_eq!(correlation_id, "corr-123");
-                assert_eq!(block_uuid, "uuid-456");
-                assert_eq!(temp_id, "temp-789");
-            },
-            _ => panic!("Wrong command type"),
-        }
-    }
 }

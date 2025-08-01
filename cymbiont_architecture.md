@@ -9,23 +9,24 @@ cymbiont/
 │   ├── config.rs                  # YAML configuration management
 │   ├── logging.rs                 # Custom tracing formatter
 │   ├── utils.rs                   # Process management and utilities
-│   ├── graph_manager.rs           # Petgraph-based knowledge graph storage
-│   ├── graph_registry.rs          # Multi-graph UUID management
-│   ├── transaction_log.rs         # Write-ahead logging with sled
-│   ├── transaction.rs             # Transaction coordination
-│   ├── saga.rs                    # Multi-step workflow patterns
+│   ├── graph_manager.rs           # Petgraph-based knowledge graph engine
 │   ├── import/                    # Data import functionality
 │   │   ├── mod.rs                 # Import module exports and errors
 │   │   ├── pkm_data.rs            # PKM data structures
 │   │   ├── logseq.rs              # Logseq-specific parsing
 │   │   ├── import_utils.rs        # Import coordination
 │   │   └── reference_resolver.rs  # Block reference resolution
-│   └── server/                    # Server-specific functionality
-│       ├── mod.rs                 # Server module exports
-│       ├── api.rs                 # HTTP endpoints for data ingestion
-│       ├── websocket.rs           # Real-time WebSocket communication
-│       ├── kg_api.rs              # High-level graph operations API (unused)
-│       └── server.rs              # Server utilities and lifecycle
+│   ├── server/                    # Server-specific functionality
+│   │   ├── mod.rs                 # Server module exports
+│   │   ├── http_api.rs            # HTTP endpoints (health, import, WebSocket upgrade)
+│   │   ├── websocket.rs           # Real-time WebSocket communication
+│   │   ├── kg_api.rs              # High-level graph operations API (unused)
+│   │   └── server.rs              # Server utilities and lifecycle
+│   └── storage/                   # Persistence layer
+│       ├── mod.rs                 # Storage module exports
+│       ├── graph_registry.rs      # Multi-graph UUID management
+│       ├── transaction_log.rs     # Write-ahead logging with sled
+│       └── transaction.rs         # Transaction coordination
 ├── data/                          # Graph persistence (configurable path)
 │   ├── graph_registry.json        # Graph UUID registry
 │   ├── graphs/{graph-id}/         # Per-graph storage
@@ -34,6 +35,8 @@ cymbiont/
 │   └── transaction_log/           # Global transaction log
 └── tests/                         # Integration tests with isolation
     ├── common/                    # Shared test utilities
+    │   ├── mod.rs                 # Test environment setup
+    │   └── test_harness.rs        # Integration test server management
     └── test_*.rs                  # Integration test suites
 ```
 
@@ -53,24 +56,29 @@ cymbiont/
 **Key types**: `AppState` with graph managers, registry, WebSocket connections
 **Methods**: `new_cli()`, `new_server()`, `get_or_create_graph_manager()`
 
-### server/api.rs
-**Purpose**: HTTP API endpoints  
+### server/http_api.rs
+**Purpose**: HTTP API endpoints for health checks, imports, and WebSocket upgrades  
 **Active endpoints**:
 - `GET /` - Health check
-- `POST /data` - PKM data ingestion (blocks, pages, batches)
-- `POST /import/logseq` - Logseq graph import
+- `POST /import/logseq` - One-time Logseq graph import
 - `GET /ws` - WebSocket upgrade
-- `GET /api/websocket/status` - Connection metrics
+- `GET /api/websocket/status` - WebSocket connection metrics
+- `GET /api/websocket/recent-activity` - WebSocket activity monitoring
 
 ### graph_manager.rs
-**Purpose**: Core knowledge graph storage using petgraph  
+**Purpose**: Core knowledge graph engine using petgraph  
 **Key features**: StableGraph with nodes (Pages/Blocks), edges (relationships), JSON persistence
 **Node types**: `Page { name, properties }`, `Block { uuid, content, reference_content, properties }`
 **Edge types**: `PageRef`, `BlockRef`, `Tag`, `Property`, `ParentChild`, `PageToBlock`
 
-### graph_registry.rs
+### storage/mod.rs
+**Purpose**: Persistence layer module with registry, transactions, and WAL logging  
+**Components**: GraphRegistry, TransactionLog, TransactionCoordinator
+**Key features**: Multi-graph management, ACID transactions, crash recovery
+
+### storage/graph_registry.rs
 **Purpose**: Multi-graph UUID tracking and management  
-**Key operations**: `get_or_create_graph()`, `validate_and_switch()`, `register_graph()`
+**Key operations**: `register_graph()`, `switch_graph()`, `remove_graph()`, registry persistence
 
 ### server/kg_api.rs  
 **Purpose**: High-level graph operations API (currently unused - marked as dead code)
@@ -78,20 +86,23 @@ cymbiont/
 
 ### server/server.rs
 **Purpose**: Server utility functions for clean main.rs separation  
-**Functions**: `handle_shutdown_command()`, `run_server_with_duration()`
+**Functions**: `run_server_with_duration()`, graceful shutdown handling
 
-### transaction_log.rs
+### storage/transaction_log.rs
 **Purpose**: Write-ahead logging with sled database  
-**Features**: Content hash deduplication, ACID guarantees
+**Features**: Content hash deduplication, ACID guarantees, crash recovery
+**Trees**: Transactions, content hash index, pending index
 
-### transaction.rs
+### storage/transaction.rs
 **Purpose**: Transaction lifecycle coordination  
-**States**: `Active` → `WaitingForAck` → `Committed`
+**States**: `Active` → `Committed` | `Aborted`
+**Key methods**: `execute_with_transaction()`, `begin_transaction()`, `commit_transaction()`
 
 ### server/websocket.rs
 **Purpose**: Real-time WebSocket communication  
-**Protocol**: Auth, heartbeat, command acknowledgments
-**Commands**: `create_block`, `update_block`, `delete_block`, `create_page`
+**Protocol**: Request/response with auth, heartbeat, direct command execution
+**Commands**: `CreateBlock`, `UpdateBlock`, `DeleteBlock`, `CreatePage`, `SwitchGraph`, `CreateGraph`, `DeleteGraph`
+**Responses**: `Success`, `Error`, `Heartbeat`
 
 ### import/logseq.rs
 **Purpose**: Logseq-specific parsing and transformation  
@@ -109,21 +120,27 @@ cymbiont/
 **Purpose**: Block reference resolution during import  
 **Key features**: Resolves `((block-id))` references, prevents circular references
 
+### tests/common/test_harness.rs
+**Purpose**: Integration test infrastructure with server lifecycle management  
+**Components**: `TestServer` struct, phase-based testing with `PreShutdown`/`PostShutdown` markers
+**Key features**: Graceful server startup/shutdown, isolated test environments, real WebSocket testing
+
 
 ## Data Structures
 
 ### PKMBlockData
 ```rust
 {
-    uuid: String,
+    id: String,
     content: String,
-    properties: HashMap<String, Value>,
+    created: String,
+    updated: String,
     parent: Option<String>,
-    page: String,
-    left: Option<String>,
-    format: String,
-    created_at: i64,
-    updated_at: i64
+    children: Vec<String>,
+    page: Option<String>,
+    properties: serde_json::Value,
+    references: Vec<PKMReference>,
+    reference_content: Option<String>
 }
 ```
 
@@ -131,22 +148,17 @@ cymbiont/
 ```rust
 {
     name: String,
-    original_name: String,
-    properties: HashMap<String, Value>,
-    created_at: i64,
-    updated_at: i64,
-    journal_day: Option<i64>
+    normalized_name: Option<String>,
+    created: String,
+    updated: String,
+    properties: serde_json::Value,
+    blocks: Vec<String>
 }
 ```
 
-### HTTP Headers for Multi-Graph Support
-- `X-Cymbiont-Graph-ID`: UUID string
-- `X-Cymbiont-Graph-Name`: Graph name  
-- `X-Cymbiont-Graph-Path`: Filesystem path
-
 ### WebSocket Message Types
-- **Client→Server**: `auth`, `heartbeat`, acknowledgments
-- **Server→Client**: `create_block`, `update_block`, `delete_block`, `create_page`
+- **Client→Server**: `Auth`, `Heartbeat`, `CreateBlock`, `UpdateBlock`, `DeleteBlock`, `CreatePage`, `SwitchGraph`, `CreateGraph`, `DeleteGraph`
+- **Server→Client**: `Success`, `Error`, `Heartbeat`
 
 ## Persistence Layout
 
@@ -195,14 +207,17 @@ cymbiont [OPTIONS]
   --shutdown                    # Graceful shutdown of running instance
 ```
 
+## Graceful Shutdown
+
+The server handles SIGINT (Ctrl+C) for graceful shutdown, running `cleanup_and_save()` to persist all graphs.
+The `--shutdown` command also sends SIGINT to ensure graceful shutdown.
+
 ## Key Flows
 
-**Data Ingestion**: HTTP POST → Graph headers validation → Multi-graph switching → PKM parsing → Graph mutation → Auto-save
-
-**Logseq Import**: CLI/HTTP → Path validation → .md file discovery → Frontmatter parsing → Block extraction → Reference resolution → Graph creation
+**Logseq Import**: HTTP POST/CLI → Path validation → .md file discovery → Frontmatter parsing → Block extraction → Reference resolution → Graph creation
 
 **Transaction**: Operation → Content hash → WAL log → Graph update → Commit/rollback
 
-**WebSocket**: Client auth → Command dispatch → Graph operation → Broadcast to clients
+**WebSocket**: Client auth → Direct command execution → Transaction-wrapped operation → Success/Error response
 
 **Multi-Instance**: Configurable `server_info_file` enables concurrent server instances with isolated discovery

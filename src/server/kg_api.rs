@@ -11,40 +11,24 @@
  * - Transaction-wrapped graph mutations
  * - Content deduplication via hash checking
  * - WebSocket synchronization for real-time updates
- * - Saga coordination for reliable multi-step operations
  */
 
 use crate::{
     AppState,
     graph_manager::{GraphManager, GraphNodeIndex},
     import::pkm_data::{PKMBlockData, PKMPageData},
-    transaction_log::Operation,
-    transaction::TransactionError,
-    saga::SagaError,
+    import::logseq::extract_references,
+    storage::Operation,
 };
-use super::websocket::{Command, broadcast_command};
 use std::sync::Arc;
-use std::collections::HashMap;
-use tracing::{warn, error, debug};
+use tracing::{warn, error, debug, info};
 use thiserror::Error;
 use serde_json::json;
 
 #[derive(Error, Debug)]
 pub enum KgApiError {
-    #[error("Transaction error: {0}")]
-    TransactionError(#[from] TransactionError),
-    
-    #[error("Saga error: {0}")]
-    SagaError(#[from] SagaError),
-    
     #[error("Graph error: {0}")]
     GraphError(String),
-    
-    #[error("WebSocket error: {0}")]
-    WebSocketError(String),
-    
-    #[error("Content already being processed")]
-    DuplicateContent,
     
     #[error("Node not found: {0}")]
     NodeNotFound(String),
@@ -70,86 +54,44 @@ impl KgApi {
         page_name: Option<String>,
         properties: Option<serde_json::Value>,
     ) -> Result<String> {
-        // Get active graph
-        let active_graph_id = self.app_state.get_active_graph_manager().await
-            .ok_or_else(|| KgApiError::GraphError("No active graph".to_string()))?;
+        // Generate a proper UUID for this block
+        let block_id = uuid::Uuid::new_v4().to_string();
         
-        // Check for duplicate content
-        let content_hash = compute_content_hash(&content);
-        let coordinators = self.app_state.transaction_coordinators.read().await;
-        if let Some(coordinator) = coordinators.get(&active_graph_id) {
-            if coordinator.is_content_pending(&content_hash).await {
-                return Err(KgApiError::DuplicateContent);
-            }
-        }
-        drop(coordinators);
-        
-        // Start a saga for the block creation workflow
-        let (saga_id, temp_id) = self.app_state.workflow_sagas
-            .create_block_workflow(content.clone(), "block".to_string())
-            .await?;
-        
-        // Generate correlation ID for this operation
-        let correlation_id = format!("block-{}", uuid::Uuid::new_v4());
-        
-        // Store correlation_id -> saga_id mapping
-        {
-            let mut correlation_map = self.app_state.correlation_to_saga.write().await;
-            correlation_map.insert(correlation_id.clone(), saga_id.clone());
-        }
-        
-        // Resolve references before creating the block
-        let reference_content = {
-            let managers = self.app_state.graph_managers.read().await;
-            if let Some(manager_lock) = managers.get(&active_graph_id) {
-                let graph_manager = manager_lock.read().await;
-                Some(graph_manager.resolve_references(&content, Some(&temp_id)))
-            } else {
-                None
-            }
-        };
-        
-        // Create the block data
-        let block_data = PKMBlockData {
-            id: temp_id.clone(),
+        // Create the operation
+        let operation = Operation::CreateNode {
+            node_type: "block".to_string(),
             content: content.clone(),
-            properties: properties.unwrap_or(json!({})),
-            parent: parent_id.clone(),
-            page: Some(page_name.clone().unwrap_or_else(|| "untitled".to_string())),
-            references: vec![], // TODO: Extract references from content
-            children: vec![], // New blocks have no children initially
-            created: chrono::Utc::now().to_rfc3339(),
-            updated: chrono::Utc::now().to_rfc3339(),
-            reference_content,
+            temp_id: None,
         };
         
-        // Add to graph (transaction already created by saga)
-        let node_idx = {
-            let managers = self.app_state.graph_managers.read().await;
-            let manager_lock = managers.get(&active_graph_id)
-                .ok_or_else(|| KgApiError::GraphError("Graph manager not found".to_string()))?;
-            let mut graph_manager = manager_lock.write().await;
+        // Execute with transaction
+        self.app_state.with_active_graph_transaction(operation, |graph_manager| {
+            // Resolve references
+            let reference_content = Some(graph_manager.resolve_references(&content, Some(&block_id)));
+            
+            // Create the block data
+            let block_data = PKMBlockData {
+                id: block_id.clone(),
+                content: content.clone(),
+                properties: properties.unwrap_or(json!({})),
+                parent: parent_id.clone(),
+                page: Some(page_name.clone().unwrap_or_else(|| "untitled".to_string())),
+                references: extract_references(&content),
+                children: vec![], // New blocks have no children initially
+                created: chrono::Utc::now().to_rfc3339(),
+                updated: chrono::Utc::now().to_rfc3339(),
+                reference_content,
+            };
+            
+            // Add to graph
             graph_manager.create_or_update_node_from_pkm_block(&block_data)
-                .map_err(|e| KgApiError::GraphError(e.to_string()))?
-        };
-        
-        debug!("Added block to graph with temp_id: {} at index: {:?}", temp_id, node_idx);
-        
-        // Send WebSocket command to create block
-        let command = Command::CreateBlock {
-            content,
-            parent_id,
-            page_name,
-            correlation_id: Some(correlation_id),
-            temp_id: Some(temp_id.clone()),
-        };
-        
-        broadcast_command(&self.app_state, command).await
-            .map_err(|e| KgApiError::WebSocketError(e.to_string()))?;
-        
-        // TODO: Wait for acknowledgment and update with real UUID
-        // For now, return the temp_id
-        Ok(temp_id)
+                .map(|node_idx| {
+                    debug!("Added block to graph with id: {} at index: {:?}", block_id, node_idx);
+                    block_id.clone()
+                })
+                .map_err(|e| e.to_string())
+        }).await
+        .map_err(|e| KgApiError::GraphError(e.to_string()))
     }
     
     /// Update an existing block in both graph and via WebSocket
@@ -158,43 +100,14 @@ impl KgApi {
         block_id: String,
         content: String,
     ) -> Result<()> {
-        // Get active graph
-        let active_graph_id = self.app_state.get_active_graph_manager().await
-            .ok_or_else(|| KgApiError::GraphError("No active graph".to_string()))?;
-        
-        // Check for duplicate content
-        let content_hash = compute_content_hash(&content);
-        let coordinators = self.app_state.transaction_coordinators.read().await;
-        if let Some(coordinator) = coordinators.get(&active_graph_id) {
-            if coordinator.is_content_pending(&content_hash).await {
-                return Err(KgApiError::DuplicateContent);
-            }
-        }
-        drop(coordinators);
-        
         // Create transaction
         let operation = Operation::UpdateNode {
             node_id: block_id.clone(),
             content: content.clone(),
         };
         
-        // Get coordinator for active graph
-        let coordinators = self.app_state.transaction_coordinators.read().await;
-        let coordinator = coordinators.get(&active_graph_id)
-            .ok_or_else(|| KgApiError::GraphError("Transaction coordinator not found".to_string()))?;
-        
-        let tx_id = coordinator
-            .begin_transaction(operation)
-            .await?;
-        drop(coordinators);
-        
-        // Update in graph
-        let update_result = {
-            let managers = self.app_state.graph_managers.read().await;
-            let manager_lock = managers.get(&active_graph_id)
-                .ok_or_else(|| KgApiError::GraphError("Graph manager not found".to_string()))?;
-            let mut graph_manager = manager_lock.write().await;
-            
+        // Execute with transaction
+        self.app_state.with_active_graph_transaction(operation, |graph_manager| {
             // Find the node
             if let Some(&node_idx) = graph_manager.get_node_index(&block_id) {
                 // Get existing block data
@@ -209,7 +122,7 @@ impl KgApi {
                         properties: serde_json::to_value(&node.properties).unwrap_or(json!({})),
                         parent: None, // Preserve existing parent
                         page: Some("".to_string()), // Preserve existing page
-                        references: vec![], // TODO: Extract references
+                        references: extract_references(&content),
                         children: vec![], // Preserve existing children
                         created: node.created_at.to_rfc3339(),
                         updated: chrono::Utc::now().to_rfc3339(),
@@ -219,112 +132,48 @@ impl KgApi {
                     // Update the node
                     graph_manager.create_or_update_node_from_pkm_block(&updated_block)
                         .map(|_| ())
-                        .map_err(|e| KgApiError::GraphError(e.to_string()))
+                        .map_err(|e| e.to_string())
                 } else {
-                    Err(KgApiError::NodeNotFound(block_id.clone()))
+                    Err(format!("Node not found: {}", block_id))
                 }
             } else {
-                Err(KgApiError::NodeNotFound(block_id.clone()))
+                Err(format!("Node not found: {}", block_id))
             }
-        };
-        
-        match update_result {
-            Ok(()) => {
-                // Commit transaction
-                let coordinators = self.app_state.transaction_coordinators.read().await;
-                if let Some(coordinator) = coordinators.get(&active_graph_id) {
-                    coordinator.commit_transaction(&tx_id).await?;
-                }
-                
-                // Send WebSocket command
-                let command = Command::UpdateBlock {
-                    block_id,
-                    content,
-                    correlation_id: None, // TODO: Add correlation tracking for updates
-                };
-                
-                broadcast_command(&self.app_state, command).await
-                    .map_err(|e| KgApiError::WebSocketError(e.to_string()))?;
-                
-                Ok(())
+        }).await
+        .map_err(|e| {
+            if e.to_string().contains("Node not found") {
+                KgApiError::NodeNotFound(block_id)
+            } else {
+                KgApiError::GraphError(e.to_string())
             }
-            Err(e) => {
-                // Abort transaction
-                let coordinators = self.app_state.transaction_coordinators.read().await;
-                if let Some(coordinator) = coordinators.get(&active_graph_id) {
-                    coordinator.abort_transaction(&tx_id, &e.to_string()).await?;
-                }
-                Err(e)
-            }
-        }
+        })
     }
     
     /// Delete a block from both graph and via WebSocket
     pub async fn delete_block(&self, block_id: String) -> Result<()> {
-        // Get active graph
-        let active_graph_id = self.app_state.get_active_graph_manager().await
-            .ok_or_else(|| KgApiError::GraphError("No active graph".to_string()))?;
-        
         // Create transaction
         let operation = Operation::DeleteNode {
             node_id: block_id.clone(),
         };
         
-        // Get coordinator for active graph
-        let coordinators = self.app_state.transaction_coordinators.read().await;
-        let coordinator = coordinators.get(&active_graph_id)
-            .ok_or_else(|| KgApiError::GraphError("Transaction coordinator not found".to_string()))?;
-        
-        let tx_id = coordinator
-            .begin_transaction(operation)
-            .await?;
-        drop(coordinators);
-        
-        // Delete from graph
-        let delete_result = {
-            let managers = self.app_state.graph_managers.read().await;
-            let manager_lock = managers.get(&active_graph_id)
-                .ok_or_else(|| KgApiError::GraphError("Graph manager not found".to_string()))?;
-            let mut graph_manager = manager_lock.write().await;
-            
+        // Execute with transaction
+        self.app_state.with_active_graph_transaction(operation, |graph_manager| {
             if let Some(&node_idx) = graph_manager.get_node_index(&block_id) {
                 // Archive the node
                 graph_manager.archive_nodes(vec![(block_id.clone(), node_idx)])
                     .map(|_| ())
-                    .map_err(|e| KgApiError::GraphError(e.to_string()))
+                    .map_err(|e| e.to_string())
             } else {
-                Err(KgApiError::NodeNotFound(block_id.clone()))
+                Err(format!("Node not found: {}", block_id))
             }
-        };
-        
-        match delete_result {
-            Ok(()) => {
-                // Commit transaction
-                let coordinators = self.app_state.transaction_coordinators.read().await;
-                if let Some(coordinator) = coordinators.get(&active_graph_id) {
-                    coordinator.commit_transaction(&tx_id).await?;
-                }
-                
-                // Send WebSocket command
-                let command = Command::DeleteBlock { 
-                    block_id,
-                    correlation_id: None, // TODO: Add correlation tracking for deletes
-                };
-                
-                broadcast_command(&self.app_state, command).await
-                    .map_err(|e| KgApiError::WebSocketError(e.to_string()))?;
-                
-                Ok(())
+        }).await
+        .map_err(|e| {
+            if e.to_string().contains("Node not found") {
+                KgApiError::NodeNotFound(block_id)
+            } else {
+                KgApiError::GraphError(e.to_string())
             }
-            Err(e) => {
-                // Abort transaction
-                let coordinators = self.app_state.transaction_coordinators.read().await;
-                if let Some(coordinator) = coordinators.get(&active_graph_id) {
-                    coordinator.abort_transaction(&tx_id, &e.to_string()).await?;
-                }
-                Err(e)
-            }
-        }
+        })
     }
     
     /// Create a new page in both graph and via WebSocket
@@ -333,9 +182,6 @@ impl KgApi {
         page_name: String,
         properties: Option<serde_json::Value>,
     ) -> Result<()> {
-        // Get active graph
-        let active_graph_id = self.app_state.get_active_graph_manager().await
-            .ok_or_else(|| KgApiError::GraphError("No active graph".to_string()))?;
         
         // Create transaction
         let operation = Operation::CreateNode {
@@ -344,81 +190,25 @@ impl KgApi {
             temp_id: None,
         };
         
-        // Get coordinator for active graph
-        let coordinators = self.app_state.transaction_coordinators.read().await;
-        let coordinator = coordinators.get(&active_graph_id)
-            .ok_or_else(|| KgApiError::GraphError("Transaction coordinator not found".to_string()))?;
-        
-        let tx_id = coordinator
-            .begin_transaction(operation)
-            .await?;
-        drop(coordinators);
-        
-        // Create page data
-        let page_data = PKMPageData {
-            name: page_name.clone(),
-            normalized_name: Some(page_name.to_lowercase()),
-            properties: properties.clone().unwrap_or(json!({})),
-            created: chrono::Utc::now().to_rfc3339(),
-            updated: chrono::Utc::now().to_rfc3339(),
-            blocks: vec![],
-        };
-        
-        // Add to graph
-        let create_result = {
-            let managers = self.app_state.graph_managers.read().await;
-            let manager_lock = managers.get(&active_graph_id)
-                .ok_or_else(|| KgApiError::GraphError("Graph manager not found".to_string()))?;
-            let mut graph_manager = manager_lock.write().await;
+        // Execute with transaction
+        let result = self.app_state.with_active_graph_transaction(operation, |graph_manager| {
+            // Create page data
+            let page_data = PKMPageData {
+                name: page_name.clone(),
+                normalized_name: Some(page_name.to_lowercase()),
+                properties: properties.clone().unwrap_or(json!({})),
+                created: chrono::Utc::now().to_rfc3339(),
+                updated: chrono::Utc::now().to_rfc3339(),
+                blocks: vec![],
+            };
+            
+            // Add to graph
             graph_manager.create_or_update_node_from_pkm_page(&page_data)
                 .map(|_| ())
-                .map_err(|e| KgApiError::GraphError(e.to_string()))
-        };
+                .map_err(|e| e.to_string())
+        }).await;
         
-        match create_result {
-            Ok(()) => {
-                // Commit transaction
-                let coordinators = self.app_state.transaction_coordinators.read().await;
-                if let Some(coordinator) = coordinators.get(&active_graph_id) {
-                    coordinator.commit_transaction(&tx_id).await?;
-                }
-                
-                // Send WebSocket command
-                let command = Command::CreatePage {
-                    name: page_name,
-                    properties: properties.map(|v| {
-                        // Convert serde_json::Value to HashMap<String, String>
-                        if let serde_json::Value::Object(map) = v {
-                            map.into_iter()
-                                .filter_map(|(k, v)| {
-                                    if let serde_json::Value::String(s) = v {
-                                        Some((k, s))
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .collect()
-                        } else {
-                            HashMap::new()
-                        }
-                    }),
-                    correlation_id: None, // TODO: Add correlation tracking for pages
-                };
-                
-                broadcast_command(&self.app_state, command).await
-                    .map_err(|e| KgApiError::WebSocketError(e.to_string()))?;
-                
-                Ok(())
-            }
-            Err(e) => {
-                // Abort transaction
-                let coordinators = self.app_state.transaction_coordinators.read().await;
-                if let Some(coordinator) = coordinators.get(&active_graph_id) {
-                    coordinator.abort_transaction(&tx_id, &e.to_string()).await?;
-                }
-                Err(e)
-            }
-        }
+        result.map_err(|e| KgApiError::GraphError(e.to_string()))
     }
     
     // Query operations (read-only, no transactions needed)
@@ -463,6 +253,132 @@ impl KgApi {
         warn!("BFS traversal not yet implemented");
         Ok(vec![])
     }
+    
+    // Graph management operations
+    
+    /// Switch to a different graph by ID
+    pub async fn switch_graph(&self, graph_id: String) -> Result<serde_json::Value> {
+        // Ensure the graph exists or create it
+        self.app_state.get_or_create_graph_manager(&graph_id).await
+            .map_err(|e| KgApiError::GraphError(format!("Failed to switch graph: {}", e)))?;
+        
+        // Set as active graph
+        self.app_state.set_active_graph(graph_id.clone()).await;
+        
+        // Update registry to track the switch and get graph info
+        let graph_info = {
+            let mut registry = self.app_state.graph_registry.lock()
+                .map_err(|_| KgApiError::GraphError("Failed to lock registry".into()))?;
+            registry.switch_graph(&graph_id)
+                .map_err(|e| KgApiError::GraphError(format!("Failed to switch graph: {}", e)))?
+        };
+        
+        Ok(json!({
+            "id": graph_info.id,
+            "name": graph_info.name,
+            "created": graph_info.created.to_rfc3339(),
+            "last_accessed": graph_info.last_accessed.to_rfc3339(),
+            "description": graph_info.description,
+        }))
+    }
+    
+    /// Get the currently active graph ID
+    pub async fn get_active_graph(&self) -> Result<Option<String>> {
+        Ok(self.app_state.get_active_graph_manager().await)
+    }
+    
+    /// List all available graphs
+    pub async fn list_graphs(&self) -> Result<Vec<serde_json::Value>> {
+        if let Ok(registry) = self.app_state.graph_registry.lock() {
+            let graphs = registry.get_all_graphs();
+            Ok(graphs.into_iter().map(|info| {
+                json!({
+                    "id": info.id,
+                    "name": info.name,
+                    "created": info.created.to_rfc3339(),
+                    "last_accessed": info.last_accessed.to_rfc3339(),
+                    "description": info.description,
+                })
+            }).collect())
+        } else {
+            Ok(vec![])
+        }
+    }
+    
+    /// Create a new knowledge graph
+    pub async fn create_graph(
+        &self, 
+        name: Option<String>, 
+        description: Option<String>
+    ) -> Result<serde_json::Value> {
+        // Register the graph in the registry
+        let graph_info = {
+            let mut registry = self.app_state.graph_registry.lock()
+                .map_err(|_| KgApiError::GraphError("Failed to lock registry".into()))?;
+            
+            registry.register_graph(None, name, description, &self.app_state.data_dir)
+                .map_err(|e| KgApiError::GraphError(format!("Failed to register graph: {}", e)))?
+        };
+        
+        // Save registry after creating new graph
+        {
+            let registry = self.app_state.graph_registry.lock()
+                .map_err(|_| KgApiError::GraphError("Failed to lock registry".into()))?;
+            
+            registry.save()
+                .map_err(|e| KgApiError::GraphError(format!("Failed to save registry: {}", e)))?;
+        }
+        
+        // Create graph manager for the new graph
+        self.app_state.get_or_create_graph_manager(&graph_info.id).await
+            .map_err(|e| KgApiError::GraphError(format!("Failed to create graph manager: {}", e)))?;
+        
+        info!("Created new knowledge graph: {} ({})", graph_info.name, graph_info.id);
+        
+        Ok(json!({
+            "id": graph_info.id,
+            "name": graph_info.name,
+            "created": graph_info.created.to_rfc3339(),
+            "last_accessed": graph_info.last_accessed.to_rfc3339(),
+            "description": graph_info.description,
+        }))
+    }
+    
+    /// Delete a knowledge graph
+    pub async fn delete_graph(&self, graph_id: String) -> Result<()> {
+        // Check if this is the active graph
+        let active_graph = self.app_state.get_active_graph_manager().await;
+        if active_graph.as_ref() == Some(&graph_id) {
+            return Err(KgApiError::GraphError("Cannot delete the currently active graph".into()));
+        }
+        
+        // Remove from registry (this also archives the data)
+        {
+            let mut registry = self.app_state.graph_registry.lock()
+                .map_err(|_| KgApiError::GraphError("Failed to lock registry".into()))?;
+            
+            registry.remove_graph(&graph_id)
+                .map_err(|e| KgApiError::GraphError(format!("Failed to remove graph: {}", e)))?;
+            
+            // Save registry
+            registry.save()
+                .map_err(|e| KgApiError::GraphError(format!("Failed to save registry: {}", e)))?;
+        }
+        
+        // Remove from managers
+        {
+            let mut managers = self.app_state.graph_managers.write().await;
+            managers.remove(&graph_id);
+        }
+        
+        // Remove from transaction coordinators
+        {
+            let mut coordinators = self.app_state.transaction_coordinators.write().await;
+            coordinators.remove(&graph_id);
+        }
+        
+        Ok(())
+    }
 }
 
 // Helper trait to extend GraphManager
@@ -479,13 +395,4 @@ impl GraphManagerExt for GraphManager {
     fn get_node(&self, idx: GraphNodeIndex) -> Option<&crate::graph_manager::NodeData> {
         self.graph.node_weight(idx)
     }
-}
-
-fn compute_content_hash(content: &str) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    
-    let mut hasher = DefaultHasher::new();
-    content.hash(&mut hasher);
-    format!("{:x}", hasher.finish())
 }

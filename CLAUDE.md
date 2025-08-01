@@ -34,22 +34,26 @@ RUST_LOG=debug cargo run         # Run backend server with debug logging (do not
   - **config.rs**: YAML configuration loading and validation
   - **utils.rs**: Process management, datetime parsing, general utilities
   - **logging.rs**: Custom formatter (file:line only for ERROR/WARN)
+  - **app_state.rs**: Centralized application state management
   - **import/**: Data import functionality
     - **pkm_data.rs**: PKM data structures (PKMBlockData, PKMPageData)
     - **logseq.rs**: Logseq-specific parsing
     - **import_utils.rs**: Import coordination
     - **reference_resolver.rs**: Block reference resolution
-  - **transaction_log.rs**: Write-ahead logging with sled database
-  - **transaction.rs**: Transaction coordinator and state management
-  - **saga.rs**: Saga pattern for multi-step workflows
-  - **graph_registry.rs**: Multi-graph identification and management
-  - **app_state.rs**: Centralized application state management
+  - **storage/**: Persistence layer
+    - **mod.rs**: Storage module exports
+    - **graph_registry.rs**: Multi-graph identification and management
+    - **transaction_log.rs**: Write-ahead logging with sled database
+    - **transaction.rs**: Transaction coordinator and state management
   - **server/**: Server-specific functionality
-    - **api.rs**: HTTP endpoints and request handlers
+    - **http_api.rs**: HTTP endpoints for health, import, WebSocket upgrade
     - **websocket.rs**: WebSocket server for real-time communication
     - **kg_api.rs**: Public API for knowledge graph operations (currently unused)
     - **server.rs**: Server utility functions
 - **tests/**: Integration tests
+  - **common/**: Shared test utilities
+    - **mod.rs**: Test environment setup
+    - **test_harness.rs**: Integration test server management
 - **.gitignore**: Git ignore patterns
 - **.gitmodules**: Git submodule configuration
 - **Cargo.toml**: Dependencies and metadata
@@ -76,3 +80,7 @@ RUST_LOG=debug cargo run         # Run backend server with debug logging (do not
 
 - Keep the architecture document (`cymbiont_architecture.md`) up to date
 - When updating documentation, read it entirely first to avoid redundancy
+
+## Test Harness
+
+Tests use isolated environments via `setup_test_env()` which creates unique data directories (test_data_0/), config files, and ports - never hardcode paths or assume shared state.

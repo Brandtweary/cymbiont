@@ -17,7 +17,6 @@
  * Utilities for parsing and converting data formats:
  * - `parse_datetime()`: Multi-format datetime parsing with fallback
  * - `parse_properties()`: JSON to HashMap conversion for metadata
- * - `parse_json_data<T>()`: Type-safe JSON deserialization
  */
 
 use std::process::Command;
@@ -28,7 +27,6 @@ use std::collections::HashMap;
 use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::{Serialize, Deserialize};
-use serde::de::DeserializeOwned;
 use serde_json;
 use tracing::{error, trace, warn};
 use crate::config::BackendConfig;
@@ -53,6 +51,7 @@ pub fn is_port_available(port: u16) -> bool {
 
 // Try to terminate a previous instance of our server
 pub fn terminate_previous_instance(filename: &str) -> bool {
+    trace!("[TERMINATE] Looking for server info file: {}", filename);
     // Check if server info file exists
     if let Ok(info_str) = fs::read_to_string(filename) {
         if let Ok(info) = serde_json::from_str::<ServerInfo>(&info_str) {
@@ -85,7 +84,7 @@ pub fn terminate_previous_instance(filename: &str) -> bool {
             // Process exists, try to terminate it
             trace!("🔧 Process {pid} is running, attempting to terminate");
             let kill_result = Command::new("kill")
-                .arg("-15") // SIGTERM for graceful shutdown
+                .arg("-2") // SIGINT for graceful shutdown (matches ctrlc handler)
                 .arg(&pid)
                 .output();
                 
@@ -158,13 +157,15 @@ pub fn terminate_previous_instance(filename: &str) -> bool {
 
 // Write server info including actual port
 pub fn write_server_info(host: &str, port: u16, filename: &str) -> Result<(), Box<dyn Error>> {
+    trace!("[SERVER-INFO-WRITE] Writing server info to: {}", filename);
     let info = ServerInfo {
         pid: std::process::id(),
         host: host.to_string(),
         port,
     };
     let json = serde_json::to_string_pretty(&info)?;
-    fs::write(filename, json)?;
+    fs::write(filename, &json)?;
+    trace!("[SERVER-INFO-WRITE] Wrote server info: {}", json);
     Ok(())
 }
 
@@ -257,11 +258,6 @@ pub fn parse_properties(properties_json: &serde_json::Value) -> HashMap<String, 
     }
     
     properties
-}
-
-/// Generic JSON deserialization helper
-pub fn parse_json_data<T: DeserializeOwned>(payload: &str) -> Result<T, serde_json::Error> {
-    serde_json::from_str::<T>(payload)
 }
 
 

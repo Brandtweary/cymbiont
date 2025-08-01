@@ -19,7 +19,7 @@
  * - Recovery is automatic and doesn't require graph modification
  */
 
-use crate::transaction_log::{Operation, Transaction, TransactionLog, TransactionLogError, TransactionState};
+use crate::storage::transaction_log::{Operation, Transaction, TransactionLog, TransactionLogError, TransactionState};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use std::collections::HashMap;
@@ -31,13 +31,9 @@ pub enum TransactionError {
     #[error("Transaction log error: {0}")]
     LogError(#[from] TransactionLogError),
     
-    #[error("Transaction not found: {0}")]
-    // TODO: Remove allow(dead_code) once transaction recovery is implemented
-    #[allow(dead_code)]
-    TransactionNotFound(String),
+    #[error("Duplicate content already being processed: {0}")]
+    DuplicateContent(String),
     
-    // TODO: Remove allow(dead_code) once operation retry logic is implemented
-    #[allow(dead_code)]
     #[error("Operation failed: {0}")]
     OperationFailed(String),
 }
@@ -105,58 +101,46 @@ impl TransactionCoordinator {
         Ok(())
     }
     
-    pub async fn wait_for_acknowledgment(&self, tx_id: &str) -> Result<()> {
-        self.log.update_transaction_state(tx_id, TransactionState::WaitingForAck)?;
-        Ok(())
-    }
     
     pub async fn is_content_pending(&self, content_hash: &str) -> bool {
         let pending = self.pending_operations.read().await;
         pending.contains_key(content_hash)
     }
     
-    // TODO: Remove allow(dead_code) once transaction recovery is implemented
-    #[allow(dead_code)]
-    pub async fn find_pending_transaction_by_content(&self, content_hash: &str) -> Option<String> {
-        let pending = self.pending_operations.read().await;
-        pending.get(content_hash).cloned()
-    }
-    
-    // TODO: Remove allow(dead_code) once acknowledgment handling is implemented
-    #[allow(dead_code)]
-    pub async fn handle_acknowledgment(
+    /// Execute an operation within a transaction, handling all lifecycle management
+    pub async fn execute_with_transaction<F, T>(
         &self,
-        correlation_id: &str,
-        success: bool,
-        external_uuid: Option<String>,
-    ) -> Result<()> {
-        // Find transaction by correlation ID
-        // For now, we'll use the transaction ID as correlation ID
-        let tx_id = correlation_id;
-        
-        let operation = Operation::ReceivedAck {
-            correlation_id: correlation_id.to_string(),
-            success,
-            external_uuid: external_uuid.clone(),
-        };
-        
-        // Create a new transaction for the acknowledgment
-        let ack_tx_id = self.begin_transaction(operation).await?;
-        self.commit_transaction(&ack_tx_id).await?;
-        
-        // Update the original transaction state
-        if success {
-            self.commit_transaction(tx_id).await?;
-            info!("Transaction {} acknowledged successfully with UUID: {:?}", tx_id, external_uuid);
-        } else {
-            self.abort_transaction(tx_id, "Acknowledgment failed").await?;
+        operation: Operation,
+        executor: F,
+    ) -> Result<T>
+    where
+        F: FnOnce() -> std::result::Result<T, String>,
+    {
+        // Check for duplicate content if applicable
+        if let Operation::CreateNode { content, .. } | Operation::UpdateNode { content, .. } = &operation {
+            let hash = compute_content_hash(content);
+            if self.is_content_pending(&hash).await {
+                return Err(TransactionError::DuplicateContent(hash));
+            }
         }
         
-        Ok(())
+        // Begin transaction
+        let tx_id = self.begin_transaction(operation).await?;
+        
+        // Execute the operation
+        match executor() {
+            Ok(value) => {
+                self.commit_transaction(&tx_id).await?;
+                Ok(value)
+            }
+            Err(error_msg) => {
+                self.abort_transaction(&tx_id, &error_msg).await?;
+                Err(TransactionError::OperationFailed(error_msg))
+            }
+        }
     }
     
-    // TODO: Remove allow(dead_code) once crash recovery is implemented
-    #[allow(dead_code)]
+    #[allow(dead_code)] // TODO: Implement crash recovery on startup
     pub async fn recover_pending_transactions(&self) -> Result<Vec<String>> {
         let pending = self.log.list_pending_transactions()?;
         let mut recovered = Vec::new();
@@ -173,21 +157,6 @@ impl TransactionCoordinator {
                     // These can be retried
                     info!("Recovered active transaction: {}", transaction.id);
                     recovered.push(transaction.id);
-                }
-                TransactionState::WaitingForAck => {
-                    // Check age and potentially timeout
-                    let age_ms = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis() as u64 - transaction.created_at;
-                    
-                    if age_ms > 30000 { // 30 second timeout
-                        warn!("Timing out old transaction waiting for ack: {}", transaction.id);
-                        self.abort_transaction(&transaction.id, "Timeout waiting for acknowledgment").await?;
-                    } else {
-                        info!("Recovered transaction waiting for ack: {}", transaction.id);
-                        recovered.push(transaction.id);
-                    }
                 }
                 _ => {
                     // Committed or Aborted - shouldn't be in pending, but log it
@@ -230,11 +199,8 @@ mod tests {
         let content_hash = compute_content_hash("Test content");
         assert!(coordinator.is_content_pending(&content_hash).await);
         
-        // Wait for ack
-        coordinator.wait_for_acknowledgment(&tx_id).await.unwrap();
-        
-        // Handle acknowledgment
-        coordinator.handle_acknowledgment(&tx_id, true, Some("uuid-456".to_string())).await.unwrap();
+        // Commit the transaction
+        coordinator.commit_transaction(&tx_id).await.unwrap();
         
         // Content should no longer be pending
         assert!(!coordinator.is_content_pending(&content_hash).await);
@@ -280,13 +246,13 @@ mod tests {
         let recovered = coordinator.recover_pending_transactions().await.unwrap();
         assert_eq!(recovered.len(), 3);
     }
+}
+
+fn compute_content_hash(content: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
     
-    fn compute_content_hash(content: &str) -> String {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        
-        let mut hasher = DefaultHasher::new();
-        content.hash(&mut hasher);
-        format!("{:x}", hasher.finish())
-    }
+    let mut hasher = DefaultHasher::new();
+    content.hash(&mut hasher);
+    format!("{:x}", hasher.finish())
 }

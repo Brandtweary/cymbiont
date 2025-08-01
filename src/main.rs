@@ -22,6 +22,9 @@
  * 
  * # Run as HTTP/WebSocket server
  * cymbiont --server
+ * 
+ * # Graceful shutdown
+ * cymbiont --shutdown
  * ```
  * 
  * ## Lifecycle Behavior
@@ -33,6 +36,11 @@
  * 
  * This design allows the CLI to serve as a persistent knowledge graph engine
  * that can handle future interactive features while maintaining simplicity.
+ * 
+ * ## Graceful Shutdown
+ * 
+ * The server handles SIGINT (Ctrl+C) to trigger cleanup_and_save() before exit.
+ * The --shutdown command sends SIGINT to ensure graceful shutdown with data persistence.
  */
 
 use std::error::Error;
@@ -43,13 +51,10 @@ use tracing::{info, error, warn};
 mod app_state;
 mod config;
 mod graph_manager;
-mod graph_registry;
 mod logging;
 mod import;
-mod saga;
 mod server;
-mod transaction;
-mod transaction_log;
+mod storage;
 mod utils;
 
 use app_state::AppState;
@@ -139,7 +144,9 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                     error!("Failed to shutdown server");
                     return Err("Shutdown failed".into());
                 }
+            } else {
             }
+        } else {
         }
         
         error!("No running Cymbiont instance found");
@@ -155,7 +162,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         let app_state = AppState::new_cli(args.config, args.data_dir.clone()).await?;
         
         info!("🧠 Cymbiont CLI initialized");
-        info!("📁 Data directory: {}", app_state.config.data_dir);
+        info!("📁 Data directory: {}", app_state.data_dir.display());
         
         // Handle Logseq import if requested
         if let Some(logseq_path) = args.import_logseq {

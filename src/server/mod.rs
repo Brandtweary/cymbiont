@@ -3,7 +3,7 @@
 //! This module contains HTTP API and WebSocket functionality for the
 //! cymbiont-server binary.
 
-pub mod api;
+pub mod http_api;
 pub mod websocket;
 pub mod kg_api;
 pub mod server;

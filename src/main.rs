@@ -23,8 +23,8 @@
  * # Run as HTTP/WebSocket server
  * cymbiont --server
  * 
- * # Graceful shutdown
- * cymbiont --shutdown
+ * # Run server with specific duration
+ * cymbiont --server --duration 60
  * ```
  * 
  * ## Lifecycle Behavior
@@ -39,8 +39,8 @@
  * 
  * ## Graceful Shutdown
  * 
- * The server handles SIGINT (Ctrl+C) to trigger cleanup_and_save() before exit.
- * The --shutdown command sends SIGINT to ensure graceful shutdown with data persistence.
+ * Both CLI and server modes handle SIGINT (Ctrl+C) to trigger cleanup_and_save() before exit.
+ * After graceful cleanup, the process uses std::process::exit(0) due to sled database background threads.
  */
 
 use std::error::Error;
@@ -85,78 +85,45 @@ struct Args {
     #[arg(long)]
     duration: Option<u64>,
     
-    /// Test WebSocket by sending a command after connection
-    #[arg(long)]
-    test_websocket: Option<String>,
     
-    /// Shutdown a running Cymbiont instance gracefully
-    #[arg(long)]
-    shutdown: bool,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
+fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
+    // Create Tokio runtime explicitly for proper shutdown control
+    let runtime = tokio::runtime::Runtime::new()
+        .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to create runtime: {}", e)))?;
+    
+    // Run async main logic
+    let result = runtime.block_on(async_main());
+    
+    // Force runtime shutdown with timeout
+    runtime.shutdown_timeout(std::time::Duration::from_secs(2));
+    
+    result
+}
+
+async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
     // Parse command line arguments
     let args = Args::parse();
     
     // Initialize logging
     init_logging();
     
-    // Handle shutdown command
-    if args.shutdown {
-        // First check for simple PID file (CLI mode)
-        if let Ok(pid) = utils::read_pid_file() {
-            info!("Shutting down Cymbiont (PID: {})...", pid);
-            // We need to terminate by PID directly
-            #[cfg(target_family = "unix")]
-            {
-                use std::process::Command;
-                if Command::new("kill").arg(pid.to_string()).status().is_ok() {
-                    info!("Shutdown signal sent successfully");
-                    utils::remove_pid_file();
-                    return Ok(());
-                }
-            }
-            #[cfg(target_family = "windows")]
-            {
-                use std::process::Command;
-                if Command::new("taskkill").args(&["/PID", &pid.to_string(), "/F"]).status().is_ok() {
-                    info!("Shutdown successfully");
-                    utils::remove_pid_file();
-                    return Ok(());
-                }
-            }
-        }
-        
-        // Determine server info file from config
-        let config = config::load_config(args.config);
-        let server_info_file = &config.backend.server_info_file;
-        
-        // Try to shutdown server using configured server info file
-        if let Ok(info_str) = std::fs::read_to_string(server_info_file) {
-            if let Ok(info) = serde_json::from_str::<utils::ServerInfo>(&info_str) {
-                info!("Shutting down Cymbiont server (PID: {})...", info.pid);
-                if utils::terminate_previous_instance(server_info_file) {
-                    info!("Server shutdown successfully");
-                    let _ = std::fs::remove_file(server_info_file);
-                    return Ok(());
-                } else {
-                    error!("Failed to shutdown server");
-                    return Err("Shutdown failed".into());
-                }
-            } else {
-            }
-        } else {
-        }
-        
-        error!("No running Cymbiont instance found");
-        return Err("No instance to shutdown".into());
-    }
+    
+    // Track start time for total runtime measurement
+    let start_time = std::time::Instant::now();
     
     // Branch based on server flag
     if args.server {
-        // Run server with all setup/teardown handled internally
-        server::run_server_with_duration(args.config, args.data_dir, args.duration).await?;
+        // Create server app state
+        let app_state = AppState::new_server(args.config.clone(), args.data_dir.clone()).await?;
+        
+        // Run server (will handle its own tokio::select! for shutdown)
+        server::run_server_with_duration(app_state.clone(), args.duration).await?;
+        
+        // Cleanup for server mode
+        app_state.cleanup_and_save().await;
+        info!("🧹 Server shutdown complete");
     } else {
         // Run as CLI
         let app_state = AppState::new_cli(args.config, args.data_dir.clone()).await?;
@@ -213,16 +180,22 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             utils::write_pid_file()
                 .map_err(|e| Box::<dyn Error + Send + Sync>::from(e.to_string()))?;
             
-            // Set up Ctrl+C handler to clean up PID file
-            ctrlc::set_handler(move || {
-                utils::remove_pid_file();
-                std::process::exit(0);
-            }).expect("Error setting Ctrl-C handler");
-            
             info!("Running indefinitely. Press Ctrl+C to exit.");
             tokio::signal::ctrl_c().await?;
+            info!("🛑 Received shutdown signal");
         }
+        
+        // Cleanup for CLI mode
+        app_state.cleanup_and_save().await;
+        utils::remove_pid_file();
+        info!("🧹 CLI shutdown complete");
     }
     
-    Ok(())
+    let total_runtime = start_time.elapsed();
+    info!("💫 Total runtime: {:.2}s", total_runtime.as_secs_f64());
+    
+    // Force exit because sled/tokio threads won't terminate
+    // This is the recommended workaround for sled issue #1234
+    error!("FORCING PROCESS EXIT NOW");
+    std::process::exit(0)
 }

@@ -1,75 +1,9 @@
-mod common;
-
 use std::fs;
-use std::process::{Command, Child};
-use std::thread;
-use std::time::Duration;
 use serde_json::{json, Value};
-use common::{setup_test_env, cleanup_test_env};
+use crate::common::{setup_test_env, cleanup_test_env};
+use crate::common::test_harness::{TestServer, PreShutdown, PostShutdown, assert_phase};
 
-/// Check if --nocapture was passed to cargo test
-fn is_nocapture() -> bool {
-    std::env::args().any(|arg| arg == "--nocapture")
-}
 
-/// Start the Cymbiont server in the background
-fn start_server(config_path: &str) -> (Child, u16) {
-    // Read config to get server info filename
-    let config_content = fs::read_to_string(config_path).expect("Failed to read config");
-    let config: serde_yaml::Value = serde_yaml::from_str(&config_content).expect("Failed to parse config");
-    let server_info_file = config["backend"]["server_info_file"].as_str()
-        .expect("server_info_file not found in config");
-    
-    let mut cmd = Command::new("cargo");
-    cmd.env("CYMBIONT_TEST_MODE", "1")
-        .args(&["run", "--", "--server", "--config", config_path]);
-    
-    // Only inherit stdout/stderr if --nocapture was passed
-    if !is_nocapture() {
-        cmd.stdout(std::process::Stdio::null())
-           .stderr(std::process::Stdio::null());
-    }
-    
-    let mut child = cmd.spawn().expect("Failed to start server");
-    
-    // Wait for server to be ready by checking for server info file
-    let mut attempts = 0;
-    const MAX_ATTEMPTS: u32 = 150;  // 15 seconds with 100ms intervals (first build can be slow)
-    let actual_port = loop {
-        attempts += 1;
-        
-        // Check if server info file exists
-        if let Ok(info_str) = fs::read_to_string(server_info_file) {
-            if let Ok(info) = serde_json::from_str::<Value>(&info_str) {
-                if let Some(port) = info["port"].as_u64() {
-                    let port = port as u16;
-                    
-                    // Try to connect to verify it's really ready
-                    let client = reqwest::blocking::Client::new();
-                    let url = format!("http://localhost:{}/", port);
-                    match client.get(&url).timeout(Duration::from_secs(1)).send() {
-                        Ok(response) if response.status().is_success() => {
-                            break port;  // Server is ready, return the port
-                        }
-                        _ => {
-                            // Server not ready yet, keep waiting
-                        }
-                    }
-                }
-            }
-        }
-        
-        if attempts >= MAX_ATTEMPTS {
-            // Clean up the child process before panicking
-            let _ = child.kill();
-            panic!("Server failed to start after {} attempts ({}s)", MAX_ATTEMPTS, MAX_ATTEMPTS / 10);
-        }
-        
-        thread::sleep(Duration::from_millis(100));
-    };
-    
-    (child, actual_port)
-}
 
 /// Make an HTTP request to the server
 fn make_import_request(port: u16, path: &str, graph_name: Option<&str>) -> Result<Value, Box<dyn std::error::Error>> {
@@ -92,19 +26,22 @@ fn make_import_request(port: u16, path: &str, graph_name: Option<&str>) -> Resul
     Ok(response.json()?)
 }
 
-#[test]
-fn test_http_logseq_import() {
+pub fn test_http_logseq_import() {
     // Set up test environment
     let test_env = setup_test_env();
     
+    
     // Clone paths for use in closure
     let data_dir = test_env.data_dir.clone();
-    let config_path = test_env.config_path.clone();
     
     // Use a closure to ensure cleanup happens even on panic
     let result = std::panic::catch_unwind(move || {
         // Start the server
-        let (mut server, port) = start_server(config_path.to_str().unwrap());
+        let server = TestServer::start(test_env);
+        
+        // Phase 1: Server is running - do HTTP operations
+        assert_phase(PreShutdown);
+        let port = server.port();
         
         // Get the absolute path to the dummy graph
         let dummy_graph_path = std::env::current_dir()
@@ -197,46 +134,37 @@ fn test_http_logseq_import() {
             "Block reference was not properly expanded"
         );
         
-        // Terminate the server gracefully using --shutdown
-        let mut shutdown_cmd = Command::new("cargo");
-        shutdown_cmd.args(&["run", "--", "--shutdown", "--config", config_path.to_str().unwrap()]);
+        // Phase 2: Shutdown server and wait for saves
+        let test_env = server.shutdown();
         
-        // Suppress output unless --nocapture
-        if !is_nocapture() {
-            shutdown_cmd.stdout(std::process::Stdio::null())
-                       .stderr(std::process::Stdio::null());
-        }
+        // Phase 3: Server has shutdown - safe to validate persisted data
+        assert_phase(PostShutdown);
         
-        let shutdown_output = shutdown_cmd.output()
-            .expect("Failed to run shutdown command");
-        
-        if !shutdown_output.status.success() {
-            // Fallback to kill if shutdown fails
-            let _ = server.kill();
-        }
+        test_env
     });
     
     // Always clean up, even if test failed
-    cleanup_test_env(test_env);
-    
-    // Re-panic if the test failed
-    if let Err(e) = result {
-        std::panic::resume_unwind(e);
+    if let Ok(test_env) = result {
+        cleanup_test_env(test_env);
+    } else if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
     }
 }
 
-#[test]
-fn test_http_import_error_cases() {
+pub fn test_http_import_error_cases() {
     // Set up test environment
     let test_env = setup_test_env();
     
     // Clone paths for use in closure
     let data_dir = test_env.data_dir.clone();
-    let config_path = test_env.config_path.clone();
     
     let result = std::panic::catch_unwind(move || {
         // Start the server
-        let (mut server, port) = start_server(config_path.to_str().unwrap());
+        let server = TestServer::start(test_env);
+        
+        // Phase 1: Server is running - do HTTP operations
+        assert_phase(PreShutdown);
+        let port = server.port();
         
         // Test 1: Non-existent path
         let response = make_import_request(port, "/path/that/does/not/exist", None)
@@ -258,29 +186,19 @@ fn test_http_import_error_cases() {
         // Clean up temp file
         fs::remove_file(&temp_file).ok();
         
-        // Terminate the server gracefully using --shutdown
-        let mut shutdown_cmd = Command::new("cargo");
-        shutdown_cmd.args(&["run", "--", "--shutdown", "--config", config_path.to_str().unwrap()]);
+        // Phase 2: Shutdown server and wait for saves
+        let test_env = server.shutdown();
         
-        // Suppress output unless --nocapture
-        if !is_nocapture() {
-            shutdown_cmd.stdout(std::process::Stdio::null())
-                       .stderr(std::process::Stdio::null());
-        }
+        // Phase 3: Server has shutdown - safe to validate persisted data
+        assert_phase(PostShutdown);
         
-        let shutdown_output = shutdown_cmd.output()
-            .expect("Failed to run shutdown command");
-        
-        if !shutdown_output.status.success() {
-            // Fallback to kill if shutdown fails
-            let _ = server.kill();
-        }
+        test_env
     });
     
     // Always clean up
-    cleanup_test_env(test_env);
-    
-    if let Err(e) = result {
-        std::panic::resume_unwind(e);
+    if let Ok(test_env) = result {
+        cleanup_test_env(test_env);
+    } else if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
     }
 }

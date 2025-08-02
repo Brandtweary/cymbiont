@@ -138,8 +138,7 @@ impl Transaction {
 }
 
 pub struct TransactionLog {
-    #[allow(dead_code)] // The db handle must be kept alive even though we only access trees
-    db: sled::Db,
+    db: std::sync::Mutex<Option<sled::Db>>,
     transactions_tree: sled::Tree,
     content_hash_index: sled::Tree,
     pending_index: sled::Tree,
@@ -147,7 +146,6 @@ pub struct TransactionLog {
 
 impl TransactionLog {
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self> {
-        info!("Initializing transaction log at: {:?}", path.as_ref());
         
         let config = sled::Config::new()
             .path(path)
@@ -163,11 +161,24 @@ impl TransactionLog {
         let pending_index = db.open_tree("pending_transactions")?;
         
         Ok(Self {
-            db,
+            db: std::sync::Mutex::new(Some(db)),
             transactions_tree,
             content_hash_index,
             pending_index,
         })
+    }
+    
+    /// Flush and close the database, ensuring all pending writes are persisted
+    pub async fn close(&self) -> Result<()> {
+        info!("Flushing transaction log to disk...");
+        let mut db_guard = self.db.lock().unwrap();
+        if let Some(ref db) = *db_guard {
+            db.flush_async().await?;
+            info!("Transaction log flushed successfully");
+        }
+        // Drop the database to trigger sled cleanup
+        db_guard.take();
+        Ok(())
     }
     
     pub fn append_transaction(&self, transaction: Transaction) -> Result<String> {

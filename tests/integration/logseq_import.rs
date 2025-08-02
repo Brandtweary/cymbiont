@@ -1,32 +1,28 @@
-mod common;
-
 use std::fs;
-use std::process::Command;
 use serde_json::Value;
-use common::{setup_test_env, cleanup_test_env};
+use crate::common::{setup_test_env, cleanup_test_env};
+use crate::common::test_harness::{TestServer, PostShutdown, assert_phase};
 
-#[test]
-fn test_logseq_import_cyberorganism_test_1() {
+pub fn test_logseq_import_cyberorganism_test_1() {
     // Set up test environment
     let test_env = setup_test_env();
     
     // Clone paths for use in closure
     let data_dir = test_env.data_dir.clone();
-    let config_path = test_env.config_path.clone();
     
     // Use a closure to ensure cleanup happens even on panic
     let result = std::panic::catch_unwind(move || {
-        // Run the import with a 2 second duration
-        let output = Command::new("cargo")
-            .env("CYMBIONT_TEST_MODE", "1")
-            .args(&["run", "--", 
-                "--config", config_path.to_str().unwrap(),
-                "--import-logseq", "logseq_databases/dummy_graph/", 
-                "--duration", "2"])
-            .output()
-            .expect("Failed to run cymbiont");
+        // Start CLI mode with import and duration
+        let server = TestServer::start_with_args(test_env, vec![
+            "--import-logseq", "logseq_databases/dummy_graph/", 
+            "--duration", "2"
+        ]);
         
-        assert!(output.status.success(), "Import failed with exit code: {:?}", output.status.code());
+        // CLI mode: Process runs for duration then exits naturally
+        let test_env = server.wait_for_completion();
+        
+        // Phase: CLI has completed - safe to validate persisted data
+        assert_phase(PostShutdown);
     
     // Verify the graph registry was created
     let registry_path = data_dir.join("graph_registry.json");
@@ -252,13 +248,13 @@ fn test_logseq_import_cyberorganism_test_1() {
             "Blocks without references should have reference_content equal to content"
         );
         
+        test_env
     });
     
     // Always clean up, even if test failed
-    cleanup_test_env(test_env);
-    
-    // Re-panic if the test failed
-    if let Err(e) = result {
-        std::panic::resume_unwind(e);
+    if let Ok(test_env) = result {
+        cleanup_test_env(test_env);
+    } else if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
     }
 }

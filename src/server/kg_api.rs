@@ -21,7 +21,7 @@ use crate::{
     storage::Operation,
 };
 use std::sync::Arc;
-use tracing::{warn, error, debug, info};
+use tracing::{warn, error, info};
 use thiserror::Error;
 use serde_json::json;
 
@@ -85,8 +85,7 @@ impl KgApi {
             
             // Add to graph
             graph_manager.create_or_update_node_from_pkm_block(&block_data)
-                .map(|node_idx| {
-                    debug!("Added block to graph with id: {} at index: {:?}", block_id, node_idx);
+                .map(|_node_idx| {
                     block_id.clone()
                 })
                 .map_err(|e| e.to_string())

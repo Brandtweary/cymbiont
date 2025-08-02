@@ -1,12 +1,10 @@
-mod common;
-
 use std::fs;
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
 use serde_json::{json, Value};
-use common::{setup_test_env, cleanup_test_env};
-use common::test_harness::{TestServer, PreShutdown, PostShutdown, assert_phase};
+use crate::common::{setup_test_env, cleanup_test_env, get_cymbiont_binary};
+use crate::common::test_harness::{TestServer, PreShutdown, PostShutdown, assert_phase};
 use tungstenite::{connect, Message, WebSocket};
 use tungstenite::stream::MaybeTlsStream;
 use std::net::TcpStream;
@@ -359,8 +357,7 @@ fn validate_graph_state(
     );
 }
 
-#[test]
-fn test_websocket_commands() {
+pub fn test_websocket_commands() {
     // Set up test environment
     let test_env = setup_test_env();
     let cleanup_env = test_env.clone(); // For cleanup after panic
@@ -368,12 +365,10 @@ fn test_websocket_commands() {
     // Use a closure to ensure cleanup happens even on panic
     let result = std::panic::catch_unwind(move || {
         // Import dummy_graph via CLI
-        let output = Command::new("cargo")
+        let output = Command::new(get_cymbiont_binary())
             .env("CYMBIONT_TEST_MODE", "1")
-            .args(&["run", "--", 
-                "--config", test_env.config_path.to_str().unwrap(),
-                "--import-logseq", "logseq_databases/dummy_graph/", 
-                "--duration", "2"])
+            .args(&["--config", test_env.config_path.to_str().unwrap(),
+                "--import-logseq", "logseq_databases/dummy_graph/"])
             .output()
             .expect("Failed to run cymbiont import");
         

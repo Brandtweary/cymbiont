@@ -176,12 +176,6 @@ pub fn write_pid_file() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Read PID from file
-pub fn read_pid_file() -> Result<u32, Box<dyn Error>> {
-    let pid_str = fs::read_to_string(".cymbiont.pid")?;
-    let pid = pid_str.trim().parse::<u32>()?;
-    Ok(pid)
-}
 
 /// Remove PID file
 pub fn remove_pid_file() {

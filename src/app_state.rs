@@ -157,7 +157,6 @@ impl AppState {
         let mut coordinators = self.transaction_coordinators.write().await;
         coordinators.insert(graph_id.to_string(), transaction_coordinator);
         
-        info!("Created new GraphManager and TransactionCoordinator for graph: {}", graph_id);
         Ok(())
     }
     
@@ -175,6 +174,27 @@ impl AppState {
     
     /// Save all graphs and registry on shutdown
     pub async fn cleanup_and_save(&self) {
+        // Close all WebSocket connections first
+        if let Some(ref connections) = self.ws_connections {
+            let mut conn_map = connections.write().await;
+            let connection_count = conn_map.len();
+            
+            if connection_count > 0 {
+                info!("🔌 Shutting down {} WebSocket connection(s)...", connection_count);
+                
+                // Send shutdown signal to all connections
+                for (_, conn) in conn_map.iter() {
+                    let _ = conn.shutdown_tx.send(true);
+                }
+                
+                // Clear the connections
+                conn_map.clear();
+                drop(conn_map);
+                
+                // Give tasks a moment to shut down gracefully
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            }
+        }
         
         // Save all loaded graphs
         let managers = self.graph_managers.read().await;
@@ -188,6 +208,15 @@ impl AppState {
             }
         }
         drop(managers);
+        
+        // Flush and close transaction logs
+        let coordinators = self.transaction_coordinators.read().await;
+        for (graph_id, coordinator) in coordinators.iter() {
+            if let Err(e) = coordinator.close().await {
+                error!("Failed to close transaction log for graph {}: {}", graph_id, e);
+            }
+        }
+        drop(coordinators);
         
         // Save graph registry
         if let Ok(registry_guard) = self.graph_registry.lock() {

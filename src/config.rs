@@ -73,7 +73,7 @@
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::fs;
-use tracing::{debug, error};
+use tracing::error;
 
 // Configuration structure
 #[derive(Debug, Deserialize, Clone)]
@@ -144,7 +144,6 @@ pub fn load_config(config_path: Option<String>) -> Config {
             Ok(contents) => {
                 match serde_yaml::from_str(&contents) {
                     Ok(config) => {
-                        debug!("📄 Loaded configuration from {:?}", config_file);
                         return config;
                     },
                     Err(e) => {
@@ -203,7 +202,6 @@ pub fn load_config(config_path: Option<String>) -> Config {
             Ok(contents) => {
                 match serde_yaml::from_str(&contents) {
                     Ok(config) => {
-                        debug!("📄 Loaded configuration from {:?}", config_file);
                         return config;
                     },
                     Err(e) => {
@@ -218,7 +216,6 @@ pub fn load_config(config_path: Option<String>) -> Config {
     }
     
     // If we get here, use default configuration
-    debug!("📄 Using default configuration");
     Config::default()
 }
 

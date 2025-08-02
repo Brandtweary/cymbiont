@@ -23,7 +23,7 @@ use crate::storage::transaction_log::{Operation, Transaction, TransactionLog, Tr
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use std::collections::HashMap;
-use tracing::{error, info, warn};
+use tracing::warn;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -53,6 +53,11 @@ impl TransactionCoordinator {
         }
     }
     
+    /// Close the underlying transaction log
+    pub async fn close(&self) -> Result<()> {
+        self.log.close().await.map_err(|e| e.into())
+    }
+    
     pub async fn begin_transaction(&self, operation: Operation) -> Result<String> {
         let transaction = Transaction::new(operation);
         let tx_id = transaction.id.clone();
@@ -64,7 +69,6 @@ impl TransactionCoordinator {
         }
         
         self.log.append_transaction(transaction)?;
-        info!("Started transaction: {}", tx_id);
         Ok(tx_id)
     }
     
@@ -78,7 +82,6 @@ impl TransactionCoordinator {
         }
         
         self.log.update_transaction_state(tx_id, TransactionState::Committed)?;
-        info!("Committed transaction: {}", tx_id);
         Ok(())
     }
     
@@ -155,7 +158,6 @@ impl TransactionCoordinator {
             match transaction.state {
                 TransactionState::Active => {
                     // These can be retried
-                    info!("Recovered active transaction: {}", transaction.id);
                     recovered.push(transaction.id);
                 }
                 _ => {
@@ -165,7 +167,6 @@ impl TransactionCoordinator {
             }
         }
         
-        info!("Recovered {} pending transactions", recovered.len());
         Ok(recovered)
     }
 }

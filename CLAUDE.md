@@ -3,10 +3,11 @@
 ## Build/Test Commands
 ```bash
 # In cymbiont root
-cargo check                      # Quick syntax check - don't filter with grep ever
+cargo check                      # Quick syntax check - don't filter with grep/tail/head ever; cargo commands are always information-dense
 cargo build                      # Build cymbiont server
 cargo test                       # Run tests (quiet by default)
 RUST_LOG=debug cargo run         # Run backend server with debug logging (do not alter default 3s duration or set a timeout)
+env RUST_LOG=debug cargo test -- --nocapture 2>&1 | tee test_output.log  # Capture console output to file; do not filter before piping the full output
 ```
 
 ## CLI Flags
@@ -16,13 +17,13 @@ RUST_LOG=debug cargo run         # Run backend server with debug logging (do not
 - `--data-dir <PATH>`: Override data directory path (defaults to config value)
 - `--config <PATH>`: Use specific configuration file
 - `--import-logseq <PATH>`: Import Logseq graph directory (then continues running)
-- `--shutdown`: Shutdown running Cymbiont instance gracefully
 
 ### Core Directories
 - **src/**: Cymbiont server - graph management, API endpoints
 - **logseq_databases/**: Test graphs
   - **dummy_graph/**: Test data for development
 - **data/**: Knowledge graph persistence (configurable via data_dir in config.yaml)
+  - **IMPORTANT**: The data/ directory is git-tracked (has .gitkeep) - never rm -rf it
   - **graph_registry.json**: Graph UUID mappings and metadata
   - **graphs/{graph-id}/**: Per-graph isolated storage with knowledge_graph.json and transaction logs
   - **transaction_log/**: Global transaction log (sled database)
@@ -49,25 +50,21 @@ RUST_LOG=debug cargo run         # Run backend server with debug logging (do not
     - **http_api.rs**: HTTP endpoints for health, import, WebSocket upgrade
     - **websocket.rs**: WebSocket server for real-time communication
     - **kg_api.rs**: Public API for knowledge graph operations (currently unused)
-    - **server.rs**: Server utility functions
-- **tests/**: Integration tests
-  - **common/**: Shared test utilities
-    - **mod.rs**: Test environment setup
-    - **test_harness.rs**: Integration test server management
+    - **server.rs**: HTTP/WebSocket server setup and configuration
+- **tests/**: Test binaries (e.g. integration tests) - see `tests/CLAUDE.md` for test harness details
 - **.gitignore**: Git ignore patterns
 - **.gitmodules**: Git submodule configuration
 - **Cargo.toml**: Dependencies and metadata
 - **config.example.yaml**: Example configuration template
 - **config.yaml**: Runtime configuration (overrides defaults, not tracked)
-- **cymbiont_architecture.md**: Comprehensive codebase architecture
+- **cymbiont_architecture.md**: Comprehensive codebase architecture document - keep this up-to-date as best you can
 - **README.md**: User documentation and setup guide
 
 ## Codebase Guidelines
-- Cymbiont is an application, not a library - do not create lib.rs
 - Logging: use `tracing` macros - `error!()`, `warn!()`, `info!()`, `debug!()`, `trace!()`
 - Error handling: use `thiserror` for custom error types; define module-specific `Error` enums and `type Result<T>` aliases
+- Whenever you update `config.example.yaml` ensure that you also update `config.yaml`, and vice versa
 - Don't make live LLM calls during tests
-- **ALWAYS check for existing config.yaml first** - it overrides code defaults
 
 ### Log Level Guidelines
 - **INFO**: Use sparingly, only for messages you would want to see on every single run
@@ -75,12 +72,3 @@ RUST_LOG=debug cargo run         # Run backend server with debug logging (do not
 - **WARN**: Use for problematic behavior that can be fully recovered from, e.g. an invalid parameter which gracefully falls back to a default value
 - **ERROR**: Use for any true software bugs - when in doubt whether something should be warn vs error, choose error
 - **TRACE**: Low-level implementation details worth preserving (e.g. "Entering function X", "Cache hit for key Y", "Parsed N bytes")
-
-## Continuous Documentation
-
-- Keep the architecture document (`cymbiont_architecture.md`) up to date
-- When updating documentation, read it entirely first to avoid redundancy
-
-## Test Harness
-
-Tests use isolated environments via `setup_test_env()` which creates unique data directories (test_data_0/), config files, and ports - never hardcode paths or assume shared state.

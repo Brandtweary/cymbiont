@@ -60,6 +60,7 @@ use tracing::{Level};
 use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::{FmtContext, FormatEvent, FormatFields};
 use tracing_subscriber::registry::LookupSpan;
+use tracing_subscriber::EnvFilter;
 
 /// Custom formatter that conditionally shows file:line only for ERROR and WARN levels
 pub struct ConditionalLocationFormatter;
@@ -118,17 +119,30 @@ where
     }
 }
 
-/// Initialize the tracing subscriber with custom formatting
-pub fn init_logging() {
-    // Build the env filter, suppressing sled's debug output
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
+/// Create a base env filter with sled/pagecache suppression
+pub fn create_base_env_filter(default_level: &str) -> EnvFilter {
+    EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(default_level))
         // Suppress sled's verbose debug output
         .add_directive("sled=warn".parse().unwrap())
-        .add_directive("pagecache=warn".parse().unwrap());
-    
+        .add_directive("pagecache=warn".parse().unwrap())
+}
+
+/// Create a configured subscriber builder with our custom formatter
+/// This returns a builder that can be further customized before init()
+pub fn create_subscriber_builder(env_filter: EnvFilter) -> tracing_subscriber::fmt::SubscriberBuilder<
+    tracing_subscriber::fmt::format::DefaultFields,
+    ConditionalLocationFormatter,
+    tracing_subscriber::EnvFilter,
+> {
     tracing_subscriber::fmt()
         .with_env_filter(env_filter)
         .event_format(ConditionalLocationFormatter)
-        .init();
+}
+
+/// Initialize the tracing subscriber with custom formatting
+#[allow(dead_code)] // TODO: Remove once we determine if this is needed vs create_subscriber_builder
+pub fn init_logging() {
+    let env_filter = create_base_env_filter("info");
+    create_subscriber_builder(env_filter).init();
 }

@@ -107,8 +107,8 @@ cargo run -- --config custom.yaml
 # Run for development/testing (auto-exit after 60s)
 cargo run -- --duration 60
 
-# Stop a running instance
-cargo run -- --shutdown
+# Stop a running instance (use Ctrl+C)
+# The process will gracefully save all data before exiting
 ```
 
 ### Configuration
@@ -168,8 +168,8 @@ cargo run -- --server
 # Instance 2 (custom config)  
 cargo run -- --server --config instance2.yaml
 
-# Shutdown specific instance
-cargo run -- --shutdown --config instance2.yaml
+# Use Ctrl+C to gracefully stop any instance
+# Each instance saves data independently on shutdown
 ```
 
 ### All CLI Options
@@ -181,8 +181,7 @@ cargo run -- --config custom.yaml          # Use specific configuration file
 cargo run -- --import-logseq ~/Documents/notes  # Import Logseq graph
 cargo run -- --server                      # Start HTTP/WebSocket server
 cargo run -- --server --duration 60        # Run server for 60 seconds
-cargo run -- --shutdown                    # Gracefully stop running instance
-cargo run -- --shutdown --config custom.yaml  # Target specific instance
+# Use Ctrl+C to gracefully stop any server instance
 ```
 
 

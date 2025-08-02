@@ -33,19 +33,28 @@ cymbiont/
 │   │   ├── knowledge_graph.json   # Serialized petgraph
 │   │   └── transaction_log/       # WAL database
 │   └── transaction_log/           # Global transaction log
-└── tests/                         # Integration tests with isolation
+└── tests/                         # Integration tests - see tests/CLAUDE.md
     ├── common/                    # Shared test utilities
     │   ├── mod.rs                 # Test environment setup
-    │   └── test_harness.rs        # Integration test server management
-    └── test_*.rs                  # Integration test suites
+    │   └── test_harness.rs        # TestServer lifecycle management
+    └── integration/               # Integration test suite (single binary)
+        ├── main.rs                # Test entry point
+        ├── http_logseq_import.rs  # HTTP API tests
+        ├── logseq_import.rs       # CLI import tests
+        └── websocket_commands.rs  # WebSocket tests
 ```
 
 ## Module Requirements and Data Flow
 
 ### main.rs
-**Purpose**: CLI entry point with optional server functionality  
-**Key functionality**: Parse args, branch on --server flag, display graph info
-**Server mode**: Delegates to server::run_server_with_duration()
+**Purpose**: CLI entry point with lifecycle management  
+**Key functionality**: 
+- Parse command line arguments
+- Create AppState (both CLI and server modes)
+- Handle shutdown signals (SIGINT/Ctrl+C)
+- Execute cleanup_and_save() on exit
+**CLI mode** (default): Local operations, imports, graph management
+**Server mode** (--server flag): HTTP/WebSocket server via server::run_server_with_duration()
 
 ### config.rs
 **Purpose**: YAML configuration loading with CLI overrides  
@@ -85,8 +94,8 @@ cymbiont/
 **Operations**: `add_block()`, `update_block()`, `delete_block()`, `create_page()`
 
 ### server/server.rs
-**Purpose**: Server utility functions for clean main.rs separation  
-**Functions**: `run_server_with_duration()`, graceful shutdown handling
+**Purpose**: Server-specific setup and HTTP/WebSocket configuration  
+**Functions**: `run_server_with_duration()` - creates and runs the axum server
 
 ### storage/transaction_log.rs
 **Purpose**: Write-ahead logging with sled database  
@@ -121,9 +130,9 @@ cymbiont/
 **Key features**: Resolves `((block-id))` references, prevents circular references
 
 ### tests/common/test_harness.rs
-**Purpose**: Integration test infrastructure with server lifecycle management  
-**Components**: `TestServer` struct, phase-based testing with `PreShutdown`/`PostShutdown` markers
-**Key features**: Graceful server startup/shutdown, isolated test environments, real WebSocket testing
+**Purpose**: Integration test infrastructure with process lifecycle management  
+**Key types**: `TestServer` - manages both server and CLI mode processes
+**Key features**: Parallel test execution, isolated environments (unique ports/data dirs), phase-based testing
 
 
 ## Data Structures
@@ -204,13 +213,13 @@ cymbiont [OPTIONS]
   --config <PATH>               # Use specific configuration file
   --import-logseq <PATH>        # Import Logseq graph directory
   --duration <SECONDS>          # Run for specific duration
-  --shutdown                    # Graceful shutdown of running instance
 ```
 
 ## Graceful Shutdown
 
-The server handles SIGINT (Ctrl+C) for graceful shutdown, running `cleanup_and_save()` to persist all graphs.
-The `--shutdown` command also sends SIGINT to ensure graceful shutdown.
+`main.rs` handles SIGINT (Ctrl+C) for graceful shutdown in both CLI and server modes, running `cleanup_and_save()` to close WebSocket connections, persist all graphs, and flush transaction logs. 
+
+After graceful cleanup, the process uses `std::process::exit(0)` to terminate immediately due to sled database background I/O threads that cannot be cleanly shutdown (known upstream issue). This ensures reliable process termination without affecting data integrity.
 
 ## Key Flows
 

@@ -55,6 +55,7 @@ pub struct WsConnection {
     pub id: String,
     pub sender: tokio::sync::mpsc::UnboundedSender<Message>,
     pub authenticated: bool,
+    pub shutdown_tx: tokio::sync::watch::Sender<bool>,
 }
 
 /// Command protocol definitions
@@ -136,11 +137,15 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
 
     let (mut sender, mut receiver) = socket.split();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    
+    // Create shutdown signal
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     let ws_connection = WsConnection {
         id: connection_id.clone(),
         sender: tx.clone(),
         authenticated: false,
+        shutdown_tx: shutdown_tx.clone(),
     };
 
     // Add connection to state
@@ -159,14 +164,25 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
 
     // Spawn heartbeat task
     let heartbeat_tx = tx.clone();
+    let mut heartbeat_shutdown_rx = shutdown_rx.clone();
+    let heartbeat_conn_id = connection_id.clone();
     let heartbeat_task = tokio::spawn(async move {
         let mut interval = interval(Duration::from_secs(30));
         loop {
-            interval.tick().await;
-            let heartbeat = Response::Heartbeat;
-            if let Ok(msg) = serde_json::to_string(&heartbeat) {
-                if heartbeat_tx.send(Message::Text(msg)).is_err() {
-                    break;
+            tokio::select! {
+                _ = interval.tick() => {
+                    let heartbeat = Response::Heartbeat;
+                    if let Ok(msg) = serde_json::to_string(&heartbeat) {
+                        if heartbeat_tx.send(Message::Text(msg)).is_err() {
+                            break;
+                        }
+                    }
+                }
+                _ = heartbeat_shutdown_rx.changed() => {
+                    if *heartbeat_shutdown_rx.borrow() {
+                        debug!("Heartbeat task shutting down for connection: {}", heartbeat_conn_id);
+                        break;
+                    }
                 }
             }
         }
@@ -181,11 +197,21 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
 
     // Cleanup on disconnect
     info!("🔌 WebSocket disconnected: {}", connection_id);
+    
+    // Send shutdown signal
+    let _ = shutdown_tx.send(true);
+    
+    // Remove from connections map
     if let Some(ref connections) = state.ws_connections {
         connections.write().await.remove(&connection_id);
     }
+    
+    // Cancel tasks explicitly to prevent them from becoming zombie threads
     send_task.abort();
     heartbeat_task.abort();
+    
+    // Wait a moment for clean cancellation
+    tokio::time::sleep(Duration::from_millis(10)).await;
 }
 
 /// Handle individual WebSocket message
@@ -196,14 +222,11 @@ async fn handle_message(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match msg {
         Message::Text(text) => {
-            debug!("WebSocket received text: '{}'", text);
             match serde_json::from_str::<Command>(&text) {
                 Ok(command) => {
-                    debug!("WebSocket parsed command: {:?}", command);
                     handle_command(command, connection_id, state).await?;
                 }
                 Err(e) => {
-                    debug!("WebSocket parse error: {:?}", e);
                     return Err(Box::new(e));
                 }
             }

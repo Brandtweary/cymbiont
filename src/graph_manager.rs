@@ -9,10 +9,9 @@
  * 
  * ## Architecture Overview
  * 
- * The GraphManager maintains three critical data structures:
+ * The GraphManager maintains two critical data structures:
  * 1. `graph: StableGraph<NodeData, EdgeData>` - The actual graph structure
  * 2. `pkm_to_node: HashMap<String, NodeIndex>` - O(1) PKM ID → graph node lookup
- * 3. `last_full_sync: Option<i64>` - Unix timestamp for sync scheduling
  * 
  * ## Key Design Decisions
  * 
@@ -120,24 +119,24 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use petgraph::stable_graph::{StableGraph, NodeIndex};
 pub use petgraph::stable_graph::NodeIndex as GraphNodeIndex;
 use petgraph::visit::EdgeRef;
 use thiserror::Error;
-use tracing::{info, warn, error, debug, trace};
+use tracing::{info, warn, error};
 
 use crate::import::pkm_data::{PKMBlockData, PKMPageData, PKMReference};
 use crate::utils::{parse_datetime, parse_properties};
+use crate::storage::graph_persistence;
 
 /// Type alias for our knowledge graph
-type KnowledgeGraph = StableGraph<NodeData, EdgeData>;
+pub type KnowledgeGraph = StableGraph<NodeData, EdgeData>;
 
 /// Type alias for our node index mapping
-type NodeMap = HashMap<String, NodeIndex>;
+pub type NodeMap = HashMap<String, NodeIndex>;
 
 /// Errors that can occur when working with the graph manager
 #[derive(Error, Debug)]
@@ -250,11 +249,6 @@ pub struct GraphManager {
     /// Mapping from PKM IDs to graph node indices
     pub pkm_to_node: NodeMap,
     
-    /// When the last incremental sync was performed (Unix timestamp in milliseconds)
-    last_incremental_sync: Option<i64>,
-    
-    /// When the last full database sync was performed (Unix timestamp in milliseconds)
-    last_full_sync: Option<i64>,
     
     /// When the graph was last saved (for time-based saves)
     last_save_time: DateTime<Utc>,
@@ -271,12 +265,8 @@ impl GraphManager {
     pub fn new<P: AsRef<Path>>(data_dir: P) -> GraphResult<Self> {
         let data_dir = data_dir.as_ref().to_path_buf();
         
-        // Create the data directory if it doesn't exist
-        fs::create_dir_all(&data_dir)?;
-        
-        // Create the archived_nodes subdirectory
-        let archive_dir = data_dir.join("archived_nodes");
-        fs::create_dir_all(&archive_dir)?;
+        // Ensure directories exist
+        graph_persistence::ensure_directories(&data_dir)?;
         
         // Extract graph ID from data directory path
         let graph_id = data_dir.parent()
@@ -288,124 +278,42 @@ impl GraphManager {
             .map(|s| s.to_string());
         
         let mut manager = Self {
-            data_dir,
+            data_dir: data_dir.clone(),
             graph_id,
             graph: StableGraph::new(),
             pkm_to_node: HashMap::new(),
-            last_incremental_sync: None,
-            last_full_sync: None,
             last_save_time: Utc::now(),
             operations_since_save: 0,
             auto_save_enabled: true,
         };
         
-        
         // Try to load existing graph
-        let loaded_existing = match manager.load_graph() {
-            Ok(_) => {
-                // Graph stats are logged separately
-                true
-            },
-            Err(e) => {
-                error!("Error loading graph: {e:?}, starting with empty graph");
-                false
+        match graph_persistence::load_graph(&data_dir) {
+            Ok(data) => {
+                manager.graph = data.graph;
+                manager.pkm_to_node = data.pkm_to_node;
             }
-        };
-        
-        // Save initial state for new graphs
-        if !loaded_existing {
-            info!("🌐 Initializing new knowledge graph");
-            if let Err(e) = manager.save_graph() {
-                warn!("Failed to save initial graph state: {}", e);
+            Err(e) => {
+                error!("Error loading graph: {:?}, starting with empty graph", e);
+                // Save initial state for new graphs
+                info!("🌐 Initializing new knowledge graph");
+                if let Err(e) = manager.save_graph() {
+                    warn!("Failed to save initial graph state: {}", e);
+                }
             }
         }
         
         Ok(manager)
     }
     
-    /// Load the graph from disk
-    pub fn load_graph(&mut self) -> GraphResult<()> {
-        let graph_path = self.data_dir.join("knowledge_graph.json");
-        
-        if !graph_path.exists() {
-            return Ok(());
-        }
-        
-        let mut file = File::open(graph_path)?;
-        let mut contents = String::new();
-        file.read_to_string(&mut contents)?;
-        
-        #[derive(Deserialize)]
-        struct SerializedGraph {
-            graph: KnowledgeGraph,
-            pkm_to_node: NodeMap,
-            last_incremental_sync: Option<i64>,
-            last_full_sync: Option<i64>,
-            #[serde(default)]
-            version: u32,
-        }
-        
-        let serialized: SerializedGraph = serde_json::from_str(&contents)?;
-        
-        // Transaction-aware: Check version for compatibility
-        if serialized.version > 1 {
-            warn!("Graph file version {} is newer than supported version 1", serialized.version);
-        }
-        
-        self.graph = serialized.graph;
-        self.pkm_to_node = serialized.pkm_to_node;
-        self.last_incremental_sync = serialized.last_incremental_sync;
-        self.last_full_sync = serialized.last_full_sync;
-        
-        // Restore graph_id if it wasn't already set
-        if self.graph_id.is_none() {
-            self.graph_id = self.data_dir.parent()
-                .and_then(|p| p.file_name())
-                .and_then(|n| n.to_str())
-                .filter(|s| *s == "graphs")
-                .and_then(|_| self.data_dir.file_name())
-                .and_then(|n| n.to_str())
-                .map(|s| s.to_string());
-        }
-        
-        // Transaction-aware: Pending transactions are recovered separately
-        // by the TransactionCoordinator during startup in main.rs
-        
-        info!("📊 Loaded graph with {} nodes and {} edges", 
-              self.graph.node_count(), self.graph.edge_count());
-        
-        Ok(())
-    }
     
     /// Save the graph to disk
     pub fn save_graph(&mut self) -> GraphResult<()> {
-        let graph_path = self.data_dir.join("knowledge_graph.json");
-        
-        #[derive(Serialize)]
-        struct SerializedGraph<'a> {
-            graph: &'a KnowledgeGraph,
-            pkm_to_node: &'a NodeMap,
-            last_incremental_sync: Option<i64>,
-            last_full_sync: Option<i64>,
-            // Transaction-aware: version number for schema changes
-            version: u32,
-        }
-        
-        let serialized = SerializedGraph {
-            graph: &self.graph,
-            pkm_to_node: &self.pkm_to_node,
-            last_incremental_sync: self.last_incremental_sync,
-            last_full_sync: self.last_full_sync,
-            version: 1, // Increment when schema changes
-        };
-        
-        let json = serde_json::to_string_pretty(&serialized)?;
-        let mut file = File::create(&graph_path)?;
-        file.write_all(json.as_bytes())?;
-        
-        // Transaction-aware: The transaction log saves its own state
-        // alongside the graph. Pending transactions are persisted in sled
-        // and will be recovered on startup
+        graph_persistence::save_graph(
+            &self.data_dir,
+            &self.graph,
+            &self.pkm_to_node,
+        )?;
         
         // Reset save tracking
         self.last_save_time = Utc::now();
@@ -414,35 +322,12 @@ impl GraphManager {
         Ok(())
     }
     
-    /// Check if we should save based on time or operation count
-    fn should_save(&self) -> bool {
-        const SAVE_INTERVAL_MINUTES: i64 = 5;
-        const SAVE_OPERATION_THRESHOLD: usize = 10;
-        
-        // Check time-based save (every 5 minutes)
-        let minutes_since_save = (Utc::now() - self.last_save_time).num_minutes();
-        if minutes_since_save >= SAVE_INTERVAL_MINUTES {
-            debug!("⏱️ Time-based save triggered: {} minutes since last save", minutes_since_save);
-            return true;
-        }
-        
-        // Check operation-based save (every 10 operations)
-        if self.operations_since_save >= SAVE_OPERATION_THRESHOLD {
-            debug!("⏱️ Operation-based save triggered: {} operations since last save", self.operations_since_save);
-            return true;
-        }
-        
-        false
-    }
     
     /// Save if needed based on time or operation count
     fn save_if_needed(&mut self) {
-        if self.auto_save_enabled && self.should_save() {
+        if self.auto_save_enabled && graph_persistence::should_save(self.last_save_time, self.operations_since_save) {
             if let Err(e) = self.save_graph() {
                 error!("Error during automatic save: {}", e);
-            } else {
-                self.operations_since_save = 0;
-                self.last_save_time = Utc::now();
             }
         }
     }
@@ -467,34 +352,6 @@ impl GraphManager {
     
     
     
-    /// Build archive JSON for a single node
-    fn build_node_archive_json(&self, pkm_id: &str, node_idx: NodeIndex, node: &NodeData) -> serde_json::Value {
-        let edges_out: Vec<_> = self.graph.edges(node_idx)
-            .map(|edge| {
-                serde_json::json!({
-                    "target": edge.target().index(),
-                    "edge_type": edge.weight()
-                })
-            })
-            .collect();
-            
-        let edges_in: Vec<_> = self.graph.edges_directed(node_idx, petgraph::Direction::Incoming)
-            .map(|edge| {
-                serde_json::json!({
-                    "source": edge.source().index(),
-                    "edge_type": edge.weight()
-                })
-            })
-            .collect();
-        
-        serde_json::json!({
-            "pkm_id": pkm_id,
-            "node_index": node_idx.index(),
-            "node_data": node,
-            "edges_out": edges_out,
-            "edges_in": edges_in
-        })
-    }
     
     /// Archive nodes by their indices
     pub fn archive_nodes(&mut self, nodes: Vec<(String, NodeIndex)>) -> GraphResult<String> {
@@ -502,41 +359,35 @@ impl GraphManager {
             return Ok("No nodes to archive".to_string());
         }
         
-        // Build archive data
-        let mut archived_pages = 0;
-        let mut archived_blocks = 0;
-        let mut archive_nodes = Vec::new();
+        // Collect node data with edges for archiving
+        let archive_data: Vec<_> = nodes.iter()
+            .filter_map(|(pkm_id, node_idx)| {
+                self.graph.node_weight(*node_idx).map(|node| {
+                    let edges_out: Vec<_> = self.graph.edges(*node_idx)
+                        .map(|edge| serde_json::json!({
+                            "target": edge.target().index(),
+                            "edge_type": edge.weight()
+                        }))
+                        .collect();
+                    
+                    let edges_in: Vec<_> = self.graph.edges_directed(*node_idx, petgraph::Direction::Incoming)
+                        .map(|edge| serde_json::json!({
+                            "source": edge.source().index(),
+                            "edge_type": edge.weight()
+                        }))
+                        .collect();
+                    
+                    (pkm_id.clone(), node.clone(), edges_out, edges_in)
+                })
+            })
+            .collect();
         
-        for (pkm_id, node_idx) in &nodes {
-            if let Some(node) = self.graph.node_weight(*node_idx) {
-                let node_json = self.build_node_archive_json(pkm_id, *node_idx, node);
-                archive_nodes.push(node_json);
-                
-                match node.node_type {
-                    NodeType::Page => archived_pages += 1,
-                    NodeType::Block => archived_blocks += 1,
-                }
-            }
-        }
-        
-        let mut archive_data = serde_json::json!({
-            "timestamp": Utc::now().to_rfc3339(),
-            "archived_pages": archived_pages,
-            "archived_blocks": archived_blocks,
-            "nodes": archive_nodes
-        });
-        
-        // Add graph metadata if available
-        if let Some(graph_id) = &self.graph_id {
-            archive_data["graph_id"] = serde_json::json!(graph_id);
-        }
-        
-        // Save archive file
-        let archive_filename = format!("archive_{}.json", Utc::now().format("%Y%m%d_%H%M%S"));
-        let archive_path = self.data_dir.join("archived_nodes").join(&archive_filename);
-        
-        trace!("📁 Creating archive file: {}", archive_path.display());
-        std::fs::write(&archive_path, serde_json::to_string_pretty(&archive_data)?)?;
+        // Archive through persistence utilities
+        let result = graph_persistence::archive_nodes(
+            &self.data_dir,
+            self.graph_id.as_deref(),
+            &archive_data,
+        )?;
         
         // Remove nodes from graph
         for (pkm_id, node_idx) in &nodes {
@@ -547,8 +398,7 @@ impl GraphManager {
         // Save updated graph
         self.save_graph()?;
         
-        Ok(format!("Archived {} pages and {} blocks to {}", 
-            archived_pages, archived_blocks, archive_filename))
+        Ok(result)
     }
     
     /// Create or update a node from PKM block data

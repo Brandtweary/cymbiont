@@ -66,6 +66,7 @@
 pub mod graph_registry;
 pub mod transaction_log;
 pub mod transaction;
+pub mod graph_persistence;
 
 // Re-export commonly used types
 pub use graph_registry::GraphRegistry;

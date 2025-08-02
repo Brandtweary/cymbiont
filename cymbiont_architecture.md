@@ -10,6 +10,7 @@ cymbiont/
 │   ├── logging.rs                 # Custom tracing formatter
 │   ├── utils.rs                   # Process management and utilities
 │   ├── graph_manager.rs           # Petgraph-based knowledge graph engine
+│   ├── graph_operations.rs        # Public interface for graph operations
 │   ├── import/                    # Data import functionality
 │   │   ├── mod.rs                 # Import module exports and errors
 │   │   ├── pkm_data.rs            # PKM data structures
@@ -20,7 +21,6 @@ cymbiont/
 │   │   ├── mod.rs                 # Server module exports
 │   │   ├── http_api.rs            # HTTP endpoints (health, import, WebSocket upgrade)
 │   │   ├── websocket.rs           # Real-time WebSocket communication
-│   │   ├── kg_api.rs              # High-level graph operations API (unused)
 │   │   └── server.rs              # Server utilities and lifecycle
 │   └── storage/                   # Persistence layer
 │       ├── mod.rs                 # Storage module exports
@@ -80,6 +80,10 @@ cymbiont/
 **Node types**: `Page { name, properties }`, `Block { uuid, content, reference_content, properties }`
 **Edge types**: `PageRef`, `BlockRef`, `Tag`, `Property`, `ParentChild`, `PageToBlock`
 
+### graph_operations.rs
+**Purpose**: Standardized public interface for knowledge graph operations
+**Operations**: `add_block()`, `update_block()`, `delete_block()`, `create_page()`, `delete_page()`, `create_graph()`, `delete_graph()`, `switch_graph()`, `list_graphs()`, `get_node()`
+
 ### storage/mod.rs
 **Purpose**: Persistence layer module with registry, transactions, and WAL logging  
 **Components**: GraphRegistry, TransactionLog, TransactionCoordinator
@@ -88,10 +92,6 @@ cymbiont/
 ### storage/graph_registry.rs
 **Purpose**: Multi-graph UUID tracking and management  
 **Key operations**: `register_graph()`, `switch_graph()`, `remove_graph()`, registry persistence
-
-### server/kg_api.rs  
-**Purpose**: High-level graph operations API (currently unused - marked as dead code)
-**Operations**: `add_block()`, `update_block()`, `delete_block()`, `create_page()`
 
 ### server/server.rs
 **Purpose**: Server-specific setup and HTTP/WebSocket configuration  
@@ -110,7 +110,7 @@ cymbiont/
 ### server/websocket.rs
 **Purpose**: Real-time WebSocket communication  
 **Protocol**: Request/response with auth, heartbeat, direct command execution
-**Commands**: `CreateBlock`, `UpdateBlock`, `DeleteBlock`, `CreatePage`, `SwitchGraph`, `CreateGraph`, `DeleteGraph`
+**Commands**: `CreateBlock`, `UpdateBlock`, `DeleteBlock`, `CreatePage`, `DeletePage`, `SwitchGraph`, `CreateGraph`, `DeleteGraph`
 **Responses**: `Success`, `Error`, `Heartbeat`
 
 ### import/logseq.rs
@@ -166,7 +166,7 @@ cymbiont/
 ```
 
 ### WebSocket Message Types
-- **Client→Server**: `Auth`, `Heartbeat`, `CreateBlock`, `UpdateBlock`, `DeleteBlock`, `CreatePage`, `SwitchGraph`, `CreateGraph`, `DeleteGraph`
+- **Client→Server**: `Auth`, `Heartbeat`, `CreateBlock`, `UpdateBlock`, `DeleteBlock`, `CreatePage`, `DeletePage`, `SwitchGraph`, `CreateGraph`, `DeleteGraph`
 - **Server→Client**: `Success`, `Error`, `Heartbeat`
 
 ## Persistence Layout

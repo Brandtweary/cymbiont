@@ -38,6 +38,5 @@ cargo test                          # Run all tests
 cargo test --test integration       # Run only integration tests
 cargo test --test integration test_http_logseq_import  # Run specific test
 RUST_LOG=debug cargo test -- --nocapture  # Debug with full output  
-RUST_LOG=cymbiont=trace cargo test -- --nocapture  # Trace entire crate
 RUST_LOG=cymbiont::storage=trace cargo test -- --nocapture  # Trace specific module
 ```

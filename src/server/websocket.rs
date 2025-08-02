@@ -17,7 +17,7 @@
  * ## Command Protocol
  * 
  * JSON-based request/response system:
- * - **Client→Server**: `Auth`, `Heartbeat`, `CreateBlock`, `UpdateBlock`, `DeleteBlock`, `CreatePage`, etc.
+ * - **Client→Server**: `Auth`, `Heartbeat`, `CreateBlock`, `UpdateBlock`, `DeleteBlock`, `CreatePage`, `DeletePage`, etc.
  * - **Server→Client**: `Success`, `Error`, `Heartbeat`
  * - Commands execute immediately with transaction wrapping
  * - Correlation IDs for tracking operations
@@ -104,6 +104,9 @@ pub enum Command {
     },
     DeleteGraph {
         graph_id: String,
+    },
+    DeletePage {
+        page_name: String,
     },
 }
 
@@ -297,10 +300,10 @@ async fn handle_command(
             // Call kg_api to create the block
             info!("📝 CreateBlock command received via WebSocket");
             
-            use crate::server::kg_api::KgApi;
-            let kg_api = KgApi::new(state.clone());
+            use crate::graph_operations::GraphOperations;
+            let graph_ops = GraphOperations::new(state.clone());
             
-            match kg_api.add_block(content, parent_id, page_name, None).await {
+            match graph_ops.add_block(content, parent_id, page_name, None).await {
                 Ok(block_id) => {
                     let data = serde_json::json!({ "block_id": block_id });
                     send_success_response(connection_id, state, Some(data)).await?;
@@ -314,10 +317,10 @@ async fn handle_command(
             // Call kg_api to update the block
             info!("✏️ UpdateBlock command received via WebSocket: {}", block_id);
             
-            use crate::server::kg_api::KgApi;
-            let kg_api = KgApi::new(state.clone());
+            use crate::graph_operations::GraphOperations;
+            let graph_ops = GraphOperations::new(state.clone());
             
-            match kg_api.update_block(block_id.clone(), content).await {
+            match graph_ops.update_block(block_id.clone(), content).await {
                 Ok(()) => {
                     let data = serde_json::json!({ "block_id": block_id });
                     send_success_response(connection_id, state, Some(data)).await?;
@@ -331,10 +334,10 @@ async fn handle_command(
             // Call kg_api to delete the block
             info!("🗑️ DeleteBlock command received via WebSocket: {}", block_id);
             
-            use crate::server::kg_api::KgApi;
-            let kg_api = KgApi::new(state.clone());
+            use crate::graph_operations::GraphOperations;
+            let graph_ops = GraphOperations::new(state.clone());
             
-            match kg_api.delete_block(block_id.clone()).await {
+            match graph_ops.delete_block(block_id.clone()).await {
                 Ok(()) => {
                     let data = serde_json::json!({ "block_id": block_id });
                     send_success_response(connection_id, state, Some(data)).await?;
@@ -348,8 +351,8 @@ async fn handle_command(
             // Call kg_api to create the page
             info!("📄 CreatePage command received via WebSocket: {}", name);
             
-            use crate::server::kg_api::KgApi;
-            let kg_api = KgApi::new(state.clone());
+            use crate::graph_operations::GraphOperations;
+            let graph_ops = GraphOperations::new(state.clone());
             
             // Convert HashMap<String, String> to serde_json::Value
             let properties_json = properties.map(|props| {
@@ -360,7 +363,7 @@ async fn handle_command(
                 )
             });
             
-            match kg_api.create_page(name.clone(), properties_json).await {
+            match graph_ops.create_page(name.clone(), properties_json).await {
                 Ok(()) => {
                     let data = serde_json::json!({ "page_name": name });
                     send_success_response(connection_id, state, Some(data)).await?;
@@ -388,10 +391,10 @@ async fn handle_command(
             // Switch the active graph
             info!("🔄 SwitchGraph command received via WebSocket: {}", graph_id);
             
-            use crate::server::kg_api::KgApi;
-            let kg_api = KgApi::new(state.clone());
+            use crate::graph_operations::GraphOperations;
+            let graph_ops = GraphOperations::new(state.clone());
             
-            match kg_api.switch_graph(graph_id).await {
+            match graph_ops.switch_graph(graph_id).await {
                 Ok(graph_info) => {
                     send_success_response(connection_id, state, Some(graph_info)).await?;
                 }
@@ -404,10 +407,10 @@ async fn handle_command(
             // Create a new graph
             info!("📊 CreateGraph command received via WebSocket");
             
-            use crate::server::kg_api::KgApi;
-            let kg_api = KgApi::new(state.clone());
+            use crate::graph_operations::GraphOperations;
+            let graph_ops = GraphOperations::new(state.clone());
             
-            match kg_api.create_graph(name, description).await {
+            match graph_ops.create_graph(name, description).await {
                 Ok(graph_info) => {
                     send_success_response(connection_id, state, Some(graph_info)).await?;
                 }
@@ -420,16 +423,33 @@ async fn handle_command(
             // Delete a graph
             info!("🗑️ DeleteGraph command received via WebSocket: {}", graph_id);
             
-            use crate::server::kg_api::KgApi;
-            let kg_api = KgApi::new(state.clone());
+            use crate::graph_operations::GraphOperations;
+            let graph_ops = GraphOperations::new(state.clone());
             
-            match kg_api.delete_graph(graph_id.clone()).await {
+            match graph_ops.delete_graph(graph_id.clone()).await {
                 Ok(()) => {
                     let data = serde_json::json!({ "deleted_graph_id": graph_id });
                     send_success_response(connection_id, state, Some(data)).await?;
                 }
                 Err(e) => {
                     send_error_response(connection_id, state, &format!("Failed to delete graph: {}", e)).await?;
+                }
+            }
+        }
+        Command::DeletePage { page_name } => {
+            // Delete a page
+            info!("🗑️ DeletePage command received via WebSocket: {}", page_name);
+            
+            use crate::graph_operations::GraphOperations;
+            let graph_ops = GraphOperations::new(state.clone());
+            
+            match graph_ops.delete_page(page_name.clone()).await {
+                Ok(()) => {
+                    let data = serde_json::json!({ "page_name": page_name });
+                    send_success_response(connection_id, state, Some(data)).await?;
+                }
+                Err(e) => {
+                    send_error_response(connection_id, state, &format!("Failed to delete page: {}", e)).await?;
                 }
             }
         }

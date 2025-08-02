@@ -1,16 +1,60 @@
 #![allow(dead_code)] // TODO: Remove when integrated with aichat-agent
 
 /**
- * Knowledge Graph API Module
+ * Graph Operations Module
  * 
- * Provides the public API for knowledge graph operations with integrated transaction
- * logging and WebSocket synchronization. This module serves as the primary interface
- * for AI agents to interact with the knowledge graph while maintaining consistency.
+ * Provides a standardized public interface for all knowledge graph operations, abstracting
+ * away the internal complexity of graph_manager.rs. This module serves as the sole entry
+ * point for WebSocket handlers and AI agent tools to interact with the knowledge
+ * graph while maintaining transactional consistency.
  * 
- * Key features:
- * - Transaction-wrapped graph mutations
+ * ## Purpose
+ * 
+ * This module acts as a clean abstraction layer between external interfaces (WebSocket,
+ * AI agent tools) and the internal graph engine. It ensures all operations are properly
+ * wrapped in transactions and provides consistent error handling.
+ * 
+ * ## Core Operations
+ * 
+ * ### Block Operations
+ * - `add_block()` - Create new block with content, optional parent, and properties
+ * - `update_block()` - Modify existing block content and resolve references
+ * - `delete_block()` - Archive block node while preserving data
+ * 
+ * ### Page Operations  
+ * - `create_page()` - Create new page node with properties
+ * - `delete_page()` - Archive page node (handles normalized names)
+ * 
+ * ### Graph Management
+ * - `create_graph()` - Initialize new knowledge graph with registry entry
+ * - `delete_graph()` - Archive entire graph (prevents deleting active graph)
+ * - `switch_graph()` - Change active graph context
+ * - `list_graphs()` - Enumerate all registered graphs
+ * 
+ * ### Query Operations
+ * - `get_node()` - Retrieve node by ID
+ * - `get_active_graph()` - Get current graph ID
+ * - `query_graph_bfs()` - Breadth-first traversal (TODO)
+ * 
+ * ## Transaction Integration
+ * 
+ * All mutation operations are automatically wrapped in transactions via
+ * `AppState::with_active_graph_transaction()`. This ensures:
+ * - Atomic operations with rollback on failure
+ * - Write-ahead logging for crash recovery
  * - Content deduplication via hash checking
- * - WebSocket synchronization for real-time updates
+ * 
+ * ## Error Handling
+ * 
+ * Operations return `Result<T, KgApiError>` with two error variants:
+ * - `GraphError` - General graph operation failures
+ * - `NodeNotFound` - Specific node lookup failures
+ * 
+ * ## Design Notes
+ * 
+ * This module serves as a standardized interface layer rather than a traditional REST API.
+ * It provides a clean boundary between external consumers (WebSocket handlers, AI agents)
+ * and the internal graph engine implementation.
  */
 
 use crate::{
@@ -26,7 +70,7 @@ use thiserror::Error;
 use serde_json::json;
 
 #[derive(Error, Debug)]
-pub enum KgApiError {
+pub enum GraphOperationError {
     #[error("Graph error: {0}")]
     GraphError(String),
     
@@ -34,14 +78,14 @@ pub enum KgApiError {
     NodeNotFound(String),
 }
 
-pub type Result<T> = std::result::Result<T, KgApiError>;
+pub type Result<T> = std::result::Result<T, GraphOperationError>;
 
-/// High-level API for knowledge graph operations
-pub struct KgApi {
+/// High-level operations for knowledge graph management
+pub struct GraphOperations {
     app_state: Arc<AppState>,
 }
 
-impl KgApi {
+impl GraphOperations {
     pub fn new(app_state: Arc<AppState>) -> Self {
         Self { app_state }
     }
@@ -90,7 +134,7 @@ impl KgApi {
                 })
                 .map_err(|e| e.to_string())
         }).await
-        .map_err(|e| KgApiError::GraphError(e.to_string()))
+        .map_err(|e| GraphOperationError::GraphError(e.to_string()))
     }
     
     /// Update an existing block in both graph and via WebSocket
@@ -141,9 +185,9 @@ impl KgApi {
         }).await
         .map_err(|e| {
             if e.to_string().contains("Node not found") {
-                KgApiError::NodeNotFound(block_id)
+                GraphOperationError::NodeNotFound(block_id)
             } else {
-                KgApiError::GraphError(e.to_string())
+                GraphOperationError::GraphError(e.to_string())
             }
         })
     }
@@ -168,9 +212,9 @@ impl KgApi {
         }).await
         .map_err(|e| {
             if e.to_string().contains("Node not found") {
-                KgApiError::NodeNotFound(block_id)
+                GraphOperationError::NodeNotFound(block_id)
             } else {
-                KgApiError::GraphError(e.to_string())
+                GraphOperationError::GraphError(e.to_string())
             }
         })
     }
@@ -207,7 +251,41 @@ impl KgApi {
                 .map_err(|e| e.to_string())
         }).await;
         
-        result.map_err(|e| KgApiError::GraphError(e.to_string()))
+        result.map_err(|e| GraphOperationError::GraphError(e.to_string()))
+    }
+    
+    /// Delete a page from both graph and via WebSocket
+    pub async fn delete_page(&self, page_name: String) -> Result<()> {
+        // Create transaction
+        let operation = Operation::DeleteNode {
+            node_id: page_name.clone(),
+        };
+        
+        // Execute with transaction
+        self.app_state.with_active_graph_transaction(operation, |graph_manager| {
+            // Pages are stored with normalized names as keys
+            let normalized_name = page_name.to_lowercase();
+            
+            // Try both the original name and normalized name
+            let node_idx = graph_manager.get_node_index(&page_name)
+                .or_else(|| graph_manager.get_node_index(&normalized_name));
+                
+            if let Some(&node_idx) = node_idx {
+                // Archive the node
+                graph_manager.archive_nodes(vec![(normalized_name, node_idx)])
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            } else {
+                Err(format!("Page not found: {}", page_name))
+            }
+        }).await
+        .map_err(|e| {
+            if e.to_string().contains("Page not found") {
+                GraphOperationError::NodeNotFound(page_name)
+            } else {
+                GraphOperationError::GraphError(e.to_string())
+            }
+        })
     }
     
     // Query operations (read-only, no transactions needed)
@@ -216,11 +294,11 @@ impl KgApi {
     pub async fn get_node(&self, node_id: &str) -> Result<serde_json::Value> {
         // Get active graph
         let active_graph_id = self.app_state.get_active_graph_manager().await
-            .ok_or_else(|| KgApiError::GraphError("No active graph".to_string()))?;
+            .ok_or_else(|| GraphOperationError::GraphError("No active graph".to_string()))?;
         
         let managers = self.app_state.graph_managers.read().await;
         let manager_lock = managers.get(&active_graph_id)
-            .ok_or_else(|| KgApiError::GraphError("Graph manager not found".to_string()))?;
+            .ok_or_else(|| GraphOperationError::GraphError("Graph manager not found".to_string()))?;
         let graph_manager = manager_lock.read().await;
         
         if let Some(&node_idx) = graph_manager.get_node_index(node_id) {
@@ -234,10 +312,10 @@ impl KgApi {
                     "updated_at": node.updated_at.to_rfc3339(),
                 }))
             } else {
-                Err(KgApiError::NodeNotFound(node_id.to_string()))
+                Err(GraphOperationError::NodeNotFound(node_id.to_string()))
             }
         } else {
-            Err(KgApiError::NodeNotFound(node_id.to_string()))
+            Err(GraphOperationError::NodeNotFound(node_id.to_string()))
         }
     }
     
@@ -259,7 +337,7 @@ impl KgApi {
     pub async fn switch_graph(&self, graph_id: String) -> Result<serde_json::Value> {
         // Ensure the graph exists or create it
         self.app_state.get_or_create_graph_manager(&graph_id).await
-            .map_err(|e| KgApiError::GraphError(format!("Failed to switch graph: {}", e)))?;
+            .map_err(|e| GraphOperationError::GraphError(format!("Failed to switch graph: {}", e)))?;
         
         // Set as active graph
         self.app_state.set_active_graph(graph_id.clone()).await;
@@ -267,9 +345,9 @@ impl KgApi {
         // Update registry to track the switch and get graph info
         let graph_info = {
             let mut registry = self.app_state.graph_registry.lock()
-                .map_err(|_| KgApiError::GraphError("Failed to lock registry".into()))?;
+                .map_err(|_| GraphOperationError::GraphError("Failed to lock registry".into()))?;
             registry.switch_graph(&graph_id)
-                .map_err(|e| KgApiError::GraphError(format!("Failed to switch graph: {}", e)))?
+                .map_err(|e| GraphOperationError::GraphError(format!("Failed to switch graph: {}", e)))?
         };
         
         Ok(json!({
@@ -313,24 +391,24 @@ impl KgApi {
         // Register the graph in the registry
         let graph_info = {
             let mut registry = self.app_state.graph_registry.lock()
-                .map_err(|_| KgApiError::GraphError("Failed to lock registry".into()))?;
+                .map_err(|_| GraphOperationError::GraphError("Failed to lock registry".into()))?;
             
             registry.register_graph(None, name, description, &self.app_state.data_dir)
-                .map_err(|e| KgApiError::GraphError(format!("Failed to register graph: {}", e)))?
+                .map_err(|e| GraphOperationError::GraphError(format!("Failed to register graph: {}", e)))?
         };
         
         // Save registry after creating new graph
         {
             let registry = self.app_state.graph_registry.lock()
-                .map_err(|_| KgApiError::GraphError("Failed to lock registry".into()))?;
+                .map_err(|_| GraphOperationError::GraphError("Failed to lock registry".into()))?;
             
             registry.save()
-                .map_err(|e| KgApiError::GraphError(format!("Failed to save registry: {}", e)))?;
+                .map_err(|e| GraphOperationError::GraphError(format!("Failed to save registry: {}", e)))?;
         }
         
         // Create graph manager for the new graph
         self.app_state.get_or_create_graph_manager(&graph_info.id).await
-            .map_err(|e| KgApiError::GraphError(format!("Failed to create graph manager: {}", e)))?;
+            .map_err(|e| GraphOperationError::GraphError(format!("Failed to create graph manager: {}", e)))?;
         
         info!("Created new knowledge graph: {} ({})", graph_info.name, graph_info.id);
         
@@ -348,20 +426,20 @@ impl KgApi {
         // Check if this is the active graph
         let active_graph = self.app_state.get_active_graph_manager().await;
         if active_graph.as_ref() == Some(&graph_id) {
-            return Err(KgApiError::GraphError("Cannot delete the currently active graph".into()));
+            return Err(GraphOperationError::GraphError("Cannot delete the currently active graph".into()));
         }
         
         // Remove from registry (this also archives the data)
         {
             let mut registry = self.app_state.graph_registry.lock()
-                .map_err(|_| KgApiError::GraphError("Failed to lock registry".into()))?;
+                .map_err(|_| GraphOperationError::GraphError("Failed to lock registry".into()))?;
             
             registry.remove_graph(&graph_id)
-                .map_err(|e| KgApiError::GraphError(format!("Failed to remove graph: {}", e)))?;
+                .map_err(|e| GraphOperationError::GraphError(format!("Failed to remove graph: {}", e)))?;
             
             // Save registry
             registry.save()
-                .map_err(|e| KgApiError::GraphError(format!("Failed to save registry: {}", e)))?;
+                .map_err(|e| GraphOperationError::GraphError(format!("Failed to save registry: {}", e)))?;
         }
         
         // Remove from managers

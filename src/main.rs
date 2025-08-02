@@ -51,6 +51,7 @@ use tracing::{info, error, warn};
 mod app_state;
 mod config;
 mod graph_manager;
+mod graph_operations;
 mod logging;
 mod import;
 mod server;

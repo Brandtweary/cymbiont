@@ -46,10 +46,10 @@ env RUST_LOG=debug cargo test -- --nocapture 2>&1 | tee test_output.log  # Captu
     - **graph_registry.rs**: Multi-graph identification and management
     - **transaction_log.rs**: Write-ahead logging with sled database
     - **transaction.rs**: Transaction coordinator and state management
+  - **graph_operations.rs**: Standardized public interface for all graph operations
   - **server/**: Server-specific functionality
     - **http_api.rs**: HTTP endpoints for health, import, WebSocket upgrade
     - **websocket.rs**: WebSocket server for real-time communication
-    - **kg_api.rs**: Public API for knowledge graph operations (currently unused)
     - **server.rs**: HTTP/WebSocket server setup and configuration
 - **tests/**: Test binaries (e.g. integration tests) - see `tests/CLAUDE.md` for test harness details
 - **.gitignore**: Git ignore patterns

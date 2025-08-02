@@ -166,6 +166,25 @@ fn test_create_page(ws: &mut WsConnection, page_name: &str) {
     
 }
 
+/// Test deleting a page
+fn test_delete_page(ws: &mut WsConnection, page_name: &str) {
+    let cmd = json!({
+        "type": "delete_page",
+        "page_name": page_name,
+        "correlation_id": "delete-page-1"
+    });
+    
+    let response = send_command(ws, cmd);
+    let data = expect_success(response);
+    
+    assert_eq!(
+        data.as_ref().and_then(|d| d["page_name"].as_str()),
+        Some(page_name),
+        "Deleted page name mismatch"
+    );
+    
+}
+
 /// Test graph operations (create and switch)
 fn test_graph_operations(ws: &mut WsConnection, data_dir: &std::path::Path) -> String {
     // Get the current active graph ID first
@@ -217,12 +236,27 @@ fn test_graph_operations(ws: &mut WsConnection, data_dir: &std::path::Path) -> S
     let response = send_command(ws, switch_back_cmd);
     expect_success(response);
     
+    // Delete the test graph
+    let delete_cmd = json!({
+        "type": "delete_graph",
+        "graph_id": &new_graph_id
+    });
+    
+    let response = send_command(ws, delete_cmd);
+    let data = expect_success(response).expect("No data in delete_graph response");
+    
+    assert_eq!(
+        data["deleted_graph_id"].as_str(),
+        Some(new_graph_id.as_str()),
+        "Deleted graph ID mismatch"
+    );
+    
     
     original_graph_id
 }
 
 /// Test error cases
-fn test_error_cases(ws: &mut WsConnection, port: u16) {
+fn test_error_cases(ws: &mut WsConnection, port: u16, active_graph_id: &str) {
     // Test invalid block ID for update
     let cmd = json!({
         "type": "update_block",
@@ -238,6 +272,23 @@ fn test_error_cases(ws: &mut WsConnection, port: u16) {
     assert!(
         response["message"].as_str().unwrap().contains("not found") ||
         response["message"].as_str().unwrap().contains("Failed to update"),
+        "Unexpected error message: {}",
+        response["message"]
+    );
+    
+    // Test deleting the currently active graph
+    let cmd = json!({
+        "type": "delete_graph",
+        "graph_id": active_graph_id
+    });
+    
+    let response = send_command(ws, cmd);
+    assert_eq!(
+        response["type"], "error",
+        "Expected error response for deleting active graph"
+    );
+    assert!(
+        response["message"].as_str().unwrap().contains("Cannot delete the currently active graph"),
         "Unexpected error message: {}",
         response["message"]
     );
@@ -331,6 +382,17 @@ fn validate_graph_state(
         "Page property not preserved"
     );
     
+    // Verify deleted page is NOT in main nodes
+    let deleted_page = nodes.iter()
+        .find(|n| {
+            n["node_type"].as_str() == Some("Page") && 
+            n["pkm_id"].as_str() == Some("page-to-delete")
+        });
+    assert!(
+        deleted_page.is_none(),
+        "Deleted page should not be in main nodes"
+    );
+    
     // Verify we're back on the original graph
     let registry_path = data_dir.join("graph_registry.json");
     let registry_content = fs::read_to_string(&registry_path)
@@ -344,16 +406,14 @@ fn validate_graph_state(
         "Not switched back to original graph"
     );
     
-    // Verify the test graph was created
+    // Verify the test graph was deleted
     let graphs = registry["graphs"].as_object()
         .expect("No graphs in registry");
     let test_graph = graphs.values()
-        .find(|g| g["name"].as_str() == Some("test-websocket-graph"))
-        .expect("Test graph not found in registry");
-    assert_eq!(
-        test_graph["description"].as_str(),
-        Some("Created via WebSocket test"),
-        "Test graph description mismatch"
+        .find(|g| g["name"].as_str() == Some("test-websocket-graph"));
+    assert!(
+        test_graph.is_none(),
+        "Test graph should have been deleted from registry"
     );
 }
 
@@ -412,12 +472,16 @@ pub fn test_websocket_commands() {
         // Test Create Page
         test_create_page(&mut ws, "test-websocket-page");
         
+        // Test Delete Page (create a new page to delete)
+        test_create_page(&mut ws, "page-to-delete");
+        test_delete_page(&mut ws, "page-to-delete");
+        
         // Test Graph Operations
         let final_graph_id = test_graph_operations(&mut ws, &data_dir);
         assert_eq!(final_graph_id, original_graph_id, "Graph ID changed unexpectedly");
         
         // Test Error Cases
-        test_error_cases(&mut ws, port);
+        test_error_cases(&mut ws, port, &original_graph_id);
         
         // Close WebSocket connection
         let _ = ws.close(None);

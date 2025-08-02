@@ -5,7 +5,6 @@
 
 pub mod http_api;
 pub mod websocket;
-pub mod kg_api;
 pub mod server;
 
 // Internal server utilities

@@ -24,6 +24,7 @@ cymbiont/
 │   │   └── server.rs              # Server utilities and lifecycle
 │   └── storage/                   # Persistence layer
 │       ├── mod.rs                 # Storage module exports
+│       ├── graph_persistence.rs   # Graph save/load utilities
 │       ├── graph_registry.rs      # Multi-graph UUID management
 │       ├── transaction_log.rs     # Write-ahead logging with sled
 │       └── transaction.rs         # Transaction coordination
@@ -75,19 +76,26 @@ cymbiont/
 - `GET /api/websocket/recent-activity` - WebSocket activity monitoring
 
 ### graph_manager.rs
-**Purpose**: Core knowledge graph engine using petgraph  
-**Key features**: StableGraph with nodes (Pages/Blocks), edges (relationships), JSON persistence
-**Node types**: `Page { name, properties }`, `Block { uuid, content, reference_content, properties }`
-**Edge types**: `PageRef`, `BlockRef`, `Tag`, `Property`, `ParentChild`, `PageToBlock`
+**Purpose**: Generic knowledge graph storage engine using petgraph  
+**Key features**: Domain-agnostic graph operations, StableGraph for index stability, automatic persistence
+**Operations**: `create_node()`, `create_or_update_node()`, `find_node()`, `add_edge()`, `archive_nodes()`
+**Node/Edge types**: Defined by domain layer (e.g., PKM defines Page/Block nodes, PageRef/BlockRef edges)
 
 ### graph_operations.rs
-**Purpose**: Standardized public interface for knowledge graph operations
+**Purpose**: Public API for PKM-oriented graph operations  
+**Key role**: Orchestrates PKM data transformations and graph mutations with transaction support
 **Operations**: `add_block()`, `update_block()`, `delete_block()`, `create_page()`, `delete_page()`, `create_graph()`, `delete_graph()`, `switch_graph()`, `list_graphs()`, `get_node()`
+**Note**: For direct graph manipulation, use graph_manager functions directly
 
 ### storage/mod.rs
 **Purpose**: Persistence layer module with registry, transactions, and WAL logging  
-**Components**: GraphRegistry, TransactionLog, TransactionCoordinator
-**Key features**: Multi-graph management, ACID transactions, crash recovery
+**Components**: GraphRegistry, TransactionLog, TransactionCoordinator, graph_persistence utilities
+**Key features**: Multi-graph management, ACID transactions, crash recovery, graph serialization
+
+### storage/graph_persistence.rs
+**Purpose**: Graph serialization and persistence utilities  
+**Key operations**: `load_graph()`, `save_graph()`, `archive_nodes()`, `should_save()`
+**Features**: JSON serialization, auto-save thresholds, node archival
 
 ### storage/graph_registry.rs
 **Purpose**: Multi-graph UUID tracking and management  
@@ -118,8 +126,9 @@ cymbiont/
 **Key features**: Reads .md files, parses frontmatter, extracts blocks and hierarchies
 
 ### import/pkm_data.rs
-**Purpose**: PKM data structures for import processing  
+**Purpose**: PKM data structures and graph application logic  
 **Key types**: `PKMBlockData`, `PKMPageData`, `PKMReference`
+**Key methods**: `apply_to_graph()` - Transforms PKM data into graph nodes/edges with reference resolution
 
 ### import/import_utils.rs
 **Purpose**: High-level import coordination  

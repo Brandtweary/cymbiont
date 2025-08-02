@@ -107,7 +107,7 @@ pub async fn import_logseq_graph(
         info!("📝 Importing pages...");
         let mut page_count = 0;
         for page in pages {
-            match graph_manager.create_or_update_node_from_pkm_page(&page) {
+            match page.apply_to_graph(&mut *graph_manager) {
                 Ok(_) => page_count += 1,
                 Err(e) => {
                     let err_msg = format!("Failed to import page {}: {}", page.name, e);
@@ -125,7 +125,7 @@ pub async fn import_logseq_graph(
         info!("📝 Importing blocks...");
         let mut block_count = 0;
         for block in blocks {
-            match graph_manager.create_or_update_node_from_pkm_block(&block) {
+            match block.apply_to_graph(&mut *graph_manager) {
                 Ok(_) => block_count += 1,
                 Err(e) => {
                     let err_msg = format!("Failed to import block {}: {}", block.id, e);

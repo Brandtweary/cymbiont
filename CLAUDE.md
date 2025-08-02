@@ -31,22 +31,23 @@ env RUST_LOG=debug cargo test -- --nocapture 2>&1 | tee test_output.log  # Captu
 ### Project Structure
 - **src/**
   - **main.rs**: CLI entry point with optional server mode (--server flag)
-  - **graph_manager.rs**: Petgraph-based knowledge graph storage engine
+  - **graph_manager.rs**: Generic knowledge graph storage engine using petgraph
   - **config.rs**: YAML configuration loading and validation
   - **utils.rs**: Process management, datetime parsing, general utilities
   - **logging.rs**: Custom formatter (file:line only for ERROR/WARN)
   - **app_state.rs**: Centralized application state management
   - **import/**: Data import functionality
-    - **pkm_data.rs**: PKM data structures (PKMBlockData, PKMPageData)
+    - **pkm_data.rs**: PKM data structures and graph transformation logic
     - **logseq.rs**: Logseq-specific parsing
     - **import_utils.rs**: Import coordination
     - **reference_resolver.rs**: Block reference resolution
   - **storage/**: Persistence layer
     - **mod.rs**: Storage module exports
+    - **graph_persistence.rs**: Graph save/load/archive utilities
     - **graph_registry.rs**: Multi-graph identification and management
     - **transaction_log.rs**: Write-ahead logging with sled database
     - **transaction.rs**: Transaction coordinator and state management
-  - **graph_operations.rs**: Standardized public interface for all graph operations
+  - **graph_operations.rs**: PKM-oriented public API for knowledge graph operations
   - **server/**: Server-specific functionality
     - **http_api.rs**: HTTP endpoints for health, import, WebSocket upgrade
     - **websocket.rs**: WebSocket server for real-time communication

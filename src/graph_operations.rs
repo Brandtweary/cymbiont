@@ -3,26 +3,27 @@
 /**
  * Graph Operations Module
  * 
- * Provides a standardized public interface for all knowledge graph operations, abstracting
- * away the internal complexity of graph_manager.rs. This module serves as the sole entry
- * point for WebSocket handlers and AI agent tools to interact with the knowledge
- * graph while maintaining transactional consistency.
+ * Provides the public API for PKM-oriented knowledge graph operations. This module
+ * orchestrates the transformation of PKM data structures (blocks, pages) into graph
+ * nodes and edges, handling all the domain-specific logic while delegating generic
+ * graph operations to the underlying graph_manager.
  * 
  * ## Purpose
  * 
- * This module acts as a clean abstraction layer between external interfaces (WebSocket,
- * AI agent tools) and the internal graph engine. It ensures all operations are properly
- * wrapped in transactions and provides consistent error handling.
+ * This module serves as the primary interface for PKM operations on the knowledge graph.
+ * It bridges the gap between external interfaces (WebSocket, AI agent tools) and the
+ * generic graph engine, handling PKM-specific concerns like reference resolution,
+ * page normalization, and block hierarchies.
  * 
  * ## Core Operations
  * 
  * ### Block Operations
- * - `add_block()` - Create new block with content, optional parent, and properties
- * - `update_block()` - Modify existing block content and resolve references
+ * - `add_block()` - Create new PKM block with content, parent, and properties
+ * - `update_block()` - Modify block content with automatic reference resolution
  * - `delete_block()` - Archive block node while preserving data
  * 
  * ### Page Operations  
- * - `create_page()` - Create new page node with properties
+ * - `create_page()` - Create new PKM page with normalized name handling
  * - `delete_page()` - Archive page node (handles normalized names)
  * 
  * ### Graph Management
@@ -32,9 +33,18 @@
  * - `list_graphs()` - Enumerate all registered graphs
  * 
  * ### Query Operations
- * - `get_node()` - Retrieve node by ID
+ * - `get_node()` - Retrieve node by ID with PKM-aware formatting
  * - `get_active_graph()` - Get current graph ID
  * - `query_graph_bfs()` - Breadth-first traversal (TODO)
+ * 
+ * ## PKM-Specific Logic
+ * 
+ * This module handles PKM concerns including:
+ * - Creating PKMBlockData/PKMPageData structures
+ * - Extracting references from content
+ * - Normalizing page names
+ * - Managing block parent-child relationships
+ * - Coordinating with the PKM data layer's `apply_to_graph()` methods
  * 
  * ## Transaction Integration
  * 
@@ -46,20 +56,19 @@
  * 
  * ## Error Handling
  * 
- * Operations return `Result<T, KgApiError>` with two error variants:
+ * Operations return `Result<T, GraphOperationError>` with two error variants:
  * - `GraphError` - General graph operation failures
  * - `NodeNotFound` - Specific node lookup failures
  * 
- * ## Design Notes
+ * ## Usage Note
  * 
- * This module serves as a standardized interface layer rather than a traditional REST API.
- * It provides a clean boundary between external consumers (WebSocket handlers, AI agents)
- * and the internal graph engine implementation.
+ * This module is specifically designed for PKM operations. If you need direct,
+ * domain-agnostic graph manipulation, use the graph_manager functions directly
+ * instead of going through this layer.
  */
 
 use crate::{
     AppState,
-    graph_manager::{GraphManager, GraphNodeIndex},
     import::pkm_data::{PKMBlockData, PKMPageData},
     import::logseq::extract_references,
     storage::Operation,
@@ -110,9 +119,6 @@ impl GraphOperations {
         
         // Execute with transaction
         self.app_state.with_active_graph_transaction(operation, |graph_manager| {
-            // Resolve references
-            let reference_content = Some(graph_manager.resolve_references(&content, Some(&block_id)));
-            
             // Create the block data
             let block_data = PKMBlockData {
                 id: block_id.clone(),
@@ -124,11 +130,11 @@ impl GraphOperations {
                 children: vec![], // New blocks have no children initially
                 created: chrono::Utc::now().to_rfc3339(),
                 updated: chrono::Utc::now().to_rfc3339(),
-                reference_content,
+                reference_content: None, // Let apply_to_graph handle resolution
             };
             
             // Add to graph
-            graph_manager.create_or_update_node_from_pkm_block(&block_data)
+            block_data.apply_to_graph(graph_manager)
                 .map(|_node_idx| {
                     block_id.clone()
                 })
@@ -152,12 +158,9 @@ impl GraphOperations {
         // Execute with transaction
         self.app_state.with_active_graph_transaction(operation, |graph_manager| {
             // Find the node
-            if let Some(&node_idx) = graph_manager.get_node_index(&block_id) {
+            if let Some(node_idx) = graph_manager.find_node(&block_id) {
                 // Get existing block data
                 if let Some(node) = graph_manager.get_node(node_idx) {
-                    // Resolve references for the new content
-                    let reference_content = Some(graph_manager.resolve_references(&content, Some(&block_id)));
-                    
                     // Create updated block data
                     let updated_block = PKMBlockData {
                         id: block_id.clone(),
@@ -169,11 +172,11 @@ impl GraphOperations {
                         children: vec![], // Preserve existing children
                         created: node.created_at.to_rfc3339(),
                         updated: chrono::Utc::now().to_rfc3339(),
-                        reference_content,
+                        reference_content: None, // Let apply_to_graph handle resolution
                     };
                     
                     // Update the node
-                    graph_manager.create_or_update_node_from_pkm_block(&updated_block)
+                    updated_block.apply_to_graph(graph_manager)
                         .map(|_| ())
                         .map_err(|e| e.to_string())
                 } else {
@@ -201,7 +204,7 @@ impl GraphOperations {
         
         // Execute with transaction
         self.app_state.with_active_graph_transaction(operation, |graph_manager| {
-            if let Some(&node_idx) = graph_manager.get_node_index(&block_id) {
+            if let Some(node_idx) = graph_manager.find_node(&block_id) {
                 // Archive the node
                 graph_manager.archive_nodes(vec![(block_id.clone(), node_idx)])
                     .map(|_| ())
@@ -246,7 +249,7 @@ impl GraphOperations {
             };
             
             // Add to graph
-            graph_manager.create_or_update_node_from_pkm_page(&page_data)
+            page_data.apply_to_graph(graph_manager)
                 .map(|_| ())
                 .map_err(|e| e.to_string())
         }).await;
@@ -267,10 +270,10 @@ impl GraphOperations {
             let normalized_name = page_name.to_lowercase();
             
             // Try both the original name and normalized name
-            let node_idx = graph_manager.get_node_index(&page_name)
-                .or_else(|| graph_manager.get_node_index(&normalized_name));
+            let node_idx = graph_manager.find_node(&page_name)
+                .or_else(|| graph_manager.find_node(&normalized_name));
                 
-            if let Some(&node_idx) = node_idx {
+            if let Some(node_idx) = node_idx {
                 // Archive the node
                 graph_manager.archive_nodes(vec![(normalized_name, node_idx)])
                     .map(|_| ())
@@ -301,7 +304,7 @@ impl GraphOperations {
             .ok_or_else(|| GraphOperationError::GraphError("Graph manager not found".to_string()))?;
         let graph_manager = manager_lock.read().await;
         
-        if let Some(&node_idx) = graph_manager.get_node_index(node_id) {
+        if let Some(node_idx) = graph_manager.find_node(node_id) {
             if let Some(node) = graph_manager.get_node(node_idx) {
                 Ok(json!({
                     "id": node.pkm_id,
@@ -458,18 +461,3 @@ impl GraphOperations {
     }
 }
 
-// Helper trait to extend GraphManager
-trait GraphManagerExt {
-    fn get_node_index(&self, pkm_id: &str) -> Option<&GraphNodeIndex>;
-    fn get_node(&self, idx: GraphNodeIndex) -> Option<&crate::graph_manager::NodeData>;
-}
-
-impl GraphManagerExt for GraphManager {
-    fn get_node_index(&self, pkm_id: &str) -> Option<&GraphNodeIndex> {
-        self.pkm_to_node.get(pkm_id)
-    }
-    
-    fn get_node(&self, idx: GraphNodeIndex) -> Option<&crate::graph_manager::NodeData> {
-        self.graph.node_weight(idx)
-    }
-}

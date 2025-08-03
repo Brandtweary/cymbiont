@@ -90,8 +90,7 @@ fn test_create_block(ws: &mut WsConnection) -> String {
     let cmd = json!({
         "type": "create_block",
         "content": "WebSocket test block with **bold** and *italic* text",
-        "page_name": "cyberorganism-test-1",
-        "correlation_id": "create-1"
+        "page_name": "cyberorganism-test-1"
     });
     
     let response = send_command(ws, cmd);
@@ -109,8 +108,7 @@ fn test_update_block(ws: &mut WsConnection, block_id: &str) {
     let cmd = json!({
         "type": "update_block",
         "block_id": block_id,
-        "content": "## Types of Knowledge Graphs (Updated via WebSocket)",
-        "correlation_id": "update-1"
+        "content": "## Types of Knowledge Graphs (Updated via WebSocket)"
     });
     
     let response = send_command(ws, cmd);
@@ -128,8 +126,7 @@ fn test_update_block(ws: &mut WsConnection, block_id: &str) {
 fn test_delete_block(ws: &mut WsConnection, block_id: &str) {
     let cmd = json!({
         "type": "delete_block",
-        "block_id": block_id,
-        "correlation_id": "delete-1"
+        "block_id": block_id
     });
     
     let response = send_command(ws, cmd);
@@ -151,8 +148,7 @@ fn test_create_page(ws: &mut WsConnection, page_name: &str) {
         "properties": {
             "test-property": "test-value",
             "created-by": "websocket-test"
-        },
-        "correlation_id": "page-1"
+        }
     });
     
     let response = send_command(ws, cmd);
@@ -170,8 +166,7 @@ fn test_create_page(ws: &mut WsConnection, page_name: &str) {
 fn test_delete_page(ws: &mut WsConnection, page_name: &str) {
     let cmd = json!({
         "type": "delete_page",
-        "page_name": page_name,
-        "correlation_id": "delete-page-1"
+        "page_name": page_name
     });
     
     let response = send_command(ws, cmd);

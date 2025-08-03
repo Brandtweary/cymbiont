@@ -67,26 +67,18 @@ pub enum Command {
         parent_id: Option<String>,
         page_name: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        correlation_id: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
         temp_id: Option<String>,
     },
     UpdateBlock {
         block_id: String,
         content: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        correlation_id: Option<String>,
     },
     DeleteBlock {
         block_id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        correlation_id: Option<String>,
     },
     CreatePage {
         name: String,
         properties: Option<HashMap<String, String>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        correlation_id: Option<String>,
     },
     Heartbeat,
     Auth {
@@ -115,11 +107,9 @@ pub enum Command {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Response {
     Success {
-        command_id: String,
         data: Option<serde_json::Value>,
     },
     Error {
-        command_id: String,
         message: String,
     },
     Heartbeat,
@@ -296,7 +286,7 @@ async fn handle_command(
             // Client sent a heartbeat/pong - just acknowledge receipt, don't respond
             // This prevents infinite heartbeat loops
         }
-        Command::CreateBlock { content, parent_id, page_name, correlation_id: _, temp_id: _ } => {
+        Command::CreateBlock { content, parent_id, page_name, temp_id: _ } => {
             // Call kg_api to create the block
             info!("📝 CreateBlock command received via WebSocket");
             
@@ -313,7 +303,7 @@ async fn handle_command(
                 }
             }
         }
-        Command::UpdateBlock { block_id, content, correlation_id: _ } => {
+        Command::UpdateBlock { block_id, content } => {
             // Call kg_api to update the block
             info!("✏️ UpdateBlock command received via WebSocket: {}", block_id);
             
@@ -330,7 +320,7 @@ async fn handle_command(
                 }
             }
         }
-        Command::DeleteBlock { block_id, correlation_id: _ } => {
+        Command::DeleteBlock { block_id } => {
             // Call kg_api to delete the block
             info!("🗑️ DeleteBlock command received via WebSocket: {}", block_id);
             
@@ -347,7 +337,7 @@ async fn handle_command(
                 }
             }
         }
-        Command::CreatePage { name, properties, correlation_id: _ } => {
+        Command::CreatePage { name, properties } => {
             // Call kg_api to create the page
             info!("📄 CreatePage command received via WebSocket: {}", name);
             
@@ -536,7 +526,6 @@ async fn send_success_response(
     data: Option<serde_json::Value>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let response = Response::Success {
-        command_id: Uuid::new_v4().to_string(),
         data,
     };
     send_response(connection_id, state, response).await
@@ -549,7 +538,6 @@ async fn send_error_response(
     message: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let response = Response::Error {
-        command_id: Uuid::new_v4().to_string(),
         message: message.to_string(),
     };
     send_response(connection_id, state, response).await
@@ -566,7 +554,6 @@ mod tests {
             content: "Test content".to_string(),
             parent_id: None,
             page_name: Some("TestPage".to_string()),
-            correlation_id: Some("corr-123".to_string()),
             temp_id: Some("temp-456".to_string()),
         };
         
@@ -593,13 +580,11 @@ mod tests {
     #[test]
     fn test_response_serialization() {
         let response = Response::Success {
-            command_id: "cmd-123".to_string(),
             data: Some(serde_json::json!({"test": "data"})),
         };
         
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("\"type\":\"success\""));
-        assert!(json.contains("\"command_id\":\"cmd-123\""));
         assert!(json.contains("\"test\":\"data\""));
     }
     

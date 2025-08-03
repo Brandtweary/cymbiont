@@ -123,6 +123,7 @@ impl TransactionCoordinator {
         if let Operation::CreateNode { content, .. } | Operation::UpdateNode { content, .. } = &operation {
             let hash = compute_content_hash(content);
             if self.is_content_pending(&hash).await {
+                warn!("Duplicate content detected in pending transactions - potential race condition. Content hash: {}", hash);
                 return Err(TransactionError::DuplicateContent(hash));
             }
         }

@@ -256,8 +256,15 @@ async fn handle_command(
     }
 
     match command {
-        Command::Auth { token: _ } => {
-            // TODO: Validate token against state.auth_token or similar
+        Command::Auth { token } => {
+            // Validate token against configured auth token
+            use crate::server::auth::validate_token;
+            
+            if !validate_token(state, &token).await {
+                warn!("🔐 WebSocket authentication failed for {}: invalid token", connection_id);
+                send_error_response(connection_id, state, "Invalid authentication token").await?;
+                return Ok(());
+            }
             
             // Set authenticated (atomic operation)
             match set_authenticated(connection_id, state).await {

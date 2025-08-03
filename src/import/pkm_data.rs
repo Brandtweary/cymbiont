@@ -187,9 +187,7 @@ impl PKMBlockData {
         // 3. Handle page relationship
         if let Some(page_name) = &self.page {
             let page_idx = ensure_page_exists(graph, page_name)?;
-            if self.parent.is_none() {
-                graph.add_edge(page_idx, node_idx, EdgeType::PageToBlock, 1.0);
-            }
+            graph.add_edge(page_idx, node_idx, EdgeType::PageToBlock, 1.0);
         }
         
         // 4. Process references

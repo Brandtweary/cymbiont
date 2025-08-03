@@ -5,7 +5,7 @@
 # In cymbiont root
 cargo check                      # Quick syntax check - don't filter with grep/tail/head ever; cargo commands are always information-dense
 cargo build                      # Build cymbiont server
-cargo test                       # Run tests (quiet by default)
+cargo test                       # Run full test suite (preferred - only filter by test during active troubleshooting)
 RUST_LOG=debug cargo run         # Run backend server with debug logging (do not alter default 3s duration or set a timeout)
 env RUST_LOG=debug cargo test -- --nocapture 2>&1 | tee test_output.log  # Capture console output to file; do not filter before piping the full output
 ```

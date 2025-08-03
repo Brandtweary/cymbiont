@@ -6,7 +6,7 @@ use crate::common::test_harness::{TestServer, PreShutdown, PostShutdown, assert_
 
 
 /// Make an HTTP request to the server
-fn make_import_request(port: u16, path: &str, graph_name: Option<&str>) -> Result<Value, Box<dyn std::error::Error>> {
+fn make_import_request(port: u16, path: &str, graph_name: Option<&str>, auth_token: Option<&str>) -> Result<Value, Box<dyn std::error::Error>> {
     let client = reqwest::blocking::Client::new();
     
     let mut body = json!({
@@ -18,10 +18,13 @@ fn make_import_request(port: u16, path: &str, graph_name: Option<&str>) -> Resul
     }
     
     let url = format!("http://localhost:{}/import/logseq", port);
-    let response = client
-        .post(&url)
-        .json(&body)
-        .send()?;
+    let mut request = client.post(&url).json(&body);
+    
+    if let Some(token) = auth_token {
+        request = request.header("Authorization", format!("Bearer {}", token));
+    }
+    
+    let response = request.send()?;
     
     Ok(response.json()?)
 }
@@ -42,6 +45,12 @@ pub fn test_http_logseq_import() {
         // Phase 1: Server is running - do HTTP operations
         assert_phase(PreShutdown);
         let port = server.port();
+        let test_data_dir = server.test_env().data_dir.clone();
+        
+        // Read auth token
+        let auth_token_path = test_data_dir.join("auth_token");
+        let auth_token = fs::read_to_string(&auth_token_path)
+            .expect("Failed to read auth token");
         
         // Get the absolute path to the dummy graph
         let dummy_graph_path = std::env::current_dir()
@@ -51,7 +60,8 @@ pub fn test_http_logseq_import() {
         let response = make_import_request(
             port,
             dummy_graph_path.to_str().unwrap(),
-            Some("test_http_import")
+            Some("test_http_import"),
+            Some(&auth_token.trim())
         ).expect("Failed to make import request");
         
         // Verify the response
@@ -165,9 +175,15 @@ pub fn test_http_import_error_cases() {
         // Phase 1: Server is running - do HTTP operations
         assert_phase(PreShutdown);
         let port = server.port();
+        let test_data_dir = server.test_env().data_dir.clone();
+        
+        // Read auth token
+        let auth_token_path = test_data_dir.join("auth_token");
+        let auth_token = fs::read_to_string(&auth_token_path)
+            .expect("Failed to read auth token");
         
         // Test 1: Non-existent path
-        let response = make_import_request(port, "/path/that/does/not/exist", None)
+        let response = make_import_request(port, "/path/that/does/not/exist", None, Some(&auth_token.trim()))
             .expect("Failed to make import request");
         
         assert_eq!(response["success"], false);
@@ -177,7 +193,7 @@ pub fn test_http_import_error_cases() {
         let temp_file = data_dir.join("temp_file.txt");
         fs::write(&temp_file, "test").unwrap();
         
-        let response = make_import_request(port, temp_file.to_str().unwrap(), None)
+        let response = make_import_request(port, temp_file.to_str().unwrap(), None, Some(&auth_token.trim()))
             .expect("Failed to make import request");
         
         assert_eq!(response["success"], false);

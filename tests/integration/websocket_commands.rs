@@ -75,14 +75,14 @@ fn expect_success(response: Value) -> Option<Value> {
 }
 
 /// Authenticate the WebSocket connection
-fn authenticate(ws: &mut WsConnection) {
+fn authenticate(ws: &mut WsConnection, token: &str) -> bool {
     let auth_cmd = json!({
         "type": "auth",
-        "token": "test-token"
+        "token": token
     });
     
     let response = send_command(ws, auth_cmd);
-    expect_success(response);
+    response["type"] == "success"
 }
 
 /// Test creating a new block
@@ -306,6 +306,10 @@ fn test_error_cases(ws: &mut WsConnection, port: u16, active_graph_id: &str) {
         "Unexpected error message: {}",
         response["message"]
     );
+    
+    // Test invalid auth token
+    let mut invalid_auth_ws = connect_websocket(port);
+    assert!(!authenticate(&mut invalid_auth_ws, "invalid-token"), "Authentication should fail with invalid token");
 }
 
 /// Validate the final graph state
@@ -452,8 +456,13 @@ pub fn test_websocket_commands() {
         // Connect WebSocket client
         let mut ws = connect_websocket(port);
         
+        // Read auth token from test environment
+        let auth_token_path = data_dir.join("auth_token");
+        let auth_token = fs::read_to_string(&auth_token_path)
+            .expect("Failed to read auth token");
+        
         // Authenticate
-        authenticate(&mut ws);
+        assert!(authenticate(&mut ws, &auth_token.trim()), "Authentication failed with valid token");
         
         // Test Create Block
         let new_block_id = test_create_block(&mut ws);

@@ -36,6 +36,7 @@ pub struct AppState {
     // Server-specific components (optional)
     pub ws_ready_tx: Mutex<Option<oneshot::Sender<()>>>,
     pub ws_connections: Option<Arc<RwLock<HashMap<String, WsConnection>>>>,
+    pub auth_token: Arc<RwLock<Option<String>>>,  // Authentication token
 }
 
 impl AppState {
@@ -105,12 +106,23 @@ impl AppState {
             transaction_coordinators,
             ws_ready_tx: Mutex::new(None),
             ws_connections,
+            auth_token: Arc::new(RwLock::new(None)),
         });
         
         // If there's an active graph, ensure its manager is loaded
         if let Some(graph_id) = initial_active_graph {
             app_state.get_or_create_graph_manager(&graph_id).await?;
             info!("Loaded active graph: {}", graph_id);
+        }
+        
+        // Initialize authentication if in server mode
+        if with_server {
+            use crate::server::auth::initialize_auth;
+            let token = initialize_auth(&app_state).await?;
+            if !app_state.config.auth.disabled {
+                let mut token_guard = app_state.auth_token.write().await;
+                *token_guard = Some(token);
+            }
         }
         
         Ok(app_state)

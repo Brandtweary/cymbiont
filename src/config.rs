@@ -83,6 +83,8 @@ pub struct Config {
     pub development: DevelopmentConfig,
     #[serde(default = "default_data_dir")]
     pub data_dir: String,
+    #[serde(default)]
+    pub auth: AuthConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -98,6 +100,14 @@ pub struct BackendConfig {
 pub struct DevelopmentConfig {
     #[serde(default)]
     pub default_duration: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct AuthConfig {
+    #[serde(default)]
+    pub token: Option<String>,
+    #[serde(default)]
+    pub disabled: bool,
 }
 
 
@@ -122,6 +132,7 @@ impl Default for Config {
                 default_duration: None,
             },
             data_dir: default_data_dir(),
+            auth: AuthConfig::default(),
         }
     }
 }
@@ -130,6 +141,15 @@ impl Default for DevelopmentConfig {
     fn default() -> Self {
         DevelopmentConfig {
             default_duration: None,
+        }
+    }
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        AuthConfig {
+            token: None,
+            disabled: false,
         }
     }
 }
@@ -230,10 +250,6 @@ mod tests {
         assert_eq!(config.backend.port, 8888);
         assert_eq!(config.backend.max_port_attempts, 10);
         assert_eq!(config.development.default_duration, None);
-        // Sync configuration removed - tests preserved for reference
-        // assert_eq!(config.sync.incremental_interval_hours, 2);
-        // assert_eq!(config.sync.full_interval_hours, 168);
-        // assert_eq!(config.sync.enable_full_sync, false);
         assert_eq!(config.data_dir, "data");
     }
 
@@ -242,22 +258,6 @@ mod tests {
         let config = DevelopmentConfig::default();
         assert_eq!(config.default_duration, None);
     }
-
-    // Sync configuration tests removed - functionality no longer exists
-    // #[test]
-    // fn test_sync_config_default() {
-    //     let config = SyncConfig::default();
-    //     assert_eq!(config.incremental_interval_hours, 2);
-    //     assert_eq!(config.full_interval_hours, 168);
-    //     assert_eq!(config.enable_full_sync, false);
-    // }
-
-    // #[test]  
-    // fn test_sync_default_functions() {
-    //     assert_eq!(default_incremental_interval_hours(), 2);
-    //     assert_eq!(default_full_interval_hours(), 168);
-    //     assert_eq!(default_enable_full_sync(), false);
-    // }
 
     #[test]
     fn test_data_dir_default() {

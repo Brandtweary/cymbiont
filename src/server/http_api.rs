@@ -72,12 +72,14 @@ use axum::{
     Json, 
     Router, 
     routing::{get, post, any},
+    middleware,
 };
 use std::sync::Arc;
 use tracing::{info, error};
 use serde::{Deserialize, Serialize};
 use crate::AppState;
 use crate::server::websocket::websocket_handler;
+use crate::server::auth::auth_middleware;
 
 // ===== API Types =====
 
@@ -116,13 +118,24 @@ pub struct LogseqImportResponse {
 
 /// Create and configure the API router
 pub fn create_router(app_state: Arc<AppState>) -> Router {
-    Router::new()
-        .route("/", get(root))
+    // Routes that require authentication
+    let protected_routes = Router::new()
         .route("/import/logseq", post(import_logseq))
-        .route("/ws", any(websocket_handler))
-        // WebSocket status endpoints
         .route("/api/websocket/status", get(get_websocket_status))
         .route("/api/websocket/recent-activity", get(get_websocket_activity))
+        .layer(middleware::from_fn_with_state(
+            app_state.clone(),
+            auth_middleware,
+        ));
+    
+    // Public routes (no auth required)
+    let public_routes = Router::new()
+        .route("/", get(root))
+        .route("/ws", any(websocket_handler));
+    
+    // Combine all routes
+    public_routes
+        .merge(protected_routes)
         .with_state(app_state)
 }
 

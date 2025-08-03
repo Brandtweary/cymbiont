@@ -234,6 +234,9 @@ impl GraphRegistry {
     }
     
     /// Remove a graph from the registry and archive its data
+    /// 
+    /// Archives the graph directory to `{data_dir}/archived_graphs/` with timestamp.
+    /// If removing the active graph, automatically activates the first remaining graph.
     pub fn remove_graph(&mut self, graph_id: &str) -> Result<()> {
         // Get the graph info
         let graph_info = self.graphs.get(graph_id)
@@ -264,10 +267,17 @@ impl GraphRegistry {
         // Remove from registry
         self.graphs.remove(graph_id);
         
-        // If this was the active graph, clear it
+        // If this was the active graph, try to set another one as active
         if self.active_graph_id.as_ref() == Some(&graph_id.to_string()) {
-            self.active_graph_id = None;
-            info!("Removed active graph, no graph is now active");
+            // Try to find another graph to make active
+            if let Some(first_remaining) = self.graphs.keys().next() {
+                self.active_graph_id = Some(first_remaining.clone());
+                info!("Active graph removed, switched to: {} ({})", 
+                      self.graphs[first_remaining].name, first_remaining);
+            } else {
+                self.active_graph_id = None;
+                info!("Removed active graph, no graphs remaining");
+            }
         }
         
         Ok(())

@@ -21,7 +21,8 @@ cymbiont/
 │   │   ├── mod.rs                 # Server module exports
 │   │   ├── http_api.rs            # HTTP endpoints (health, import, WebSocket upgrade)
 │   │   ├── websocket.rs           # Real-time WebSocket communication
-│   │   └── server.rs              # Server utilities and lifecycle
+│   │   ├── server.rs              # Server utilities and lifecycle
+│   │   └── auth.rs                # Authentication system with token management
 │   └── storage/                   # Persistence layer
 │       ├── mod.rs                 # Storage module exports
 │       ├── graph_persistence.rs   # Graph save/load utilities
@@ -30,10 +31,11 @@ cymbiont/
 │       └── transaction.rs         # Transaction coordination
 ├── data/                          # Graph persistence (configurable path)
 │   ├── graph_registry.json        # Graph UUID registry
+│   ├── auth_token                 # Authentication token (auto-generated)
 │   ├── graphs/{graph-id}/         # Per-graph storage
 │   │   ├── knowledge_graph.json   # Serialized petgraph
 │   │   └── transaction_log/       # WAL database
-│   └── transaction_log/           # Global transaction log
+│   └── archived_graphs/           # Deleted graphs archive
 └── tests/                         # Integration tests - see tests/CLAUDE.md
     ├── common/                    # Shared test utilities
     │   ├── mod.rs                 # Test environment setup
@@ -69,11 +71,11 @@ cymbiont/
 ### server/http_api.rs
 **Purpose**: HTTP API endpoints for health checks, imports, and WebSocket upgrades  
 **Active endpoints**:
-- `GET /` - Health check
-- `POST /import/logseq` - One-time Logseq graph import
-- `GET /ws` - WebSocket upgrade
-- `GET /api/websocket/status` - WebSocket connection metrics
-- `GET /api/websocket/recent-activity` - WebSocket activity monitoring
+- `GET /` - Health check (no auth)
+- `POST /import/logseq` - One-time Logseq graph import (requires auth)
+- `GET /ws` - WebSocket upgrade (no auth, handled post-upgrade)
+- `GET /api/websocket/status` - WebSocket connection metrics (requires auth)
+- `GET /api/websocket/recent-activity` - WebSocket activity monitoring (requires auth)
 
 ### graph_manager.rs
 **Purpose**: Generic knowledge graph storage engine using petgraph  
@@ -84,7 +86,7 @@ cymbiont/
 ### graph_operations.rs
 **Purpose**: Public API for PKM-oriented graph operations  
 **Key role**: Orchestrates PKM data transformations and graph mutations with transaction support
-**Operations**: `add_block()`, `update_block()`, `delete_block()`, `create_page()`, `delete_page()`, `create_graph()`, `delete_graph()`, `switch_graph()`, `list_graphs()`, `get_node()`
+**Operations**: `add_block()`, `update_block()`, `delete_block()`, `create_page()`, `delete_page()`, `create_graph()`, `delete_graph(force)`, `switch_graph()`, `list_graphs()`, `get_node()`
 **Note**: For direct graph manipulation, use graph_manager functions directly
 
 ### storage/mod.rs
@@ -100,6 +102,7 @@ cymbiont/
 ### storage/graph_registry.rs
 **Purpose**: Multi-graph UUID tracking and management  
 **Key operations**: `register_graph()`, `switch_graph()`, `remove_graph()`, registry persistence
+**Fallback**: Automatically activates first available graph when active graph is deleted
 
 ### server/server.rs
 **Purpose**: Server-specific setup and HTTP/WebSocket configuration  
@@ -117,9 +120,10 @@ cymbiont/
 
 ### server/websocket.rs
 **Purpose**: Real-time WebSocket communication  
-**Protocol**: Request/response with auth, heartbeat, direct command execution
-**Commands**: `CreateBlock`, `UpdateBlock`, `DeleteBlock`, `CreatePage`, `DeletePage`, `SwitchGraph`, `CreateGraph`, `DeleteGraph`
+**Protocol**: Request/response with token auth, heartbeat, direct command execution
+**Commands**: `Auth`, `CreateBlock`, `UpdateBlock`, `DeleteBlock`, `CreatePage`, `DeletePage`, `SwitchGraph`, `CreateGraph`, `DeleteGraph`
 **Responses**: `Success`, `Error`, `Heartbeat`
+**Authentication**: Requires `Auth { token }` command before other operations
 
 ### import/logseq.rs
 **Purpose**: Logseq-specific parsing and transformation  
@@ -137,6 +141,16 @@ cymbiont/
 ### import/reference_resolver.rs
 **Purpose**: Block reference resolution during import  
 **Key features**: Resolves `((block-id))` references, prevents circular references
+
+### server/auth.rs
+**Purpose**: Token-based authentication system with auto-generation and rotation  
+**Key features**: 
+- Auto-generates cryptographically secure tokens on startup
+- Saves token to `{data_dir}/auth_token` with restricted permissions (0600)
+- Token rotation on each server restart for enhanced security
+- HTTP middleware for protecting sensitive endpoints
+- WebSocket authentication via `Auth { token }` command
+- Optional config overrides (fixed token or disabled auth)
 
 ### tests/common/test_harness.rs
 **Purpose**: Integration test infrastructure with process lifecycle management  
@@ -175,8 +189,8 @@ cymbiont/
 ```
 
 ### WebSocket Message Types
-- **Client→Server**: `Auth`, `Heartbeat`, `CreateBlock`, `UpdateBlock`, `DeleteBlock`, `CreatePage`, `DeletePage`, `SwitchGraph`, `CreateGraph`, `DeleteGraph`
-- **Server→Client**: `Success`, `Error`, `Heartbeat`
+- **Client→Server**: `Auth { token }`, `Heartbeat`, `CreateBlock`, `UpdateBlock`, `DeleteBlock`, `CreatePage`, `DeletePage`, `SwitchGraph`, `CreateGraph`, `DeleteGraph`
+- **Server→Client**: `Success { data? }`, `Error { message }`, `Heartbeat`
 
 ## Persistence Layout
 
@@ -185,9 +199,11 @@ Data directory configurable via `config.yaml` or `--data-dir` CLI flag:
 ```
 {data_dir}/
 ├── graph_registry.json           # Graph UUID registry  
+├── auth_token                    # Authentication token file
 ├── graphs/{graph-id}/            # Per-graph storage
 │   ├── knowledge_graph.json      # Serialized petgraph
 │   └── transaction_log/          # Sled WAL database
+├── archived_graphs/              # Archived graphs (deletion)
 └── transaction_log/              # Global transaction log
 ```
 
@@ -211,6 +227,9 @@ backend:
   server_info_file: "cymbiont_server.json"  # Server discovery file (enables multi-instance)
 development:
   default_duration: null          # Run duration (null = indefinite)
+auth:                             # Authentication configuration (optional)
+  token: null                     # Fixed token (auto-generated if null)
+  disabled: false                 # Disable auth entirely (not recommended)
 ```
 
 ## CLI Usage
@@ -221,6 +240,8 @@ cymbiont [OPTIONS]
   --data-dir <PATH>             # Override data directory
   --config <PATH>               # Use specific configuration file
   --import-logseq <PATH>        # Import Logseq graph directory
+  --delete-graph <NAME_OR_ID>   # Delete a graph by name or ID
+  --force                       # Force deletion even if active (with --delete-graph)
   --duration <SECONDS>          # Run for specific duration
 ```
 
@@ -239,3 +260,5 @@ After graceful cleanup, the process uses `std::process::exit(0)` to terminate im
 **WebSocket**: Client auth → Direct command execution → Transaction-wrapped operation → Success/Error response
 
 **Multi-Instance**: Configurable `server_info_file` enables concurrent server instances with isolated discovery
+
+**Authentication**: Server generates auth token on startup, saves to `{data_dir}/auth_token`. HTTP endpoints check Authorization header, WebSocket requires Auth command. Token rotates on restart for security.

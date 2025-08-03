@@ -1,8 +1,45 @@
 /**
- * Authentication Module
+ * @module auth
+ * @description Token-based authentication system with auto-generation and rotation
  * 
- * Provides token-based authentication for both HTTP and WebSocket endpoints.
- * Generates cryptographically secure tokens and manages token persistence.
+ * This module implements a simple but effective authentication system for Cymbiont's
+ * HTTP and WebSocket APIs. It generates cryptographically secure tokens on startup,
+ * saves them to the filesystem with restricted permissions, and validates incoming
+ * requests against the stored token.
+ * 
+ * ## Key Features
+ * 
+ * - **Auto-generation**: Creates UUID v4 tokens on server startup
+ * - **Token rotation**: New token generated on each restart for security
+ * - **File persistence**: Token saved to `{data_dir}/auth_token` 
+ * - **Restricted permissions**: Unix mode 0600 (owner read/write only)
+ * - **HTTP middleware**: Protects sensitive endpoints via Authorization header
+ * - **WebSocket integration**: Validates tokens in Auth command
+ * - **Configuration options**: Fixed token or disable auth via config.yaml
+ * 
+ * ## Usage
+ * 
+ * ### HTTP Authentication
+ * ```
+ * Authorization: Bearer <token>
+ * Authorization: <token>
+ * ```
+ * 
+ * ### WebSocket Authentication
+ * ```json
+ * {"type": "auth", "token": "<token>"}
+ * ```
+ * 
+ * ## Security Model
+ * 
+ * The authentication system is designed for local/trusted environments:
+ * - Token is readable by any process with filesystem access
+ * - No token expiration or refresh mechanism
+ * - No user management or role-based access control
+ * - Suitable for single-user or trusted multi-user scenarios
+ * 
+ * For production deployments, consider using a reverse proxy with
+ * proper TLS termination and more robust authentication.
  */
 
 use axum::{

@@ -423,7 +423,7 @@ async fn handle_command(
             use crate::graph_operations::GraphOperations;
             let graph_ops = GraphOperations::new(state.clone());
             
-            match graph_ops.delete_graph(graph_id.clone()).await {
+            match graph_ops.delete_graph(graph_id.clone(), false).await {
                 Ok(()) => {
                     let data = serde_json::json!({ "deleted_graph_id": graph_id });
                     send_success_response(connection_id, state, Some(data)).await?;

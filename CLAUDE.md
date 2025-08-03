@@ -17,6 +17,8 @@ env RUST_LOG=debug cargo test -- --nocapture 2>&1 | tee test_output.log  # Captu
 - `--data-dir <PATH>`: Override data directory path (defaults to config value)
 - `--config <PATH>`: Use specific configuration file
 - `--import-logseq <PATH>`: Import Logseq graph directory (then continues running)
+- `--delete-graph <NAME_OR_ID>`: Delete a graph by name or ID (archives to archived_graphs/)
+- `--force`: Force deletion even if it's the active graph (use with --delete-graph)
 
 ### Core Directories
 - **src/**: Cymbiont server - graph management, API endpoints
@@ -25,7 +27,9 @@ env RUST_LOG=debug cargo test -- --nocapture 2>&1 | tee test_output.log  # Captu
 - **data/**: Knowledge graph persistence (configurable via data_dir in config.yaml)
   - **IMPORTANT**: The data/ directory is git-tracked (has .gitkeep) - never rm -rf it
   - **graph_registry.json**: Graph UUID mappings and metadata
+  - **auth_token**: Auto-generated authentication token (rotates on restart)
   - **graphs/{graph-id}/**: Per-graph isolated storage with knowledge_graph.json and transaction logs
+  - **archived_graphs/**: Deleted graphs are moved here with timestamp
   - **transaction_log/**: Global transaction log (sled database)
 
 ### Project Structure
@@ -51,6 +55,7 @@ env RUST_LOG=debug cargo test -- --nocapture 2>&1 | tee test_output.log  # Captu
   - **server/**: Server-specific functionality
     - **http_api.rs**: HTTP endpoints for health, import, WebSocket upgrade
     - **websocket.rs**: WebSocket server for real-time communication
+    - **auth.rs**: Authentication system with token generation and validation
     - **server.rs**: HTTP/WebSocket server setup and configuration
 - **tests/**: Test binaries (e.g. integration tests) - see `tests/CLAUDE.md` for test harness details
 - **.gitignore**: Git ignore patterns

@@ -98,6 +98,11 @@ cargo run
 # Import knowledge from Logseq
 cargo run -- --import-logseq /path/to/notes
 
+# Delete a graph by name or ID
+cargo run -- --delete-graph my-old-notes
+# Force delete even if it's the active graph
+cargo run -- --delete-graph my-old-notes --force
+
 # Use custom data directory
 cargo run -- --data-dir ./my-graphs
 
@@ -132,6 +137,11 @@ backend:
 
 development:
   default_duration: null          # Run indefinitely
+
+# Optional authentication settings
+# auth:
+#   token: "your-secret-token"   # Fixed token (auto-generated if not set)
+#   disabled: false              # Set to true to disable auth
 ```
 
 ## Advanced Usage
@@ -144,6 +154,15 @@ For developers building applications on top of Cymbiont:
 # Start the server
 cargo run -- --server
 ```
+
+When running as a server, Cymbiont generates an authentication token on startup:
+
+```
+🔐 Authentication token: 7f3a8b2c-d9e5-4a6f-b1c3-9e8d7f6a5b4c
+📁 Token saved to: data/auth_token
+```
+
+Use this token in the Authorization header for HTTP requests or via the WebSocket Auth command.
 
 Cymbiont provides HTTP and WebSocket APIs:
 

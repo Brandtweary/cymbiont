@@ -81,6 +81,14 @@ struct Args {
     #[arg(long, value_name = "PATH")]
     import_logseq: Option<String>,
     
+    /// Delete a graph by name or ID
+    #[arg(long, value_name = "NAME_OR_ID")]
+    delete_graph: Option<String>,
+    
+    /// Force deletion even if it's the active graph
+    #[arg(long, requires = "delete_graph")]
+    force: bool,
+    
     // Server-specific args (only used when --server is provided)
     /// Run server for a specific duration in seconds (for testing)
     #[arg(long)]
@@ -148,6 +156,24 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
             info!("✅ Import complete. Continuing to run...");
         }
         
+        // Handle graph deletion if requested
+        if let Some(graph_identifier) = args.delete_graph {
+            use crate::graph_operations::GraphOperations;
+            
+            // Resolve the graph by name or ID
+            let graph_id = resolve_graph_by_name_or_id(&app_state, &graph_identifier).await?;
+            
+            info!("🗑️  Deleting graph: {}", graph_identifier);
+            
+            // Delete the graph using GraphOperations
+            let graph_ops = GraphOperations::new(app_state.clone());
+            graph_ops.delete_graph(graph_id, args.force).await
+                .map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)?;
+            
+            info!("✅ Graph deleted successfully");
+            info!("Continuing to run...");
+        }
+        
         let graphs = {
             let registry_guard = app_state.graph_registry.lock().unwrap();
             registry_guard.get_all_graphs()
@@ -199,4 +225,40 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
     // This is the recommended workaround for sled issue #1234
     error!("FORCING PROCESS EXIT NOW");
     std::process::exit(0)
+}
+
+/// Resolve a graph by name or ID
+async fn resolve_graph_by_name_or_id(
+    app_state: &AppState,
+    identifier: &str,
+) -> Result<String, Box<dyn Error + Send + Sync>> {
+    // Get all graphs from registry
+    let graphs = {
+        let registry = app_state.graph_registry.lock()
+            .map_err(|e| format!("Failed to lock registry: {}", e))?;
+        registry.get_all_graphs()
+    };
+    
+    if graphs.is_empty() {
+        return Err("No graphs found".into());
+    }
+    
+    // First try exact ID match
+    if let Some(graph) = graphs.iter().find(|g| g.id == identifier) {
+        return Ok(graph.id.clone());
+    }
+    
+    // Then try name match
+    if let Some(graph) = graphs.iter().find(|g| g.name == identifier) {
+        return Ok(graph.id.clone());
+    }
+    
+    // Not found - provide helpful error with available graphs
+    let mut error_msg = format!("Graph not found: '{}'", identifier);
+    error_msg.push_str("\nAvailable graphs:");
+    for graph in &graphs {
+        error_msg.push_str(&format!("\n  - {} ({})", graph.name, graph.id));
+    }
+    
+    Err(error_msg.into())
 }

@@ -425,10 +425,14 @@ impl GraphOperations {
     }
     
     /// Delete a knowledge graph
-    pub async fn delete_graph(&self, graph_id: String) -> Result<()> {
+    /// 
+    /// Archives the graph to `{data_dir}/archived_graphs/` with timestamp.
+    /// Prevents deletion of the active graph unless `force` is true.
+    /// When active graph is deleted, automatically switches to another available graph.
+    pub async fn delete_graph(&self, graph_id: String, force: bool) -> Result<()> {
         // Check if this is the active graph
         let active_graph = self.app_state.get_active_graph_manager().await;
-        if active_graph.as_ref() == Some(&graph_id) {
+        if active_graph.as_ref() == Some(&graph_id) && !force {
             return Err(GraphOperationError::GraphError("Cannot delete the currently active graph".into()));
         }
         

@@ -34,7 +34,7 @@ cymbiont/
 │   ├── auth_token                 # Authentication token (auto-generated)
 │   ├── graphs/{graph-id}/         # Per-graph storage
 │   │   ├── knowledge_graph.json   # Serialized petgraph
-│   │   └── transaction_log/       # WAL database
+│   │   └── transaction_log/       # Per-graph WAL database
 │   └── archived_graphs/           # Deleted graphs archive
 └── tests/                         # Integration tests - see tests/CLAUDE.md
     ├── common/                    # Shared test utilities
@@ -202,9 +202,8 @@ Data directory configurable via `config.yaml` or `--data-dir` CLI flag:
 ├── auth_token                    # Authentication token file
 ├── graphs/{graph-id}/            # Per-graph storage
 │   ├── knowledge_graph.json      # Serialized petgraph
-│   └── transaction_log/          # Sled WAL database
-├── archived_graphs/              # Archived graphs (deletion)
-└── transaction_log/              # Global transaction log
+│   └── transaction_log/          # Per-graph sled WAL database
+└── archived_graphs/              # Archived graphs (deletion)
 ```
 
 ### Graph Registry Format

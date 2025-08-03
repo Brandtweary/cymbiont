@@ -4,9 +4,9 @@
 ```bash
 # In cymbiont root
 cargo check                      # Quick syntax check - don't filter with grep/tail/head ever; cargo commands are always information-dense
-cargo build                      # Build cymbiont server
+cargo build                      # Build cymbiont
 cargo test                       # Run full test suite (preferred - only filter by test during active troubleshooting)
-RUST_LOG=debug cargo run         # Run backend server with debug logging (do not alter default 3s duration or set a timeout)
+RUST_LOG=debug cargo run         # Run cymbiont with debug logging (do not change duration or set a timeout unless user requests it)
 env RUST_LOG=debug cargo test -- --nocapture 2>&1 | tee test_output.log  # Capture console output to file; do not filter before piping the full output
 ```
 
@@ -17,8 +17,7 @@ env RUST_LOG=debug cargo test -- --nocapture 2>&1 | tee test_output.log  # Captu
 - `--data-dir <PATH>`: Override data directory path (defaults to config value)
 - `--config <PATH>`: Use specific configuration file
 - `--import-logseq <PATH>`: Import Logseq graph directory (then continues running)
-- `--delete-graph <NAME_OR_ID>`: Delete a graph by name or ID (archives to archived_graphs/)
-- `--force`: Force deletion even if it's the active graph (use with --delete-graph)
+- `--delete-graph <NAME_OR_ID>`: Archive a graph by name or ID (use `--force` if active graph)
 
 ### Core Directories
 - **src/**: Cymbiont server - graph management, API endpoints
@@ -69,7 +68,7 @@ env RUST_LOG=debug cargo test -- --nocapture 2>&1 | tee test_output.log  # Captu
 ## Codebase Guidelines
 - Logging: use `tracing` macros - `error!()`, `warn!()`, `info!()`, `debug!()`, `trace!()`
 - Error handling: use `thiserror` for custom error types; define module-specific `Error` enums and `type Result<T>` aliases
-- Whenever you update `config.example.yaml` ensure that you also update `config.yaml`, and vice versa
+- Whenever you update `config.example.yaml` ensure that you also update `config.yaml`
 - Don't make live LLM calls during tests
 
 ### Log Level Guidelines

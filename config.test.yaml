@@ -2,8 +2,6 @@
 
 # Backend server configuration
 backend:
-  # Host setting (ignored for security - server always binds to localhost)
-  host: 127.0.0.1
   # Port for the backend server
   port: 8888
   # Maximum number of alternative ports to try if the default is unavailable

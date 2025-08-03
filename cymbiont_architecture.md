@@ -192,20 +192,6 @@ cymbiont/
 - **Client→Server**: `Auth { token }`, `Heartbeat`, `CreateBlock`, `UpdateBlock`, `DeleteBlock`, `CreatePage`, `DeletePage`, `SwitchGraph`, `CreateGraph`, `DeleteGraph`
 - **Server→Client**: `Success { data? }`, `Error { message }`, `Heartbeat`
 
-## Persistence Layout
-
-Data directory configurable via `config.yaml` or `--data-dir` CLI flag:
-
-```
-{data_dir}/
-├── graph_registry.json           # Graph UUID registry  
-├── auth_token                    # Authentication token file
-├── graphs/{graph-id}/            # Per-graph storage
-│   ├── knowledge_graph.json      # Serialized petgraph
-│   └── transaction_log/          # Per-graph sled WAL database
-└── archived_graphs/              # Archived graphs (deletion)
-```
-
 ### Graph Registry Format
 ```json
 {
@@ -220,13 +206,12 @@ Data directory configurable via `config.yaml` or `--data-dir` CLI flag:
 ```yaml
 data_dir: data                    # Storage directory
 backend:
-  host: "localhost"
-  port: 8888
-  max_port_attempts: 10
+  port: 8888                      # Base HTTP server port
+  max_port_attempts: 10           # Port search range if base port is busy
   server_info_file: "cymbiont_server.json"  # Server discovery file (enables multi-instance)
 development:
-  default_duration: null          # Run duration (null = indefinite)
-auth:                             # Authentication configuration (optional)
+  default_duration: 3             # Auto-exit after 3 seconds (set to null for production)
+auth:                             # Authentication configuration
   token: null                     # Fixed token (auto-generated if null)
   disabled: false                 # Disable auth entirely (not recommended)
 ```

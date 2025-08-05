@@ -65,8 +65,9 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
-use tracing::{error, info};
+use tracing::{error, info, debug};
 use uuid::Uuid;
+use async_trait::async_trait;
 
 #[derive(Error, Debug)]
 pub enum TransactionLogError {
@@ -94,9 +95,50 @@ pub enum TransactionState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Operation {
-    CreateNode { node_type: String, content: String, temp_id: Option<String> },
-    UpdateNode { node_id: String, content: String },
-    DeleteNode { node_id: String },
+    // Block operations with full API parameters
+    CreateBlock {
+        content: String,
+        parent_id: Option<String>,
+        page_name: Option<String>,
+        properties: Option<serde_json::Value>,
+    },
+    UpdateBlock {
+        block_id: String,
+        content: String,
+    },
+    DeleteBlock {
+        block_id: String,
+    },
+    // Page operations with full API parameters
+    CreatePage {
+        page_name: String,
+        properties: Option<serde_json::Value>,
+    },
+    DeletePage {
+        page_name: String,
+    },
+}
+
+impl Operation {
+    /// Get the operation name for logging/debugging
+    pub fn name(&self) -> &'static str {
+        match self {
+            Operation::CreateBlock { .. } => "CreateBlock",
+            Operation::UpdateBlock { .. } => "UpdateBlock",
+            Operation::DeleteBlock { .. } => "DeleteBlock",
+            Operation::CreatePage { .. } => "CreatePage",
+            Operation::DeletePage { .. } => "DeletePage",
+        }
+    }
+}
+
+/// Trait for executing operations
+/// This allows the storage layer to define operations without knowing about
+/// the specific implementation details of graph operations
+#[async_trait]
+pub trait OperationExecutor: Send + Sync {
+    /// Execute an operation and return success/failure
+    async fn execute_operation(&self, operation: Operation) -> std::result::Result<(), String>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,8 +160,8 @@ impl Transaction {
             .as_millis() as u64;
             
         let content_hash = match &operation {
-            Operation::CreateNode { content, .. } | 
-            Operation::UpdateNode { content, .. } => {
+            Operation::CreateBlock { content, .. } | 
+            Operation::UpdateBlock { content, .. } => {
                 Some(compute_content_hash(content))
             }
             _ => None,
@@ -146,15 +188,18 @@ pub struct TransactionLog {
 
 impl TransactionLog {
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let path_ref = path.as_ref();
+        debug!("Opening sled database at path: {:?} with flush_every_ms=100", path_ref);
         
         let config = sled::Config::new()
-            .path(path)
+            .path(path_ref)
             .flush_every_ms(Some(100))  // Frequent durability
             // .snapshot_after_ops(10000)  // Deprecated in current sled version
             .cache_capacity(64 * 1024 * 1024)  // 64MB cache
             .mode(sled::Mode::HighThroughput);
             
         let db = config.open()?;
+        debug!("Sled database opened successfully");
         
         let transactions_tree = db.open_tree("transactions")?;
         let content_hash_index = db.open_tree("content_hash_index")?;
@@ -185,6 +230,8 @@ impl TransactionLog {
         let tx_id = transaction.id.clone();
         let tx_bytes = serde_json::to_vec(&transaction)?;
         
+        debug!("Appending transaction {} with operation: {:?}", tx_id, transaction.operation);
+        
         // Store the transaction
         self.transactions_tree.insert(tx_id.as_bytes(), tx_bytes)?;
         
@@ -195,6 +242,8 @@ impl TransactionLog {
         
         // Add to pending index
         self.pending_index.insert(tx_id.as_bytes(), b"")?;
+        
+        debug!("Transaction {} appended successfully", tx_id);
         
         Ok(tx_id)
     }
@@ -237,19 +286,24 @@ impl TransactionLog {
         Ok(())
     }
     
-    #[allow(dead_code)] // Used by recover_pending_transactions() for crash recovery
     pub fn list_pending_transactions(&self) -> Result<Vec<Transaction>> {
+        debug!("Listing pending transactions from pending_index");
         let mut pending = Vec::new();
         
         for item in self.pending_index.iter() {
             let (tx_id_bytes, _) = item?;
             let tx_id = String::from_utf8_lossy(&tx_id_bytes);
+            debug!("Found pending transaction ID in index: {}", tx_id);
             
             if let Ok(transaction) = self.get_transaction(&tx_id) {
+                debug!("Retrieved transaction {} with state {:?}", tx_id, transaction.state);
                 pending.push(transaction);
+            } else {
+                debug!("Could not retrieve transaction {} from log", tx_id);
             }
         }
         
+        debug!("Total pending transactions found: {}", pending.len());
         Ok(pending)
     }
 }
@@ -278,10 +332,11 @@ mod tests {
     fn test_append_and_get_transaction() {
         let (log, _temp_dir) = create_test_log();
         
-        let operation = Operation::CreateNode {
-            node_type: "block".to_string(),
+        let operation = Operation::CreateBlock {
             content: "Test content".to_string(),
-            temp_id: Some("temp-123".to_string()),
+            parent_id: None,
+            page_name: Some("test-page".to_string()),
+            properties: None,
         };
         
         let transaction = Transaction::new(operation);
@@ -297,10 +352,11 @@ mod tests {
     fn test_update_transaction_state() {
         let (log, _temp_dir) = create_test_log();
         
-        let operation = Operation::CreateNode {
-            node_type: "block".to_string(),
+        let operation = Operation::CreateBlock {
             content: "Test content".to_string(),
-            temp_id: None,
+            parent_id: None,
+            page_name: Some("test-page".to_string()),
+            properties: None,
         };
         
         let transaction = Transaction::new(operation);
@@ -318,10 +374,11 @@ mod tests {
         
         // Create multiple transactions
         for i in 0..3 {
-            let operation = Operation::CreateNode {
-                node_type: "block".to_string(),
+            let operation = Operation::CreateBlock {
                 content: format!("Content {}", i),
-                temp_id: None,
+                parent_id: None,
+                page_name: Some("test-page".to_string()),
+                properties: None,
             };
             log.append_transaction(Transaction::new(operation)).unwrap();
         }

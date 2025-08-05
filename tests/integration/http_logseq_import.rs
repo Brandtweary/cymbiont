@@ -1,7 +1,7 @@
 use std::fs;
 use serde_json::{json, Value};
 use crate::common::{setup_test_env, cleanup_test_env};
-use crate::common::test_harness::{TestServer, PreShutdown, PostShutdown, assert_phase};
+use crate::common::test_harness::{TestServer, PreShutdown, PostShutdown, assert_phase, read_auth_token};
 
 
 
@@ -48,9 +48,7 @@ pub fn test_http_logseq_import() {
         let test_data_dir = server.test_env().data_dir.clone();
         
         // Read auth token
-        let auth_token_path = test_data_dir.join("auth_token");
-        let auth_token = fs::read_to_string(&auth_token_path)
-            .expect("Failed to read auth token");
+        let auth_token = read_auth_token(&test_data_dir);
         
         // Get the absolute path to the dummy graph
         let dummy_graph_path = std::env::current_dir()
@@ -61,7 +59,7 @@ pub fn test_http_logseq_import() {
             port,
             dummy_graph_path.to_str().unwrap(),
             Some("test_http_import"),
-            Some(&auth_token.trim())
+            Some(&auth_token)
         ).expect("Failed to make import request");
         
         // Verify the response
@@ -178,12 +176,10 @@ pub fn test_http_import_error_cases() {
         let test_data_dir = server.test_env().data_dir.clone();
         
         // Read auth token
-        let auth_token_path = test_data_dir.join("auth_token");
-        let auth_token = fs::read_to_string(&auth_token_path)
-            .expect("Failed to read auth token");
+        let auth_token = read_auth_token(&test_data_dir);
         
         // Test 1: Non-existent path
-        let response = make_import_request(port, "/path/that/does/not/exist", None, Some(&auth_token.trim()))
+        let response = make_import_request(port, "/path/that/does/not/exist", None, Some(&auth_token))
             .expect("Failed to make import request");
         
         assert_eq!(response["success"], false);
@@ -193,7 +189,7 @@ pub fn test_http_import_error_cases() {
         let temp_file = data_dir.join("temp_file.txt");
         fs::write(&temp_file, "test").unwrap();
         
-        let response = make_import_request(port, temp_file.to_str().unwrap(), None, Some(&auth_token.trim()))
+        let response = make_import_request(port, temp_file.to_str().unwrap(), None, Some(&auth_token))
             .expect("Failed to make import request");
         
         assert_eq!(response["success"], false);

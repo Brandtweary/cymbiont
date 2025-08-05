@@ -64,9 +64,14 @@ cymbiont/
 **Key types**: `Config`, `BackendConfig`, `DevelopmentConfig`
 
 ### app_state.rs
-**Purpose**: Centralized application state management  
-**Key types**: `AppState` with graph managers, registry, WebSocket connections
-**Methods**: `new_cli()`, `new_server()`, `get_or_create_graph_manager()`
+**Purpose**: Centralized application state management and coordination  
+**Key types**: `AppState` - coordinates graph managers, registry, transactions, and WebSocket connections
+**Key methods**: 
+- `new_cli()`, `new_server()` - initialization for different modes
+- `get_or_create_graph_manager()` - lazy graph manager creation
+- `with_active_graph_transaction()` - wraps operations in transactions
+- `get_transaction_coordinator()` - access to per-graph WAL
+**Role**: Acts as the central nervous system, connecting all components without implementing business logic
 
 ### server/http_api.rs
 **Purpose**: HTTP API endpoints for health checks, imports, and WebSocket upgrades  
@@ -84,10 +89,12 @@ cymbiont/
 **Node/Edge types**: Defined by domain layer (e.g., PKM defines Page/Block nodes, PageRef/BlockRef edges)
 
 ### graph_operations.rs
-**Purpose**: Public API for PKM-oriented graph operations  
-**Key role**: Orchestrates PKM data transformations and graph mutations with transaction support
-**Operations**: `add_block()`, `update_block()`, `delete_block()`, `create_page()`, `delete_page()`, `create_graph()`, `delete_graph(force)`, `switch_graph()`, `list_graphs()`, `get_node()`
-**Note**: For direct graph manipulation, use graph_manager functions directly
+**Purpose**: PKM-specific operations as an extension trait on Arc<AppState>  
+**Design**: Extension trait pattern (`GraphOperationsExt`) provides PKM operations directly on AppState
+**Key role**: Adds domain-specific graph operations with full transaction support and crash recovery
+**Operations**: `add_block()`, `update_block()`, `delete_block()`, `create_page()`, `delete_page()`, `create_graph()`, `delete_graph(force)`, `switch_graph()`, `list_graphs()`, `get_node()`, `replay_operation()`
+**Transaction integration**: Each operation stores full API parameters in WAL for perfect recovery
+**Note**: Not a separate service - these are extension methods on Arc<AppState>
 
 ### storage/mod.rs
 **Purpose**: Persistence layer module with registry, transactions, and WAL logging  
@@ -119,11 +126,13 @@ cymbiont/
 **Key methods**: `execute_with_transaction()`, `begin_transaction()`, `commit_transaction()`
 
 ### server/websocket.rs
-**Purpose**: Real-time WebSocket communication  
-**Protocol**: Request/response with token auth, heartbeat, direct command execution
-**Commands**: `Auth`, `CreateBlock`, `UpdateBlock`, `DeleteBlock`, `CreatePage`, `DeletePage`, `SwitchGraph`, `CreateGraph`, `DeleteGraph`
+**Purpose**: Real-time WebSocket communication with high-throughput async processing  
+**Architecture**: Each command spawns as independent async task for concurrent execution
+**Protocol**: Request/response with token auth, heartbeat, async command execution
+**Commands**: `Auth`, `CreateBlock`, `UpdateBlock`, `DeleteBlock`, `CreatePage`, `DeletePage`, `SwitchGraph`, `CreateGraph`, `DeleteGraph`, `FreezeOperations`, `UnfreezeOperations`
 **Responses**: `Success`, `Error`, `Heartbeat`
 **Authentication**: Requires `Auth { token }` command before other operations
+**Performance**: Supports high-throughput scenarios with multiple concurrent operations
 
 ### import/logseq.rs
 **Purpose**: Logseq-specific parsing and transformation  
@@ -189,8 +198,9 @@ cymbiont/
 ```
 
 ### WebSocket Message Types
-- **Client→Server**: `Auth { token }`, `Heartbeat`, `CreateBlock`, `UpdateBlock`, `DeleteBlock`, `CreatePage`, `DeletePage`, `SwitchGraph`, `CreateGraph`, `DeleteGraph`
+- **Client→Server**: `Auth { token }`, `Heartbeat`, `CreateBlock`, `UpdateBlock`, `DeleteBlock`, `CreatePage`, `DeletePage`, `SwitchGraph`, `CreateGraph`, `DeleteGraph`, `FreezeOperations`, `UnfreezeOperations`, `GetFreezeState`
 - **Server→Client**: `Success { data? }`, `Error { message }`, `Heartbeat`
+- **Processing**: Commands execute asynchronously as independent tasks for high-throughput performance
 
 ### Graph Registry Format
 ```json
@@ -214,6 +224,12 @@ development:
 auth:                             # Authentication configuration
   token: null                     # Fixed token (auto-generated if null)
   disabled: false                 # Disable auth entirely (not recommended)
+transaction_log:                  # WAL configuration
+  fsync_interval_ms: 100          # Durability flush interval
+  compaction_threshold_mb: 100    # Size trigger for log compaction
+  retention_days: 7               # Keep completed transactions for N days
+  redundant_copies: 10            # Byzantine fault tolerance copies
+  integrity_check_on_startup: true # Auto-repair via consensus
 ```
 
 ## CLI Usage
@@ -241,8 +257,14 @@ After graceful cleanup, the process uses `std::process::exit(0)` to terminate im
 
 **Transaction**: Operation → Content hash → WAL log → Graph update → Commit/rollback
 
-**WebSocket**: Client auth → Direct command execution → Transaction-wrapped operation → Success/Error response
+**WebSocket**: Client auth → Async command execution (spawned tasks) → Transaction-wrapped operation → Success/Error response
 
 **Multi-Instance**: Configurable `server_info_file` enables concurrent server instances with isolated discovery
 
 **Authentication**: Server generates auth token on startup, saves to `{data_dir}/auth_token`. HTTP endpoints check Authorization header, WebSocket requires Auth command. Token rotates on restart for security.
+
+**Crash Recovery**: 
+1. On startup (main.rs): Replays pending transactions for active graph
+2. On graph switch: Replays pending transactions before activating
+3. Recovery mechanism: Operations store full API parameters, replay calls exact same methods
+4. Transaction states: Active → Committed (success) or Aborted (failure)

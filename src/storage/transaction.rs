@@ -23,7 +23,7 @@ use crate::storage::transaction_log::{Operation, Transaction, TransactionLog, Tr
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use std::collections::HashMap;
-use tracing::warn;
+use tracing::{warn, error, debug};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -110,17 +110,10 @@ impl TransactionCoordinator {
         pending.contains_key(content_hash)
     }
     
-    /// Execute an operation within a transaction, handling all lifecycle management
-    pub async fn execute_with_transaction<F, T>(
-        &self,
-        operation: Operation,
-        executor: F,
-    ) -> Result<T>
-    where
-        F: FnOnce() -> std::result::Result<T, String>,
-    {
+    /// Create a transaction with deduplication check
+    pub async fn create_transaction(&self, operation: Operation) -> Result<String> {
         // Check for duplicate content if applicable
-        if let Operation::CreateNode { content, .. } | Operation::UpdateNode { content, .. } = &operation {
+        if let Operation::CreateBlock { content, .. } | Operation::UpdateBlock { content, .. } = &operation {
             let hash = compute_content_hash(content);
             if self.is_content_pending(&hash).await {
                 warn!("Duplicate content detected in pending transactions - potential race condition. Content hash: {}", hash);
@@ -129,46 +122,60 @@ impl TransactionCoordinator {
         }
         
         // Begin transaction
-        let tx_id = self.begin_transaction(operation).await?;
-        
-        // Execute the operation
-        match executor() {
+        self.begin_transaction(operation).await
+    }
+    
+    /// Complete a transaction based on execution result
+    pub async fn complete_transaction<T>(
+        &self,
+        tx_id: &str,
+        result: std::result::Result<T, String>,
+    ) -> Result<T> {
+        match result {
             Ok(value) => {
-                self.commit_transaction(&tx_id).await?;
+                self.commit_transaction(tx_id).await?;
                 Ok(value)
             }
             Err(error_msg) => {
-                self.abort_transaction(&tx_id, &error_msg).await?;
+                self.abort_transaction(tx_id, &error_msg).await?;
                 Err(TransactionError::OperationFailed(error_msg))
             }
         }
     }
     
-    #[allow(dead_code)] // TODO: Implement crash recovery on startup
-    pub async fn recover_pending_transactions(&self) -> Result<Vec<String>> {
+    pub async fn recover_pending_transactions(&self) -> Result<Vec<Transaction>> {
+        debug!("Starting recovery - listing pending transactions");
         let pending = self.log.list_pending_transactions()?;
-        let mut recovered = Vec::new();
+        debug!("Found {} total pending transactions", pending.len());
+        let mut recoverable = Vec::new();
+        
+        if !pending.is_empty() {
+            warn!("Found {} pending transactions from previous session - initiating recovery", 
+                  pending.len());
+        }
         
         for transaction in pending {
-            // Re-add to pending operations map
-            if let Some(content_hash) = &transaction.content_hash {
-                let mut pending_ops = self.pending_operations.write().await;
-                pending_ops.insert(content_hash.clone(), transaction.id.clone());
-            }
+            debug!("Processing transaction {} with state {:?}", transaction.id, transaction.state);
+            // Don't re-add to pending operations map - these transactions are already recorded
+            // and will be replayed. Adding them would cause duplicate content detection
+            // when replay_transaction tries to create a new transaction.
             
             match transaction.state {
                 TransactionState::Active => {
                     // These can be retried
-                    recovered.push(transaction.id);
+                    debug!("Transaction {} is Active - adding to recoverable", transaction.id);
+                    recoverable.push(transaction);
                 }
                 _ => {
                     // Committed or Aborted - shouldn't be in pending, but log it
-                    warn!("Found {:?} transaction in pending list: {}", transaction.state, transaction.id);
+                    error!("Found {:?} transaction in pending list: {} - this indicates a bug", 
+                           transaction.state, transaction.id);
                 }
             }
         }
         
-        Ok(recovered)
+        debug!("Recovery complete - {} transactions are recoverable", recoverable.len());
+        Ok(recoverable)
     }
 }
 
@@ -188,10 +195,11 @@ mod tests {
     async fn test_transaction_lifecycle() {
         let (coordinator, _temp_dir) = create_test_coordinator().await;
         
-        let operation = Operation::CreateNode {
-            node_type: "block".to_string(),
+        let operation = Operation::CreateBlock {
             content: "Test content".to_string(),
-            temp_id: Some("temp-123".to_string()),
+            parent_id: None,
+            page_name: Some("test-page".to_string()),
+            properties: None,
         };
         
         // Begin transaction
@@ -212,8 +220,8 @@ mod tests {
     async fn test_abort_transaction() {
         let (coordinator, _temp_dir) = create_test_coordinator().await;
         
-        let operation = Operation::UpdateNode {
-            node_id: "node-123".to_string(),
+        let operation = Operation::UpdateBlock {
+            block_id: "block-123".to_string(),
             content: "Updated content".to_string(),
         };
         
@@ -234,10 +242,11 @@ mod tests {
             let coordinator = TransactionCoordinator::new(log.clone());
             
             for i in 0..3 {
-                let operation = Operation::CreateNode {
-                    node_type: "block".to_string(),
+                let operation = Operation::CreateBlock {
                     content: format!("Content {}", i),
-                    temp_id: None,
+                    parent_id: None,
+                    page_name: Some("test-page".to_string()),
+                    properties: None,
                 };
                 coordinator.begin_transaction(operation).await.unwrap();
             }
@@ -247,6 +256,11 @@ mod tests {
         let coordinator = TransactionCoordinator::new(log);
         let recovered = coordinator.recover_pending_transactions().await.unwrap();
         assert_eq!(recovered.len(), 3);
+        
+        // Verify they are all Active transactions
+        for tx in &recovered {
+            assert_eq!(tx.state, TransactionState::Active);
+        }
     }
 }
 
@@ -258,3 +272,4 @@ fn compute_content_hash(content: &str) -> String {
     content.hash(&mut hasher);
     format!("{:x}", hasher.finish())
 }
+

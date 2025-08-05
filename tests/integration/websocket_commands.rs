@@ -1,89 +1,11 @@
 use std::fs;
-use std::process::Command;
-use std::thread;
-use std::time::Duration;
 use serde_json::{json, Value};
-use crate::common::{setup_test_env, cleanup_test_env, get_cymbiont_binary};
-use crate::common::test_harness::{TestServer, PreShutdown, PostShutdown, assert_phase};
-use tungstenite::{connect, Message, WebSocket};
-use tungstenite::stream::MaybeTlsStream;
-use std::net::TcpStream;
-
-/// WebSocket connection type
-type WsConnection = WebSocket<MaybeTlsStream<TcpStream>>;
-
-
-/// Connect to WebSocket endpoint
-fn connect_websocket(port: u16) -> WsConnection {
-    let url = format!("ws://localhost:{}/ws", port);
-    
-    // Retry connection a few times as server may still be initializing WebSocket
-    let mut attempts = 0;
-    const MAX_ATTEMPTS: u32 = 10;
-    
-    loop {
-        attempts += 1;
-        match connect(&url) {
-            Ok((socket, _)) => return socket,
-            Err(e) => {
-                if attempts >= MAX_ATTEMPTS {
-                    panic!("Failed to connect to WebSocket after {} attempts: {}", MAX_ATTEMPTS, e);
-                }
-                thread::sleep(Duration::from_millis(100));
-            }
-        }
-    }
-}
-
-/// Send a command and wait for response
-fn send_command(ws: &mut WsConnection, command: Value) -> Value {
-    // Send command
-    let msg = Message::Text(command.to_string());
-    ws.send(msg).expect("Failed to send WebSocket message");
-    
-    // Wait for response
-    loop {
-        match ws.read() {
-            Ok(Message::Text(text)) => {
-                let response: Value = serde_json::from_str(&text)
-                    .expect("Failed to parse WebSocket response");
-                
-                // Skip heartbeats
-                if response["type"] == "heartbeat" {
-                    continue;
-                }
-                
-                return response;
-            }
-            Ok(Message::Close(_)) => {
-                panic!("WebSocket connection closed unexpectedly");
-            }
-            Ok(_) => continue,  // Skip other message types
-            Err(e) => panic!("WebSocket read error: {}", e),
-        }
-    }
-}
-
-/// Expect a success response and return the data
-fn expect_success(response: Value) -> Option<Value> {
-    assert_eq!(
-        response["type"], "success",
-        "Expected success response, got: {}",
-        response
-    );
-    response.get("data").cloned()
-}
-
-/// Authenticate the WebSocket connection
-fn authenticate(ws: &mut WsConnection, token: &str) -> bool {
-    let auth_cmd = json!({
-        "type": "auth",
-        "token": token
-    });
-    
-    let response = send_command(ws, auth_cmd);
-    response["type"] == "success"
-}
+use crate::common::{setup_test_env, cleanup_test_env};
+use crate::common::test_harness::{
+    PreShutdown, PostShutdown, assert_phase,
+    WsConnection, connect_websocket, send_command, expect_success, 
+    authenticate_websocket, setup_with_graph, read_auth_token, get_active_graph_id
+};
 
 /// Test creating a new block
 fn test_create_block(ws: &mut WsConnection) -> String {
@@ -183,14 +105,7 @@ fn test_delete_page(ws: &mut WsConnection, page_name: &str) {
 /// Test graph operations (create and switch)
 fn test_graph_operations(ws: &mut WsConnection, data_dir: &std::path::Path) -> String {
     // Get the current active graph ID first
-    let registry_path = data_dir.join("graph_registry.json");
-    let registry_content = fs::read_to_string(&registry_path)
-        .expect("Failed to read graph registry");
-    let registry: Value = serde_json::from_str(&registry_content)
-        .expect("Failed to parse graph registry");
-    let original_graph_id = registry["active_graph_id"].as_str()
-        .expect("No active graph ID")
-        .to_string();
+    let original_graph_id = get_active_graph_id(data_dir);
     
     // Create a new graph
     let create_cmd = json!({
@@ -309,7 +224,7 @@ fn test_error_cases(ws: &mut WsConnection, port: u16, active_graph_id: &str) {
     
     // Test invalid auth token
     let mut invalid_auth_ws = connect_websocket(port);
-    assert!(!authenticate(&mut invalid_auth_ws, "invalid-token"), "Authentication should fail with invalid token");
+    assert!(!authenticate_websocket(&mut invalid_auth_ws, "invalid-token"), "Authentication should fail with invalid token");
 }
 
 /// Validate the final graph state
@@ -423,30 +338,8 @@ pub fn test_websocket_commands() {
     
     // Use a closure to ensure cleanup happens even on panic
     let result = std::panic::catch_unwind(move || {
-        // Import dummy_graph via CLI
-        let output = Command::new(get_cymbiont_binary())
-            .env("CYMBIONT_TEST_MODE", "1")
-            .args(&["--config", test_env.config_path.to_str().unwrap(),
-                "--import-logseq", "logseq_databases/dummy_graph/"])
-            .output()
-            .expect("Failed to run cymbiont import");
-        
-        assert!(output.status.success(), 
-            "Import failed with exit code: {:?}", 
-            output.status.code());
-        
-        // Get the imported graph ID
-        let registry_path = test_env.data_dir.join("graph_registry.json");
-        let registry_content = fs::read_to_string(&registry_path)
-            .expect("Failed to read registry");
-        let registry: Value = serde_json::from_str(&registry_content)
-            .expect("Failed to parse registry");
-        let original_graph_id = registry["active_graph_id"].as_str()
-            .expect("No active graph")
-            .to_string();
-        
-        // Start server with WebSocket support
-        let server = TestServer::start(test_env);
+        // Import dummy graph and start server
+        let (server, original_graph_id) = setup_with_graph(test_env);
         let port = server.port();
         let data_dir = server.test_env().data_dir.clone();
         
@@ -456,13 +349,9 @@ pub fn test_websocket_commands() {
         // Connect WebSocket client
         let mut ws = connect_websocket(port);
         
-        // Read auth token from test environment
-        let auth_token_path = data_dir.join("auth_token");
-        let auth_token = fs::read_to_string(&auth_token_path)
-            .expect("Failed to read auth token");
-        
-        // Authenticate
-        assert!(authenticate(&mut ws, &auth_token.trim()), "Authentication failed with valid token");
+        // Read auth token and authenticate
+        let auth_token = read_auth_token(&data_dir);
+        assert!(authenticate_websocket(&mut ws, &auth_token), "Authentication failed with valid token");
         
         // Test Create Block
         let new_block_id = test_create_block(&mut ws);

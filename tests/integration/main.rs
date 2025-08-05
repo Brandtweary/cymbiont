@@ -11,6 +11,8 @@ mod common;
 mod http_logseq_import;
 mod logseq_import;
 mod websocket_commands;
+mod freeze_mechanism;
+mod crash_recovery;
 
 // Re-export test functions with #[test] attribute
 #[test]
@@ -31,4 +33,29 @@ fn test_logseq_import_cyberorganism_test_1() {
 #[test]
 fn test_websocket_commands() {
     websocket_commands::test_websocket_commands();
+}
+
+#[test]
+fn test_freeze_mechanism() {
+    freeze_mechanism::test_freeze_mechanism();
+}
+
+#[test]
+fn test_freeze_persistence() {
+    freeze_mechanism::test_freeze_persistence();
+}
+
+#[test]
+fn test_freeze_timeout() {
+    freeze_mechanism::test_freeze_timeout();
+}
+
+#[test]
+fn test_startup_recovery() {
+    crash_recovery::test_startup_recovery();
+}
+
+#[test]
+fn test_graph_switch_recovery() {
+    crash_recovery::test_graph_switch_recovery();
 }

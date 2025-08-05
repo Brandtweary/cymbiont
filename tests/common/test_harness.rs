@@ -10,43 +10,59 @@
 //! and reliable shutdown behavior. The TestServer supports both CLI and server modes
 //! through flexible argument passing while maintaining identical shutdown detection.
 //! 
-//! ## Usage Pattern
+//! ## Comprehensive Example: WebSocket Test with Graph Operations
 //! 
 //! ```rust
-//! use crate::common::test_harness::{setup_test_env, cleanup_test_env, TestServer, PreShutdown, PostShutdown, assert_phase};
+//! use crate::common::test_harness::*;
+//! use serde_json::{json, Value};
 //! 
-//! pub fn test_example() {
+//! pub fn test_websocket_operations() {
 //!     let test_env = setup_test_env();
+//!     let cleanup_env = test_env.clone();
 //!     
-//!     // Use panic handler to ensure cleanup
 //!     let result = std::panic::catch_unwind(move || {
-//!         // Start server - it will wait until ready
-//!         let server = TestServer::start(test_env);
+//!         // Setup: Import graph and start server
+//!         let (server, graph_id) = setup_with_graph(test_env);
+//!         let port = server.port();
+//!         let data_dir = server.test_env().data_dir.clone();
 //!         
-//!         // Phase 1: Server is running - do WebSocket/HTTP operations
 //!         assert_phase(PreShutdown);
 //!         
-//!         // ... perform tests against running server ...
-//!         // Use server.port() to get the actual port
+//!         // Connect to WebSocket
+//!         let mut ws = connect_websocket(port);
 //!         
-//!         // Phase 2: Shutdown server and wait for saves
+//!         // Authenticate using token from data directory
+//!         let token = read_auth_token(&data_dir);
+//!         assert!(authenticate_websocket(&mut ws, &token));
+//!         
+//!         // Send a command and expect success
+//!         let cmd = json!({
+//!             "type": "create_block",
+//!             "content": "Test block"
+//!         });
+//!         let response = send_command(&mut ws, cmd);
+//!         let data = expect_success(response);
+//!         let block_id = data.unwrap()["block_id"].as_str().unwrap();
+//!         
+//!         // Graceful shutdown
 //!         let test_env = server.shutdown();
 //!         
-//!         // Phase 3: Server has shutdown - safe to validate persisted data
 //!         assert_phase(PostShutdown);
 //!         
-//!         // ... validate saved files, graph state, etc ...
+//!         // Verify persistence - graph should be saved
+//!         let active_id = get_active_graph_id(&test_env.data_dir);
+//!         assert_eq!(active_id, graph_id);
 //!         
-//!         test_env // Return for cleanup
+//!         test_env
 //!     });
 //!     
-//!     // Always cleanup regardless of test outcome
-//!     if let Ok(test_env) = result {
-//!         cleanup_test_env(test_env);
-//!     } else if let Err(panic) = result {
-//!         // For panics, we need the cloned env
-//!         // Better pattern: clone test_env before catch_unwind
-//!         std::panic::resume_unwind(panic);
+//!     // Cleanup
+//!     match result {
+//!         Ok(test_env) => cleanup_test_env(test_env),
+//!         Err(panic) => {
+//!             cleanup_test_env(cleanup_env);
+//!             std::panic::resume_unwind(panic);
+//!         }
 //!     }
 //! }
 //! ```
@@ -58,13 +74,58 @@
 //! let test_env = server.wait_for_completion(); // Wait for natural exit
 //! ```
 //! 
+//! ## Crash Recovery Test Example
+//! 
+//! ```rust
+//! // Start server and create some in-flight transactions
+//! let mut server = TestServer::start(test_env);
+//! // ... create transactions via WebSocket ...
+//! 
+//! // Simulate crash
+//! server.force_kill();
+//! 
+//! // Start new server - recovery should happen
+//! let server2 = TestServer::start(test_env);
+//! // ... verify transactions were recovered ...
+//! ```
+//! 
+//! ## Key Functions
+//! 
+//! **Environment Setup:**
+//! - `setup_test_env()` - Creates isolated test environment with unique ports/directories
+//! - `cleanup_test_env()` - Removes all test artifacts
+//! - `setup_with_graph()` - Combines import_dummy_graph() and TestServer::start()
+//! 
+//! **Server Control:**
+//! - `TestServer::start()` - Start server mode and wait for HTTP ready
+//! - `TestServer::start_with_args()` - Start with custom CLI arguments
+//! - `TestServer::shutdown()` - Graceful shutdown with SIGINT
+//! - `TestServer::force_kill()` - Immediate termination with SIGKILL
+//! - `TestServer::wait_for_completion()` - Wait for natural process exit
+//! 
+//! **WebSocket Testing:**
+//! - `connect_websocket()` - Connect with automatic retries
+//! - `authenticate_websocket()` - Send auth command and verify success
+//! - `send_command()` - Send command and return response (skips heartbeats)
+//! - `expect_success()` - Assert success response and extract data
+//! 
+//! **Data Access:**
+//! - `read_auth_token()` - Read authentication token from data directory
+//! - `get_active_graph_id()` - Extract active graph ID from registry
+//! - `import_dummy_graph()` - Import test graph via CLI
+//! 
+//! **Freeze Operations (Test Infrastructure):**
+//! - `freeze_operations()` - Pause graph operations after transaction creation
+//! - `unfreeze_operations()` - Resume paused graph operations
+//! - `get_freeze_state()` - Check if operations are currently frozen
+//! - `send_command_async()` - Send command without waiting for response
+//! - `read_pending_response()` - Read response with timeout handling
+//! 
 //! ## Important Notes
 //! 
-//! - Tests run in parallel by default - each test gets unique ports and data directories
-//! - The server automatically waits for startup before returning from `start()`
-//! - `shutdown()` gracefully stops the server and waits for all saves to complete
-//! - `wait_for_completion()` waits for natural process exit (e.g., --duration timeout)
-//! - Always use `assert_phase` markers to document when assertions should happen
+//! - Tests run in parallel - each gets unique ports and data directories
+//! - Always use panic handler + cleanup pattern for proper teardown
+//! - Use `assert_phase()` markers to document test phases
 //! - The `Drop` trait ensures servers are killed even if tests panic
 
 use std::env;
@@ -75,6 +136,10 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Once;
 use std::thread;
 use std::time::{Duration, Instant};
+use serde_json::{json, Value};
+use tungstenite::{connect, Message, WebSocket};
+use tungstenite::stream::MaybeTlsStream;
+use std::net::TcpStream;
 
 // Include the main logging module directly (avoids needing lib.rs)
 #[path = "../../src/logging.rs"]
@@ -136,7 +201,8 @@ backend:
 
 # Development-only settings
 development:
-  # 3 second duration for tests
+  # 3 second duration for tests - DO NOT CHANGE THIS
+  # Individual tests can pass --duration if they need more time
   default_duration: 3
 
 # Data storage directory - unique per test
@@ -164,11 +230,25 @@ pub fn get_cymbiont_binary() -> PathBuf {
 
 /// Clean up test environment after tests
 pub fn cleanup_test_env(test_env: TestEnv) {
+    // Check if KEEP_TEST_DATA environment variable is set
+    if env::var("KEEP_TEST_DATA").is_ok() {
+        use tracing::info;
+        info!("🔍 KEEPING TEST DATA for debugging:");
+        info!("   Data directory: {}", test_env.data_dir.display());
+        info!("   Config file: {}", test_env.config_path.display());
+        info!("   To clean up manually: rm -rf {} {}", 
+              test_env.data_dir.display(), test_env.config_path.display());
+        return;
+    }
+    
     // Remove test data directory
     if test_env.data_dir.exists() {
         match fs::remove_dir_all(&test_env.data_dir) {
             Ok(_) => {},
-            Err(e) => eprintln!("Failed to remove test data directory: {}", e),
+            Err(e) => {
+                use tracing::error;
+                error!("Failed to remove test data directory: {}", e);
+            }
         }
     }
     
@@ -196,7 +276,7 @@ pub fn cleanup_test_env(test_env: TestEnv) {
 /// Despite the name, this can run both server mode (the primary use case) and CLI mode.
 /// Use `start()` for server mode or `start_with_args()` for CLI commands.
 pub struct TestServer {
-    process: Child,
+    pub process: Child,
     port: u16,
     test_env: TestEnv,
 }
@@ -377,6 +457,35 @@ impl TestServer {
         
         test_env
     }
+    
+    /// Force kill the process (for crash tests)
+    #[allow(dead_code)] // TODO: Remove when crash recovery test is implemented
+    pub fn force_kill(&mut self) {
+        let pid = self.process.id();
+        
+        #[cfg(target_family = "unix")]
+        {
+            // Use SIGKILL (-9) for immediate termination
+            let _ = Command::new("kill")
+                .args(&["-9", &pid.to_string()])
+                .output();
+        }
+        
+        #[cfg(not(target_family = "unix"))]
+        {
+            // On non-Unix, just use kill()
+            let _ = self.process.kill();
+        }
+        
+        // Wait a moment for the process to die
+        thread::sleep(Duration::from_millis(100));
+    }
+    
+    /// Get process ID
+    #[allow(dead_code)] // TODO: Remove when crash recovery test is implemented
+    pub fn pid(&self) -> u32 {
+        self.process.id()
+    }
 }
 
 impl Drop for TestServer {
@@ -404,3 +513,209 @@ impl TestPhase for PostShutdown {}
 pub fn assert_phase<P: TestPhase>(_phase: P) {
     // This is just a marker to make it clear when assertions should happen
 }
+
+// ===== WebSocket Utilities =====
+
+/// WebSocket connection type
+pub type WsConnection = WebSocket<MaybeTlsStream<TcpStream>>;
+
+/// Connect to WebSocket endpoint with retries
+pub fn connect_websocket(port: u16) -> WsConnection {
+    let url = format!("ws://localhost:{}/ws", port);
+    
+    // Retry connection a few times as server may still be initializing WebSocket
+    let mut attempts = 0;
+    const MAX_ATTEMPTS: u32 = 10;
+    
+    loop {
+        attempts += 1;
+        match connect(&url) {
+            Ok((socket, _)) => return socket,
+            Err(e) => {
+                if attempts >= MAX_ATTEMPTS {
+                    panic!("Failed to connect to WebSocket after {} attempts: {}", MAX_ATTEMPTS, e);
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+}
+
+/// Send a command and wait for response (skipping heartbeats)
+pub fn send_command(ws: &mut WsConnection, command: Value) -> Value {
+    // Send command
+    let msg = Message::Text(command.to_string());
+    ws.send(msg).expect("Failed to send WebSocket message");
+    
+    // Wait for response
+    loop {
+        match ws.read() {
+            Ok(Message::Text(text)) => {
+                let response: Value = serde_json::from_str(&text)
+                    .expect("Failed to parse WebSocket response");
+                
+                // Skip heartbeats
+                if response["type"] == "heartbeat" {
+                    continue;
+                }
+                
+                return response;
+            }
+            Ok(Message::Close(_)) => {
+                panic!("WebSocket connection closed unexpectedly");
+            }
+            Ok(_) => continue,  // Skip other message types
+            Err(e) => panic!("WebSocket read error: {}", e),
+        }
+    }
+}
+
+/// Expect a success response and return the data
+pub fn expect_success(response: Value) -> Option<Value> {
+    assert_eq!(
+        response["type"], "success",
+        "Expected success response, got: {}",
+        response
+    );
+    response.get("data").cloned()
+}
+
+/// Authenticate the WebSocket connection
+pub fn authenticate_websocket(ws: &mut WsConnection, token: &str) -> bool {
+    let auth_cmd = json!({
+        "type": "auth",
+        "token": token
+    });
+    
+    let response = send_command(ws, auth_cmd);
+    response["type"] == "success"
+}
+
+// ===== Common Test Setup Functions =====
+
+/// Import dummy graph via CLI and return the graph ID
+pub fn import_dummy_graph(test_env: &TestEnv) -> String {
+    let output = Command::new(get_cymbiont_binary())
+        .env("CYMBIONT_TEST_MODE", "1")
+        .args(&["--config", test_env.config_path.to_str().unwrap(),
+            "--import-logseq", "logseq_databases/dummy_graph/"])
+        .output()
+        .expect("Failed to run cymbiont import");
+    
+    assert!(output.status.success(), 
+        "Import failed with exit code: {:?}", 
+        output.status.code());
+    
+    // Get the imported graph ID from registry
+    get_active_graph_id(&test_env.data_dir)
+}
+
+/// Read auth token from test data directory
+pub fn read_auth_token(data_dir: &Path) -> String {
+    let auth_token_path = data_dir.join("auth_token");
+    fs::read_to_string(&auth_token_path)
+        .expect("Failed to read auth token")
+        .trim()
+        .to_string()
+}
+
+/// Get active graph ID from registry
+pub fn get_active_graph_id(data_dir: &Path) -> String {
+    let registry_path = data_dir.join("graph_registry.json");
+    let registry_content = fs::read_to_string(&registry_path)
+        .expect("Failed to read graph registry");
+    let registry: Value = serde_json::from_str(&registry_content)
+        .expect("Failed to parse graph registry");
+    
+    registry["active_graph_id"].as_str()
+        .expect("No active graph ID in registry")
+        .to_string()
+}
+
+/// Combined setup: import graph + start server
+pub fn setup_with_graph(test_env: TestEnv) -> (TestServer, String) {
+    // Import dummy graph first
+    let graph_id = import_dummy_graph(&test_env);
+    
+    // Start server
+    let server = TestServer::start(test_env);
+    
+    (server, graph_id)
+}
+
+// ===== Freeze Operation Utilities =====
+
+/// Freeze all graph operations
+pub fn freeze_operations(ws: &mut WsConnection) -> bool {
+    let cmd = json!({
+        "type": "freeze_operations"
+    });
+    
+    let response = send_command(ws, cmd);
+    response["type"] == "success"
+}
+
+/// Unfreeze all graph operations
+pub fn unfreeze_operations(ws: &mut WsConnection) -> bool {
+    let cmd = json!({
+        "type": "unfreeze_operations"
+    });
+    
+    let response = send_command(ws, cmd);
+    response["type"] == "success"
+}
+
+/// Check if operations are frozen
+pub fn get_freeze_state(ws: &mut WsConnection) -> bool {
+    let cmd = json!({
+        "type": "get_freeze_state"
+    });
+    
+    let response = send_command(ws, cmd);
+    if response["type"] == "success" {
+        response["data"]["frozen"].as_bool().unwrap_or(false)
+    } else {
+        false
+    }
+}
+
+/// Send command without waiting for response (for frozen operations)
+pub fn send_command_async(ws: &mut WsConnection, command: Value) {
+    let msg = Message::Text(command.to_string());
+    ws.send(msg).expect("Failed to send WebSocket message");
+}
+
+/// Try to read a pending response with timeout
+pub fn read_pending_response(ws: &mut WsConnection) -> Value {
+    // Try reading with a reasonable timeout
+    let timeout = Duration::from_secs(5);
+    let start = Instant::now();
+    
+    loop {
+        match ws.read() {
+            Ok(Message::Text(text)) => {
+                let response: Value = serde_json::from_str(&text)
+                    .expect("Failed to parse WebSocket response");
+                
+                // Skip heartbeats
+                if response["type"] == "heartbeat" {
+                    continue;
+                }
+                
+                return response;
+            }
+            Ok(Message::Close(_)) => {
+                panic!("WebSocket connection closed unexpectedly");
+            }
+            Ok(_) => continue,  // Skip other message types
+            Err(e) => {
+                if start.elapsed() > timeout {
+                    panic!("Timeout waiting for response: {}", e);
+                }
+                // Brief sleep before retrying
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+}
+

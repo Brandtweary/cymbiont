@@ -28,3 +28,16 @@ auth:
   token: null
   # Disable auth entirely (only for trusted environments)
   disabled: false
+
+# Transaction log configuration
+transaction_log:
+  # Durability settings
+  fsync_interval_ms: 100  # How often to force writes to disk (milliseconds)
+  
+  # Compaction settings  
+  compaction_threshold_mb: 100  # Compact when log exceeds this size
+  retention_days: 7  # Keep completed transactions for at least this many days
+  
+  # Data integrity settings
+  redundant_copies: 10  # Number of redundant log copies for consensus
+  integrity_check_on_startup: true  # Run integrity checks and auto-repair at startup

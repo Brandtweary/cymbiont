@@ -1,8 +1,37 @@
 //! Application State Management
 //! 
-//! This module provides the central AppState struct that coordinates all
-//! components of the Cymbiont knowledge graph engine. It handles graph
-//! management, configuration, transactions, and optional server functionality.
+//! This module provides the central AppState struct that acts as the coordination
+//! layer for all components of the Cymbiont knowledge graph engine. 
+//! 
+//! ## Architecture Role
+//! 
+//! AppState serves as the "central nervous system" that connects:
+//! - Graph managers (actual graph data storage)
+//! - Transaction coordinators (WAL for each graph)
+//! - Graph registry (multi-graph metadata)
+//! - WebSocket connections (real-time communication)
+//! - Configuration (runtime settings)
+//! 
+//! ## Design Philosophy
+//! 
+//! AppState is intentionally a coordination layer, not a business logic layer.
+//! It provides the wiring between components but delegates actual work:
+//! - PKM operations → Handled by GraphOperationsExt trait
+//! - Graph storage → Handled by GraphManager
+//! - Transactions → Handled by TransactionCoordinator
+//! - Multi-graph → Handled by GraphRegistry
+//! 
+//! ## Key Methods
+//! 
+//! - `with_active_graph_transaction()` - Wraps operations in transactions
+//! - `get_or_create_graph_manager()` - Lazy initialization of graphs
+//! - `get_transaction_coordinator()` - Access to per-graph WAL
+//! - `cleanup_and_save()` - Graceful shutdown coordination
+//! 
+//! ## Extension Pattern
+//! 
+//! Domain-specific operations are added via extension traits rather than
+//! methods on AppState itself. See GraphOperationsExt for PKM operations.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -10,7 +39,7 @@ use std::sync::{Arc, Mutex};
 use std::error::Error;
 use std::fs;
 use tokio::sync::{oneshot, RwLock};
-use tracing::{info, error};
+use tracing::{info, error, debug};
 
 use crate::{
     graph_manager::GraphManager,
@@ -37,6 +66,9 @@ pub struct AppState {
     pub ws_ready_tx: Mutex<Option<oneshot::Sender<()>>>,
     pub ws_connections: Option<Arc<RwLock<HashMap<String, WsConnection>>>>,
     pub auth_token: Arc<RwLock<Option<String>>>,  // Authentication token
+    
+    // Test infrastructure
+    pub operation_freeze: Arc<RwLock<bool>>,  // Freeze operations after transaction creation
 }
 
 impl AppState {
@@ -107,11 +139,15 @@ impl AppState {
             ws_ready_tx: Mutex::new(None),
             ws_connections,
             auth_token: Arc::new(RwLock::new(None)),
+            operation_freeze: Arc::new(RwLock::new(false)),
         });
         
         // If there's an active graph, ensure its manager is loaded
         if let Some(graph_id) = initial_active_graph {
             app_state.get_or_create_graph_manager(&graph_id).await?;
+            
+            // Note: Recovery for the active graph happens in main.rs after AppState is created
+            
             info!("Loaded active graph: {}", graph_id);
         }
         
@@ -158,12 +194,15 @@ impl AppState {
         managers.insert(graph_id.to_string(), RwLock::new(graph_manager));
         
         // Create transaction coordinator for this graph
+        // Transaction log is inside the graph-specific directory
         let transaction_log_dir = data_dir.join("transaction_log");
+        debug!("Creating transaction log for graph {} at: {:?}", graph_id, transaction_log_dir);
         fs::create_dir_all(&transaction_log_dir)?;
         let transaction_log = Arc::new(TransactionLog::new(transaction_log_dir)
             .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to create transaction log for {}: {:?}", graph_id, e)))?);
         
         let transaction_coordinator = Arc::new(TransactionCoordinator::new(transaction_log));
+        debug!("Transaction coordinator created for graph {}", graph_id);
         
         // Store the coordinator
         let mut coordinators = self.transaction_coordinators.write().await;
@@ -177,12 +216,19 @@ impl AppState {
         self.active_graph_id.read().await.clone()
     }
     
+    /// Get the transaction coordinator for a specific graph
+    pub async fn get_transaction_coordinator(&self, graph_id: &str) -> Option<Arc<TransactionCoordinator>> {
+        let coordinators = self.transaction_coordinators.read().await;
+        coordinators.get(graph_id).cloned()
+    }
+    
     /// Set the active graph ID
     pub async fn set_active_graph(&self, graph_id: String) {
         let mut active = self.active_graph_id.write().await;
         *active = Some(graph_id.clone());
         drop(active); // Release the write lock
     }
+    
     
     /// Save all graphs and registry on shutdown
     pub async fn cleanup_and_save(&self) {
@@ -260,17 +306,37 @@ impl AppState {
         
         // Clone coordinator to use in closure
         let coordinator = Arc::clone(coordinator);
+        drop(coordinators); // Release lock early
         
-        // Get graph manager and execute within transaction
+        // Create transaction (includes deduplication check)
+        let tx_id = coordinator.create_transaction(operation).await
+            .map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)?;
+        
+        // Check freeze state and wait if frozen
+        while *self.operation_freeze.read().await {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        
+        // Get graph manager and execute operation
         let managers = self.graph_managers.read().await;
         let manager_lock = managers.get(&active_id)
             .ok_or_else(|| "Graph manager not found".to_string())?;
         let mut manager = manager_lock.write().await;
         
-        // Execute with transaction
-        coordinator.execute_with_transaction(operation, || {
-            executor(&mut *manager)
-        }).await
-        .map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)
+        debug!("Executing operation on graph {} (manager has {} nodes)", active_id, manager.graph.node_count());
+        
+        // Execute the operation
+        let result = executor(&mut *manager);
+        
+        debug!("Operation complete, graph now has {} nodes", manager.graph.node_count());
+        
+        // Drop locks before updating transaction state
+        drop(manager);
+        drop(managers);
+        
+        // Complete transaction based on result
+        coordinator.complete_transaction(&tx_id, result).await
+            .map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)
     }
+    
 }

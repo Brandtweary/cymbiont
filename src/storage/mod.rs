@@ -70,5 +70,5 @@ pub mod graph_persistence;
 
 // Re-export commonly used types
 pub use graph_registry::GraphRegistry;
-pub use transaction_log::{TransactionLog, Operation};
+pub use transaction_log::{TransactionLog, Operation, Transaction, OperationExecutor};
 pub use transaction::TransactionCoordinator;

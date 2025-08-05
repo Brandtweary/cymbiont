@@ -20,7 +20,6 @@ pub async fn run_server_with_duration(
     app_state: std::sync::Arc<AppState>,
     duration: Option<u64>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let start_time = Instant::now();
     let server_info_file = &app_state.config.backend.server_info_file;
     
     // Terminate any previous instance
@@ -47,6 +46,10 @@ pub async fn run_server_with_duration(
         .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Listener error: {e}")))?;
     
     info!("🚀 Cymbiont Server listening on {}", addr);
+    
+    // NOW start the duration timer - server is ready to serve requests
+    let start_time = Instant::now();
+    info!("⏱️ Server duration timer started - server is ready");
     
     // Run server with integrated shutdown handling
     if let Some(duration) = duration_secs {

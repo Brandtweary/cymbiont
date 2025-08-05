@@ -45,7 +45,7 @@
 
 use std::error::Error;
 use clap::Parser;
-use tracing::{info, error, warn};
+use tracing::{info, error, warn, debug};
 
 // Internal modules
 mod app_state;
@@ -60,6 +60,7 @@ mod utils;
 
 use app_state::AppState;
 use logging::init_logging;
+use graph_operations::GraphOperationsExt;
 
 // CLI arguments  
 #[derive(Parser, Debug)]
@@ -127,6 +128,9 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
         // Create server app state
         let app_state = AppState::new_server(args.config.clone(), args.data_dir.clone()).await?;
         
+        // Run recovery for active graph (same as CLI path)
+        run_active_graph_recovery(&app_state).await;
+        
         // Run server (will handle its own tokio::select! for shutdown)
         server::run_server_with_duration(app_state.clone(), args.duration).await?;
         
@@ -142,6 +146,7 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
         
         // Handle Logseq import if requested
         if let Some(logseq_path) = args.import_logseq {
+            let import_start = std::time::Instant::now();
             let path = std::path::Path::new(&logseq_path);
             let result = import::import_logseq_graph(&app_state, path, None).await?;
             
@@ -153,21 +158,20 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
                 }
             }
             
-            info!("✅ Import complete. Continuing to run...");
+            info!("✅ Import complete in {:.3}s. Continuing to run...", import_start.elapsed().as_secs_f64());
         }
         
         // Handle graph deletion if requested
         if let Some(graph_identifier) = args.delete_graph {
-            use crate::graph_operations::GraphOperations;
+            use crate::graph_operations::GraphOperationsExt;
             
             // Resolve the graph by name or ID
             let graph_id = resolve_graph_by_name_or_id(&app_state, &graph_identifier).await?;
             
             info!("🗑️  Deleting graph: {}", graph_identifier);
             
-            // Delete the graph using GraphOperations
-            let graph_ops = GraphOperations::new(app_state.clone());
-            graph_ops.delete_graph(graph_id, args.force).await
+            // Delete the graph using GraphOperations extension
+            app_state.delete_graph(graph_id, args.force).await
                 .map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)?;
             
             info!("✅ Graph deleted successfully");
@@ -196,6 +200,9 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
         
         if let Some(active_graph) = active_graph {
             info!("🎯 Active graph: {} ({})", active_graph.name, active_graph.id);
+            
+            // Run recovery for the active graph on startup
+            run_active_graph_recovery(&app_state).await;
         }
         
         // Handle duration for CLI mode
@@ -261,4 +268,59 @@ async fn resolve_graph_by_name_or_id(
     }
     
     Err(error_msg.into())
+}
+
+/// Run recovery for the active graph (shared between CLI and server)
+async fn run_active_graph_recovery(app_state: &std::sync::Arc<AppState>) {
+    let active_graph = {
+        let registry_guard = match app_state.graph_registry.lock() {
+            Ok(guard) => guard,
+            Err(e) => {
+                error!("Failed to lock registry for recovery: {}", e);
+                return;
+            }
+        };
+        if let Some(active_id) = registry_guard.get_active_graph_id() {
+            registry_guard.get_graph(active_id).cloned()
+        } else {
+            None
+        }
+    };
+    
+    if let Some(active_graph) = active_graph {
+        debug!("Checking for transaction coordinator for graph: {}", active_graph.id);
+        
+        // Ensure the graph manager is loaded first
+        if let Err(e) = app_state.get_or_create_graph_manager(&active_graph.id).await {
+            error!("Failed to create graph manager for recovery: {}", e);
+            return;
+        }
+        
+        debug!("Graph manager created/loaded for graph: {}", active_graph.id);
+        
+        if let Some(coordinator) = app_state.get_transaction_coordinator(&active_graph.id).await {
+            debug!("Got transaction coordinator, attempting recovery");
+            match coordinator.recover_pending_transactions().await {
+                Ok(pending_transactions) => {
+                    debug!("Recovery found {} pending transactions", pending_transactions.len());
+                    if !pending_transactions.is_empty() {
+                        info!("🔄 Replaying {} pending transactions for active graph", 
+                              pending_transactions.len());
+                        
+                        for transaction in pending_transactions {
+                            debug!("Replaying transaction: {:?}", transaction.id);
+                            if let Err(e) = app_state.replay_transaction(transaction, coordinator.clone()).await {
+                                error!("Failed to replay transaction: {}", e);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to recover transactions: {}", e);
+                }
+            }
+        } else {
+            debug!("No transaction coordinator found for graph: {}", active_graph.id);
+        }
+    }
 }

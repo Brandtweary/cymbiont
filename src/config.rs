@@ -85,6 +85,9 @@ pub struct Config {
     pub data_dir: String,
     #[serde(default)]
     pub auth: AuthConfig,
+    #[serde(default)]
+    #[allow(dead_code)] // TODO: Remove when transaction log config is used
+    pub transaction_log: TransactionLogConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -110,6 +113,25 @@ pub struct AuthConfig {
     pub disabled: bool,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct TransactionLogConfig {
+    #[serde(default = "default_fsync_interval_ms")]
+    #[allow(dead_code)] // TODO: Remove when fsync is implemented
+    pub fsync_interval_ms: u64,
+    #[serde(default = "default_compaction_threshold_mb")]
+    #[allow(dead_code)] // TODO: Remove when compaction is implemented
+    pub compaction_threshold_mb: u64,
+    #[serde(default = "default_retention_days")]
+    #[allow(dead_code)] // TODO: Remove when retention policy is implemented
+    pub retention_days: u64,
+    #[serde(default = "default_redundant_copies")]
+    #[allow(dead_code)] // TODO: Remove when redundant copies are implemented
+    pub redundant_copies: usize,
+    #[serde(default = "default_integrity_check_on_startup")]
+    #[allow(dead_code)] // TODO: Remove when integrity check is implemented
+    pub integrity_check_on_startup: bool,
+}
+
 
 fn default_data_dir() -> String {
     "data".to_string()
@@ -117,6 +139,26 @@ fn default_data_dir() -> String {
 
 fn default_server_info_file() -> String {
     "cymbiont_server.json".to_string()
+}
+
+fn default_fsync_interval_ms() -> u64 {
+    100
+}
+
+fn default_compaction_threshold_mb() -> u64 {
+    100
+}
+
+fn default_retention_days() -> u64 {
+    7
+}
+
+fn default_redundant_copies() -> usize {
+    10
+}
+
+fn default_integrity_check_on_startup() -> bool {
+    true
 }
 
 // Default configuration
@@ -133,6 +175,7 @@ impl Default for Config {
             },
             data_dir: default_data_dir(),
             auth: AuthConfig::default(),
+            transaction_log: TransactionLogConfig::default(),
         }
     }
 }
@@ -150,6 +193,18 @@ impl Default for AuthConfig {
         AuthConfig {
             token: None,
             disabled: false,
+        }
+    }
+}
+
+impl Default for TransactionLogConfig {
+    fn default() -> Self {
+        TransactionLogConfig {
+            fsync_interval_ms: default_fsync_interval_ms(),
+            compaction_threshold_mb: default_compaction_threshold_mb(),
+            retention_days: default_retention_days(),
+            redundant_copies: default_redundant_copies(),
+            integrity_check_on_startup: default_integrity_check_on_startup(),
         }
     }
 }

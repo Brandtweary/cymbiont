@@ -4,7 +4,7 @@
  * 
  * This module implements a WebSocket server that enables bidirectional communication
  * between the knowledge graph engine and external clients, supporting real-time
- * graph operations with immediate execution.
+ * graph operations with high-throughput async execution.
  * 
  * ## Connection Management
  * 
@@ -14,13 +14,21 @@
  * - Heartbeat mechanism for connection health
  * - Automatic cleanup on disconnect
  * 
+ * ## Async Command Processing
+ * 
+ * High-performance async architecture for scalable API traffic:
+ * - Each WebSocket command spawns as an independent async task
+ * - Commands execute concurrently without blocking each other
+ * - Critical state commands (freeze/unfreeze) execute immediately
+ * - Supports high-throughput scenarios with multiple concurrent operations
+ * 
  * ## Command Protocol
  * 
  * JSON-based request/response system:
  * - **Client→Server**: `Auth`, `Heartbeat`, `CreateBlock`, `UpdateBlock`, `DeleteBlock`, `CreatePage`, `DeletePage`, etc.
  * - **Server→Client**: `Success`, `Error`, `Heartbeat`
- * - Commands execute immediately with transaction wrapping
- * - Correlation IDs for tracking operations
+ * - Commands execute asynchronously with transaction wrapping
+ * - Freeze mechanism allows pausing operations for testing/recovery
  * 
  * ## Transaction Integration
  * 
@@ -28,6 +36,7 @@
  * - Commands execute within transactions
  * - Automatic rollback on operation failures
  * - Content deduplication via hash checking
+ * - Freeze mechanism supports deterministic testing scenarios
  */
 
 use axum::{
@@ -100,6 +109,9 @@ pub enum Command {
     DeletePage {
         page_name: String,
     },
+    FreezeOperations,
+    UnfreezeOperations,
+    GetFreezeState,
 }
 
 /// Response protocol definitions
@@ -183,9 +195,15 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
 
     // Handle incoming messages
     while let Some(Ok(msg)) = receiver.next().await {
-        if let Err(e) = handle_message(msg, &connection_id, &state).await {
-            error!("Error handling message from {}: {:?}", connection_id, e);
-        }
+        let conn_id = connection_id.clone();
+        let app_state = state.clone();
+        
+        // Spawn each message handling as a separate task to prevent blocking
+        tokio::spawn(async move {
+            if let Err(e) = handle_message(msg, &conn_id, &app_state).await {
+                error!("Error handling message from {}: {:?}", conn_id, e);
+            }
+        });
     }
 
     // Cleanup on disconnect
@@ -297,10 +315,9 @@ async fn handle_command(
             // Call kg_api to create the block
             info!("📝 CreateBlock command received via WebSocket");
             
-            use crate::graph_operations::GraphOperations;
-            let graph_ops = GraphOperations::new(state.clone());
+            use crate::graph_operations::GraphOperationsExt;
             
-            match graph_ops.add_block(content, parent_id, page_name, None).await {
+            match state.add_block(content, parent_id, page_name, None).await {
                 Ok(block_id) => {
                     let data = serde_json::json!({ "block_id": block_id });
                     send_success_response(connection_id, state, Some(data)).await?;
@@ -314,10 +331,9 @@ async fn handle_command(
             // Call kg_api to update the block
             info!("✏️ UpdateBlock command received via WebSocket: {}", block_id);
             
-            use crate::graph_operations::GraphOperations;
-            let graph_ops = GraphOperations::new(state.clone());
+            use crate::graph_operations::GraphOperationsExt;
             
-            match graph_ops.update_block(block_id.clone(), content).await {
+            match state.update_block(block_id.clone(), content).await {
                 Ok(()) => {
                     let data = serde_json::json!({ "block_id": block_id });
                     send_success_response(connection_id, state, Some(data)).await?;
@@ -331,10 +347,9 @@ async fn handle_command(
             // Call kg_api to delete the block
             info!("🗑️ DeleteBlock command received via WebSocket: {}", block_id);
             
-            use crate::graph_operations::GraphOperations;
-            let graph_ops = GraphOperations::new(state.clone());
+            use crate::graph_operations::GraphOperationsExt;
             
-            match graph_ops.delete_block(block_id.clone()).await {
+            match state.delete_block(block_id.clone()).await {
                 Ok(()) => {
                     let data = serde_json::json!({ "block_id": block_id });
                     send_success_response(connection_id, state, Some(data)).await?;
@@ -348,8 +363,7 @@ async fn handle_command(
             // Call kg_api to create the page
             info!("📄 CreatePage command received via WebSocket: {}", name);
             
-            use crate::graph_operations::GraphOperations;
-            let graph_ops = GraphOperations::new(state.clone());
+            use crate::graph_operations::GraphOperationsExt;
             
             // Convert HashMap<String, String> to serde_json::Value
             let properties_json = properties.map(|props| {
@@ -360,7 +374,7 @@ async fn handle_command(
                 )
             });
             
-            match graph_ops.create_page(name.clone(), properties_json).await {
+            match state.create_page(name.clone(), properties_json).await {
                 Ok(()) => {
                     let data = serde_json::json!({ "page_name": name });
                     send_success_response(connection_id, state, Some(data)).await?;
@@ -388,10 +402,9 @@ async fn handle_command(
             // Switch the active graph
             info!("🔄 SwitchGraph command received via WebSocket: {}", graph_id);
             
-            use crate::graph_operations::GraphOperations;
-            let graph_ops = GraphOperations::new(state.clone());
+            use crate::graph_operations::GraphOperationsExt;
             
-            match graph_ops.switch_graph(graph_id).await {
+            match state.switch_graph(graph_id).await {
                 Ok(graph_info) => {
                     send_success_response(connection_id, state, Some(graph_info)).await?;
                 }
@@ -404,10 +417,9 @@ async fn handle_command(
             // Create a new graph
             info!("📊 CreateGraph command received via WebSocket");
             
-            use crate::graph_operations::GraphOperations;
-            let graph_ops = GraphOperations::new(state.clone());
+            use crate::graph_operations::GraphOperationsExt;
             
-            match graph_ops.create_graph(name, description).await {
+            match state.create_graph(name, description).await {
                 Ok(graph_info) => {
                     send_success_response(connection_id, state, Some(graph_info)).await?;
                 }
@@ -420,10 +432,9 @@ async fn handle_command(
             // Delete a graph
             info!("🗑️ DeleteGraph command received via WebSocket: {}", graph_id);
             
-            use crate::graph_operations::GraphOperations;
-            let graph_ops = GraphOperations::new(state.clone());
+            use crate::graph_operations::GraphOperationsExt;
             
-            match graph_ops.delete_graph(graph_id.clone(), false).await {
+            match state.delete_graph(graph_id.clone(), false).await {
                 Ok(()) => {
                     let data = serde_json::json!({ "deleted_graph_id": graph_id });
                     send_success_response(connection_id, state, Some(data)).await?;
@@ -437,10 +448,9 @@ async fn handle_command(
             // Delete a page
             info!("🗑️ DeletePage command received via WebSocket: {}", page_name);
             
-            use crate::graph_operations::GraphOperations;
-            let graph_ops = GraphOperations::new(state.clone());
+            use crate::graph_operations::GraphOperationsExt;
             
-            match graph_ops.delete_page(page_name.clone()).await {
+            match state.delete_page(page_name.clone()).await {
                 Ok(()) => {
                     let data = serde_json::json!({ "page_name": page_name });
                     send_success_response(connection_id, state, Some(data)).await?;
@@ -449,6 +459,33 @@ async fn handle_command(
                     send_error_response(connection_id, state, &format!("Failed to delete page: {}", e)).await?;
                 }
             }
+        }
+        Command::FreezeOperations => {
+            // Freeze all graph operations
+            info!("❄️ FreezeOperations command received via WebSocket");
+            
+            let mut freeze_state = state.operation_freeze.write().await;
+            *freeze_state = true;
+            
+            send_success_response(connection_id, state, None).await?;
+        }
+        Command::UnfreezeOperations => {
+            // Unfreeze all graph operations
+            info!("🔥 UnfreezeOperations command received via WebSocket");
+            
+            let mut freeze_state = state.operation_freeze.write().await;
+            *freeze_state = false;
+            
+            send_success_response(connection_id, state, None).await?;
+        }
+        Command::GetFreezeState => {
+            // Get current freeze state
+            info!("🌡️ GetFreezeState command received via WebSocket");
+            
+            let freeze_state = state.operation_freeze.read().await;
+            let data = serde_json::json!({ "frozen": *freeze_state });
+            
+            send_success_response(connection_id, state, Some(data)).await?;
         }
     }
     

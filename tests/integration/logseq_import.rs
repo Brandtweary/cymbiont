@@ -1,7 +1,7 @@
 use std::fs;
 use serde_json::Value;
 use crate::common::{setup_test_env, cleanup_test_env};
-use crate::common::test_harness::{TestServer, PostShutdown, assert_phase};
+use crate::common::test_harness::{TestServer, PostShutdown, assert_phase, get_active_graph_id};
 
 pub fn test_logseq_import_cyberorganism_test_1() {
     // Set up test environment
@@ -28,15 +28,18 @@ pub fn test_logseq_import_cyberorganism_test_1() {
     let registry_path = data_dir.join("graph_registry.json");
     assert!(registry_path.exists(), "Graph registry not created");
     
-    // Read the registry to find our imported graph
-    let registry_content = fs::read_to_string(registry_path).expect("Failed to read registry");
+    // Get the active graph ID
+    let graph_id = get_active_graph_id(&data_dir);
+    
+    // Read the registry to verify graph name
+    let registry_content = fs::read_to_string(&registry_path).expect("Failed to read registry");
     let registry: Value = serde_json::from_str(&registry_content).expect("Failed to parse registry");
     let graphs = registry["graphs"].as_object().expect("No graphs object in registry");
     
     assert_eq!(graphs.len(), 1, "Expected exactly one graph in registry");
     
-    // Get the first (and only) graph
-    let (graph_id, graph_info) = graphs.iter().next().expect("No graphs in registry");
+    // Get the graph info
+    let graph_info = graphs.get(&graph_id).expect("Graph not found in registry");
     let graph_name = graph_info["name"].as_str().expect("No graph name");
     
     assert_eq!(graph_name, "dummy_graph", "Unexpected graph name");

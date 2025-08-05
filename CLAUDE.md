@@ -70,6 +70,7 @@ env RUST_LOG=debug cargo test -- --nocapture 2>&1 | tee test_output.log  # Captu
 - Error handling: use `thiserror` for custom error types; define module-specific `Error` enums and `type Result<T>` aliases
 - Whenever you update `config.example.yaml` ensure that you also update `config.yaml`
 - Don't make live LLM calls during tests
+- When modifying startup logic in `main.rs`, ensure BOTH the CLI path and server path are updated equally. Extract shared logic into functions to avoid divergence.
 
 ### Log Level Guidelines
 - **INFO**: Use sparingly, only for messages you would want to see on every single run

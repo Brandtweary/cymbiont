@@ -144,9 +144,7 @@ impl TransactionCoordinator {
     }
     
     pub async fn recover_pending_transactions(&self) -> Result<Vec<Transaction>> {
-        debug!("Starting recovery - listing pending transactions");
         let pending = self.log.list_pending_transactions()?;
-        debug!("Found {} total pending transactions", pending.len());
         let mut recoverable = Vec::new();
         
         if !pending.is_empty() {
@@ -155,7 +153,6 @@ impl TransactionCoordinator {
         }
         
         for transaction in pending {
-            debug!("Processing transaction {} with state {:?}", transaction.id, transaction.state);
             // Don't re-add to pending operations map - these transactions are already recorded
             // and will be replayed. Adding them would cause duplicate content detection
             // when replay_transaction tries to create a new transaction.
@@ -163,7 +160,6 @@ impl TransactionCoordinator {
             match transaction.state {
                 TransactionState::Active => {
                     // These can be retried
-                    debug!("Transaction {} is Active - adding to recoverable", transaction.id);
                     recoverable.push(transaction);
                 }
                 _ => {
@@ -174,7 +170,6 @@ impl TransactionCoordinator {
             }
         }
         
-        debug!("Recovery complete - {} transactions are recoverable", recoverable.len());
         Ok(recoverable)
     }
 }

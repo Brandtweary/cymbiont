@@ -185,7 +185,6 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                 }
                 _ = heartbeat_shutdown_rx.changed() => {
                     if *heartbeat_shutdown_rx.borrow() {
-                        debug!("Heartbeat task shutting down for connection: {}", heartbeat_conn_id);
                         break;
                     }
                 }

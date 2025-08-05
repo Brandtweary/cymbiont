@@ -196,13 +196,11 @@ impl AppState {
         // Create transaction coordinator for this graph
         // Transaction log is inside the graph-specific directory
         let transaction_log_dir = data_dir.join("transaction_log");
-        debug!("Creating transaction log for graph {} at: {:?}", graph_id, transaction_log_dir);
         fs::create_dir_all(&transaction_log_dir)?;
         let transaction_log = Arc::new(TransactionLog::new(transaction_log_dir)
             .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to create transaction log for {}: {:?}", graph_id, e)))?);
         
         let transaction_coordinator = Arc::new(TransactionCoordinator::new(transaction_log));
-        debug!("Transaction coordinator created for graph {}", graph_id);
         
         // Store the coordinator
         let mut coordinators = self.transaction_coordinators.write().await;
@@ -323,12 +321,10 @@ impl AppState {
             .ok_or_else(|| "Graph manager not found".to_string())?;
         let mut manager = manager_lock.write().await;
         
-        debug!("Executing operation on graph {} (manager has {} nodes)", active_id, manager.graph.node_count());
         
         // Execute the operation
         let result = executor(&mut *manager);
         
-        debug!("Operation complete, graph now has {} nodes", manager.graph.node_count());
         
         // Drop locks before updating transaction state
         drop(manager);

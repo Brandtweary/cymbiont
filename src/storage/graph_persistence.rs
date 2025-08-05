@@ -152,12 +152,10 @@ pub fn should_save(last_save_time: DateTime<Utc>, operations_since_save: usize) 
     
     let minutes_since_save = (Utc::now() - last_save_time).num_minutes();
     if minutes_since_save >= SAVE_INTERVAL_MINUTES {
-        tracing::debug!("⏱️ Time-based save triggered: {} minutes since last save", minutes_since_save);
         return true;
     }
     
     if operations_since_save >= SAVE_OPERATION_THRESHOLD {
-        tracing::debug!("⏱️ Operation-based save triggered: {} operations since last save", operations_since_save);
         return true;
     }
     

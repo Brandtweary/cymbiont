@@ -1,7 +1,6 @@
 use std::thread;
 use std::time::Duration;
 use serde_json::json;
-use tracing::debug;
 use crate::common::{setup_test_env, cleanup_test_env};
 use crate::common::test_harness::{
     connect_websocket, authenticate_websocket, read_auth_token,
@@ -16,27 +15,17 @@ pub fn test_freeze_mechanism() {
     let cleanup_env = test_env.clone();
     
     let result = std::panic::catch_unwind(move || {
-        // Setup: Import graph BEFORE measuring time
-        debug!("Starting import");
-        let import_start = std::time::Instant::now();
+        // Setup: Import graph and start server
         let _graph_id = import_dummy_graph(&test_env);
-        debug!("Import complete in {:?}", import_start.elapsed());
-        
-        // NOW start measuring actual test time
-        let test_start = std::time::Instant::now();
-        debug!("Starting server");
         let server = TestServer::start(test_env);  // Use default 3s duration
         let port = server.port();
         let data_dir = server.test_env().data_dir.clone();
-        
-        debug!("Server started, elapsed since test start: {:?}", test_start.elapsed());
         assert_phase(PreShutdown);
         
         // Connect and authenticate
         let mut ws = connect_websocket(port);
         let token = read_auth_token(&data_dir);
         assert!(authenticate_websocket(&mut ws, &token), "Authentication failed");
-        debug!("Connected and authenticated, elapsed since test start: {:?}", test_start.elapsed());
         
         // Test 1: Verify initial state is unfrozen
         assert!(!get_freeze_state(&mut ws), "Initial state should be unfrozen");
@@ -48,18 +37,13 @@ pub fn test_freeze_mechanism() {
             "content": "Normal operation test"
         });
         
-        debug!("Sending create_block command");
         let response = send_command(&mut ws, create_cmd);
         let elapsed = start.elapsed();
-        
-        debug!("Response received: {:?}", response);
         expect_success(response);
         assert!(elapsed < Duration::from_secs(1), "Normal operation took too long: {:?}", elapsed);
-        debug!("Normal operation completed in {:?}, total elapsed: {:?}", elapsed, test_start.elapsed());
         
         // Test 3: Test freeze command
         assert!(freeze_operations(&mut ws), "Failed to freeze operations");
-        debug!("Verifying freeze state");
         assert!(get_freeze_state(&mut ws), "Operations should be frozen");
         
         // Test 4: Test operations are blocked when frozen
@@ -69,11 +53,9 @@ pub fn test_freeze_mechanism() {
         });
         
         // Send command (won't get response while frozen)
-        debug!("Sending first async command while frozen");
         send_command_async(&mut ws, create_cmd);
         
         // Wait a bit to ensure command is processed
-        debug!("Waiting 200ms");
         thread::sleep(Duration::from_millis(200));
         
         // Try to create another block - should also be frozen
@@ -81,32 +63,22 @@ pub fn test_freeze_mechanism() {
             "type": "create_block",
             "content": "This should also be frozen"
         });
-        debug!("Sending second async command while frozen");
         send_command_async(&mut ws, create_cmd2);
         
         // Test 5: Unfreeze and verify operations complete
-        debug!("About to unfreeze, elapsed: {:?}", test_start.elapsed());
         assert!(unfreeze_operations(&mut ws), "Failed to unfreeze operations");
         assert!(!get_freeze_state(&mut ws), "Operations should be unfrozen");
         
         // Now we should get responses for both frozen operations
-        debug!("Reading first pending response");
         let response1 = read_pending_response(&mut ws);
-        debug!("First response: {:?}", response1);
         let data1 = expect_success(response1);
         assert!(data1.is_some(), "First frozen operation should succeed");
         
-        debug!("Reading second pending response");
         let response2 = read_pending_response(&mut ws);
-        debug!("Second response: {:?}", response2);
         let data2 = expect_success(response2);
         assert!(data2.is_some(), "Second frozen operation should succeed");
         
         // Test 6: One simplified freeze/unfreeze cycle
-        debug!("Starting simplified cycle, elapsed: {:?}", test_start.elapsed());
-        
-        // Freeze
-        debug!("Cycle: Freezing");
         assert!(freeze_operations(&mut ws), "Failed to freeze in cycle");
         
         // Send operation
@@ -114,22 +86,17 @@ pub fn test_freeze_mechanism() {
             "type": "create_block",
             "content": "Final cycle block"
         });
-        debug!("Cycle: Sending command");
         send_command_async(&mut ws, cmd);
         
         // Brief pause
         thread::sleep(Duration::from_millis(50));
         
         // Unfreeze
-        debug!("Cycle: Unfreezing");
         assert!(unfreeze_operations(&mut ws), "Failed to unfreeze in cycle");
         
         // Get response
-        debug!("Cycle: Reading response");
         let response = read_pending_response(&mut ws);
         expect_success(response);
-        
-        debug!("All tests complete, elapsed: {:?}", test_start.elapsed());
         
         // Shutdown
         let test_env = server.shutdown();

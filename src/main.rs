@@ -288,7 +288,6 @@ async fn run_active_graph_recovery(app_state: &std::sync::Arc<AppState>) {
     };
     
     if let Some(active_graph) = active_graph {
-        debug!("Checking for transaction coordinator for graph: {}", active_graph.id);
         
         // Ensure the graph manager is loaded first
         if let Err(e) = app_state.get_or_create_graph_manager(&active_graph.id).await {
@@ -296,19 +295,15 @@ async fn run_active_graph_recovery(app_state: &std::sync::Arc<AppState>) {
             return;
         }
         
-        debug!("Graph manager created/loaded for graph: {}", active_graph.id);
         
         if let Some(coordinator) = app_state.get_transaction_coordinator(&active_graph.id).await {
-            debug!("Got transaction coordinator, attempting recovery");
             match coordinator.recover_pending_transactions().await {
                 Ok(pending_transactions) => {
-                    debug!("Recovery found {} pending transactions", pending_transactions.len());
                     if !pending_transactions.is_empty() {
                         info!("🔄 Replaying {} pending transactions for active graph", 
                               pending_transactions.len());
                         
                         for transaction in pending_transactions {
-                            debug!("Replaying transaction: {:?}", transaction.id);
                             if let Err(e) = app_state.replay_transaction(transaction, coordinator.clone()).await {
                                 error!("Failed to replay transaction: {}", e);
                             }
@@ -320,7 +315,6 @@ async fn run_active_graph_recovery(app_state: &std::sync::Arc<AppState>) {
                 }
             }
         } else {
-            debug!("No transaction coordinator found for graph: {}", active_graph.id);
         }
     }
 }

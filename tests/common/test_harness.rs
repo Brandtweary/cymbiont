@@ -4,6 +4,10 @@
 //! It enforces clear separation between test phases to prevent common mistakes like
 //! trying to validate persisted data before the server has shut down.
 //! 
+//! For graph operations testing, use the GraphValidationFixture from graph_validation.rs
+//! to automatically track expected transformations and validate final graph state. The fixture
+//! eliminates manual assertions and provides comprehensive validation of nodes, edges, and deletions.
+//! 
 //! ## Universal Test Infrastructure
 //! 
 //! All integration tests use this harness to ensure consistent server lifecycle management
@@ -718,4 +722,5 @@ pub fn read_pending_response(ws: &mut WsConnection) -> Value {
         }
     }
 }
+
 

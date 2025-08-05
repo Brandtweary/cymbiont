@@ -1,6 +1,6 @@
 use std::fs;
 use serde_json::{json, Value};
-use crate::common::{setup_test_env, cleanup_test_env};
+use crate::common::{setup_test_env, cleanup_test_env, GraphValidationFixture};
 use crate::common::test_harness::{
     PreShutdown, PostShutdown, assert_phase,
     WsConnection, connect_websocket, send_command, expect_success, 
@@ -12,7 +12,7 @@ fn test_create_block(ws: &mut WsConnection) -> String {
     let cmd = json!({
         "type": "create_block",
         "content": "WebSocket test block with **bold** and *italic* text",
-        "page_name": "cyberorganism-test-1"
+        "page_name": "test-websocket-page"
     });
     
     let response = send_command(ws, cmd);
@@ -100,6 +100,77 @@ fn test_delete_page(ws: &mut WsConnection, page_name: &str) {
         "Deleted page name mismatch"
     );
     
+}
+
+/// Test multiple updates on the same block to ensure edges are preserved
+fn test_multiple_block_updates(ws: &mut WsConnection, fixture: &mut GraphValidationFixture) -> String {
+    // Create a parent block first
+    let parent_cmd = json!({
+        "type": "create_block",
+        "content": "Parent block for update test",
+        "page_name": "test-update-page"
+    });
+    
+    let response = send_command(ws, parent_cmd);
+    let data = expect_success(response).expect("No data in create_block response");
+    let parent_id = data["block_id"].as_str().expect("No block_id in response").to_string();
+    
+    // Record parent block expectation - the page will be auto-created
+    fixture.expect_create_page("test-update-page", None);
+    fixture.expect_create_block(&parent_id, "Parent block for update test", Some("test-update-page"));
+    
+    // Create a child block
+    let child_cmd = json!({
+        "type": "create_block",
+        "content": "Child block that will be updated multiple times",
+        "parent_id": parent_id,
+        "page_name": "test-update-page"
+    });
+    
+    let response = send_command(ws, child_cmd);
+    let data = expect_success(response).expect("No data in create_block response");
+    let child_id = data["block_id"].as_str().expect("No block_id in response").to_string();
+    
+    // Record child block expectation with parent-child edge
+    fixture.expect_create_block(&child_id, "Child block that will be updated multiple times", Some("test-update-page"));
+    
+    // Add the parent-child edge expectation
+    fixture.expect_edge(&parent_id, &child_id, "ParentChild");
+    
+    // Update 1: Change content
+    let update1_cmd = json!({
+        "type": "update_block",
+        "block_id": child_id,
+        "content": "First update - content changed"
+    });
+    
+    let response = send_command(ws, update1_cmd);
+    expect_success(response);
+    fixture.expect_update_block(&child_id, "First update - content changed");
+    
+    // Update 2: Change content again
+    let update2_cmd = json!({
+        "type": "update_block",
+        "block_id": child_id,
+        "content": "Second update - content changed again"
+    });
+    
+    let response = send_command(ws, update2_cmd);
+    expect_success(response);
+    fixture.expect_update_block(&child_id, "Second update - content changed again");
+    
+    // Update 3: Final content change
+    let update3_cmd = json!({
+        "type": "update_block",
+        "block_id": child_id,
+        "content": "Final update - this should be the final content"
+    });
+    
+    let response = send_command(ws, update3_cmd);
+    expect_success(response);
+    fixture.expect_update_block(&child_id, "Final update - this should be the final content");
+    
+    child_id
 }
 
 /// Test graph operations (create and switch)
@@ -227,86 +298,8 @@ fn test_error_cases(ws: &mut WsConnection, port: u16, active_graph_id: &str) {
     assert!(!authenticate_websocket(&mut invalid_auth_ws, "invalid-token"), "Authentication should fail with invalid token");
 }
 
-/// Validate the final graph state
-fn validate_graph_state(
-    data_dir: &std::path::Path,
-    new_block_id: &str,
-    original_graph_id: &str
-) {
-    // Read the knowledge graph
-    let graph_path = data_dir.join("graphs")
-        .join(original_graph_id)
-        .join("knowledge_graph.json");
-    
-    let graph_content = fs::read_to_string(&graph_path)
-        .expect("Failed to read knowledge graph");
-    
-    let graph: Value = serde_json::from_str(&graph_content)
-        .expect("Failed to parse knowledge graph");
-    
-    let nodes = graph["graph"]["nodes"].as_array()
-        .expect("No nodes in graph");
-    
-    // Verify new block exists
-    let new_block = nodes.iter()
-        .find(|n| n["pkm_id"].as_str() == Some(new_block_id))
-        .expect("New block not found in graph");
-    assert_eq!(
-        new_block["content"].as_str(),
-        Some("WebSocket test block with **bold** and *italic* text"),
-        "New block content mismatch"
-    );
-    
-    // Verify updated block
-    let updated_block = nodes.iter()
-        .find(|n| n["pkm_id"].as_str() == Some("67f9a190-985b-4dbf-90e4-c2abffb2ab51"))
-        .expect("Updated block not found");
-    assert_eq!(
-        updated_block["content"].as_str(),
-        Some("## Types of Knowledge Graphs (Updated via WebSocket)"),
-        "Updated block content mismatch"
-    );
-    
-    // Verify deleted block is NOT in main nodes
-    let deleted_block = nodes.iter()
-        .find(|n| n["pkm_id"].as_str() == Some("67fbd626-8e4a-485f-ad03-fd1ce5539ebb"));
-    assert!(
-        deleted_block.is_none(),
-        "Deleted block should not be in main nodes"
-    );
-    
-    // Verify new page exists
-    let new_page = nodes.iter()
-        .find(|n| {
-            n["node_type"].as_str() == Some("Page") && 
-            n["pkm_id"].as_str() == Some("test-websocket-page")
-        })
-        .expect("New page not found in graph");
-    assert_eq!(
-        new_page["node_type"].as_str(),
-        Some("Page"),
-        "New page node type mismatch"
-    );
-    
-    // Verify page properties
-    let page_props = &new_page["properties"];
-    assert_eq!(
-        page_props["test-property"].as_str(),
-        Some("test-value"),
-        "Page property not preserved"
-    );
-    
-    // Verify deleted page is NOT in main nodes
-    let deleted_page = nodes.iter()
-        .find(|n| {
-            n["node_type"].as_str() == Some("Page") && 
-            n["pkm_id"].as_str() == Some("page-to-delete")
-        });
-    assert!(
-        deleted_page.is_none(),
-        "Deleted page should not be in main nodes"
-    );
-    
+/// Validate registry state (graph switching and deletion)
+fn validate_registry_state(data_dir: &std::path::Path, original_graph_id: &str) {
     // Verify we're back on the original graph
     let registry_path = data_dir.join("graph_registry.json");
     let registry_content = fs::read_to_string(&registry_path)
@@ -346,6 +339,10 @@ pub fn test_websocket_commands() {
         // === Phase 1: Server Running (PreShutdown) ===
         assert_phase(PreShutdown);
         
+        // Initialize the validation fixture and expect the dummy graph
+        let mut fixture = GraphValidationFixture::new();
+        fixture.expect_dummy_graph();
+        
         // Connect WebSocket client
         let mut ws = connect_websocket(port);
         
@@ -353,21 +350,40 @@ pub fn test_websocket_commands() {
         let auth_token = read_auth_token(&data_dir);
         assert!(authenticate_websocket(&mut ws, &auth_token), "Authentication failed with valid token");
         
-        // Test Create Block
+        // Test Create Block  
         let new_block_id = test_create_block(&mut ws);
+        // Record expectation in fixture
+        fixture.expect_create_block(&new_block_id, "WebSocket test block with **bold** and *italic* text", Some("test-websocket-page"));
         
         // Test Update Block (use a different existing block)
         test_update_block(&mut ws, "67f9a190-985b-4dbf-90e4-c2abffb2ab51");
+        // Record expectation in fixture
+        fixture.expect_update_block("67f9a190-985b-4dbf-90e4-c2abffb2ab51", "## Types of Knowledge Graphs (Updated via WebSocket)");
+        
+        // Test Multiple Updates on Same Block (with parent-child and page-to-block edges)
+        let _updated_child_id = test_multiple_block_updates(&mut ws, &mut fixture);
         
         // Test Delete Block (use another existing block)
         test_delete_block(&mut ws, "67fbd626-8e4a-485f-ad03-fd1ce5539ebb");
+        // Record expectation in fixture
+        fixture.expect_delete("67fbd626-8e4a-485f-ad03-fd1ce5539ebb");
         
         // Test Create Page
         test_create_page(&mut ws, "test-websocket-page");
+        // Record expectation in fixture
+        fixture.expect_create_page("test-websocket-page", Some(json!({
+            "test-property": "test-value",
+            "created-by": "websocket-test"
+        })));
         
         // Test Delete Page (create a new page to delete)
         test_create_page(&mut ws, "page-to-delete");
+        fixture.expect_create_page("page-to-delete", Some(json!({
+            "test-property": "test-value",
+            "created-by": "websocket-test"
+        })));
         test_delete_page(&mut ws, "page-to-delete");
+        fixture.expect_delete("page-to-delete");
         
         // Test Graph Operations
         let final_graph_id = test_graph_operations(&mut ws, &data_dir);
@@ -385,8 +401,11 @@ pub fn test_websocket_commands() {
         // === Phase 3: Server Shutdown (PostShutdown) ===
         assert_phase(PostShutdown);
         
-        // NOW validate final state after server has saved everything
-        validate_graph_state(&test_env.data_dir, &new_block_id, &original_graph_id);
+        // Validate graph state using the fixture
+        fixture.validate_graph(&test_env.data_dir, &original_graph_id);
+        
+        // Validate registry state (graph switching behavior)
+        validate_registry_state(&test_env.data_dir, &original_graph_id);
         
         // Return test_env for cleanup
         test_env

@@ -166,6 +166,16 @@ cymbiont/
 **Key types**: `TestServer` - manages both server and CLI mode processes
 **Key features**: Parallel test execution, isolated environments (unique ports/data dirs), phase-based testing
 
+### tests/common/graph_validation.rs
+**Purpose**: Automated graph state validation for integration tests  
+**Key types**: `GraphValidationFixture` - tracks expected graph transformations and validates final state
+**Key methods**: 
+- `expect_dummy_graph()` - sets up expectations for imported test data
+- `expect_create_block()`, `expect_update_block()`, `expect_delete()` - track node operations
+- `expect_edge()` - validate custom relationships (ParentChild, PageToBlock, etc.)
+- `validate_graph()` - checks all expectations against actual persisted graph
+**Benefits**: Eliminates manual assertions, reduces test brittleness, comprehensive edge validation
+
 
 ## Data Structures
 

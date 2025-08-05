@@ -189,7 +189,6 @@ pub struct TransactionLog {
 impl TransactionLog {
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path_ref = path.as_ref();
-        debug!("Opening sled database at path: {:?} with flush_every_ms=100", path_ref);
         
         let config = sled::Config::new()
             .path(path_ref)
@@ -199,7 +198,6 @@ impl TransactionLog {
             .mode(sled::Mode::HighThroughput);
             
         let db = config.open()?;
-        debug!("Sled database opened successfully");
         
         let transactions_tree = db.open_tree("transactions")?;
         let content_hash_index = db.open_tree("content_hash_index")?;
@@ -230,7 +228,6 @@ impl TransactionLog {
         let tx_id = transaction.id.clone();
         let tx_bytes = serde_json::to_vec(&transaction)?;
         
-        debug!("Appending transaction {} with operation: {:?}", tx_id, transaction.operation);
         
         // Store the transaction
         self.transactions_tree.insert(tx_id.as_bytes(), tx_bytes)?;
@@ -243,7 +240,6 @@ impl TransactionLog {
         // Add to pending index
         self.pending_index.insert(tx_id.as_bytes(), b"")?;
         
-        debug!("Transaction {} appended successfully", tx_id);
         
         Ok(tx_id)
     }
@@ -287,23 +283,18 @@ impl TransactionLog {
     }
     
     pub fn list_pending_transactions(&self) -> Result<Vec<Transaction>> {
-        debug!("Listing pending transactions from pending_index");
         let mut pending = Vec::new();
         
         for item in self.pending_index.iter() {
             let (tx_id_bytes, _) = item?;
             let tx_id = String::from_utf8_lossy(&tx_id_bytes);
-            debug!("Found pending transaction ID in index: {}", tx_id);
             
             if let Ok(transaction) = self.get_transaction(&tx_id) {
-                debug!("Retrieved transaction {} with state {:?}", tx_id, transaction.state);
                 pending.push(transaction);
             } else {
-                debug!("Could not retrieve transaction {} from log", tx_id);
             }
         }
         
-        debug!("Total pending transactions found: {}", pending.len());
         Ok(pending)
     }
 }

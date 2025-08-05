@@ -258,6 +258,7 @@ fn build_block_content_map(graph: &GraphManager) -> HashMap<String, String> {
 
 /// Ensure a page exists in the graph, creating a placeholder if necessary
 fn ensure_page_exists(graph: &mut GraphManager, page_name: &str) -> GraphResult<NodeIndex> {
+    use tracing::debug;
     let normalized_name = page_name.to_lowercase();
     
     // Check both original and normalized names
@@ -267,7 +268,7 @@ fn ensure_page_exists(graph: &mut GraphManager, page_name: &str) -> GraphResult<
     }
     
     // Create placeholder page
-    Ok(graph.create_node(
+    let idx = graph.create_node(
         normalized_name,
         uuid::Uuid::new_v4().to_string(),
         NodeType::Page,
@@ -276,7 +277,8 @@ fn ensure_page_exists(graph: &mut GraphManager, page_name: &str) -> GraphResult<
         HashMap::new(),
         Utc::now(),
         Utc::now(),
-    ))
+    );
+    Ok(idx)
 }
 
 /// Process a PKM reference and create appropriate edges

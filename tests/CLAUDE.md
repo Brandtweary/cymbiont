@@ -4,6 +4,7 @@
 - **common/**: Shared test utilities - imported via `#[path = "../common/mod.rs"]`
   - **mod.rs**: Test environment setup (`setup_test_env()`, `cleanup_test_env()`)
   - **test_harness.rs**: `TestServer` lifecycle management
+  - **graph_validation.rs**: Automated graph state validation for integration tests
 - **integration/**: Integration test suite (single binary for parallelism)
   - **main.rs**: Entry point - imports common utilities and test modules
   - **http_logseq_import.rs**: HTTP API import tests
@@ -42,6 +43,15 @@
 - `get_freeze_state(ws) -> bool`: Check if operations are currently frozen
 - `send_command_async(ws, cmd)`: Send command without waiting for response
 - `read_pending_response(ws) -> Value`: Read response with timeout handling
+
+### common/graph_validation.rs
+- `GraphValidationFixture::new()`: Create fixture to track expected graph transformations
+- `expect_dummy_graph()`: Set up expectations for imported dummy_graph test data
+- `expect_create_block(id, content, page_name)`: Track block creation expectations
+- `expect_update_block(id, new_content)`: Track block content updates (preserves edges)
+- `expect_delete(id)`: Track node deletion expectations
+- `expect_edge(source_id, target_id, edge_type)`: Track custom edge expectations (ParentChild, PageToBlock, etc.)
+- `validate_graph(data_dir, graph_id)`: Validate all expectations against persisted graph state
 
 ## Key Concepts
 - Each test gets unique port (8888+), data directory, and config file via atomic counter

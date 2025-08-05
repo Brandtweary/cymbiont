@@ -120,6 +120,7 @@ use crate::{
     storage::{Operation, OperationExecutor},
 };
 use std::sync::Arc;
+use std::collections::HashMap;
 use tracing::{warn, error, info};
 use thiserror::Error;
 use serde_json::json;
@@ -193,7 +194,6 @@ impl GraphOperationsExt for Arc<AppState> {
         properties: Option<serde_json::Value>,
     ) -> Result<String> {
         use tracing::debug;
-        debug!("add_block called with content: {:?}, page_name: {:?}", content, page_name);
         
         // Generate a proper UUID for this block
         let block_id = uuid::Uuid::new_v4().to_string();
@@ -208,14 +208,13 @@ impl GraphOperationsExt for Arc<AppState> {
         
         // Execute with transaction
         self.with_active_graph_transaction(operation, |graph_manager| {
-            debug!("Creating block data with page: {:?}", page_name);
             // Create the block data
             let block_data = PKMBlockData {
                 id: block_id.clone(),
                 content: content.clone(),
                 properties: properties.unwrap_or(json!({})),
                 parent: parent_id.clone(),
-                page: Some(page_name.clone().unwrap_or_else(|| "untitled".to_string())),
+                page: page_name.clone(),
                 references: extract_references(&content),
                 children: vec![], // New blocks have no children initially
                 created: chrono::Utc::now().to_rfc3339(),
@@ -226,11 +225,9 @@ impl GraphOperationsExt for Arc<AppState> {
             // Add to graph
             let result = block_data.apply_to_graph(graph_manager)
                 .map(|node_idx| {
-                    debug!("Block created successfully with node index: {:?}", node_idx);
                     block_id.clone()
                 })
                 .map_err(|e| e.to_string());
-            debug!("Block creation result: {:?}", result);
             result
         }).await
         .map_err(|e| GraphOperationError::GraphError(e.to_string()))
@@ -252,26 +249,52 @@ impl GraphOperationsExt for Arc<AppState> {
         self.with_active_graph_transaction(operation, |graph_manager| {
             // Find the node
             if let Some(node_idx) = graph_manager.find_node(&block_id) {
-                // Get existing block data
-                if let Some(node) = graph_manager.get_node(node_idx) {
-                    // Create updated block data
-                    let updated_block = PKMBlockData {
-                        id: block_id.clone(),
-                        content: content.clone(),
-                        properties: serde_json::to_value(&node.properties).unwrap_or(json!({})),
-                        parent: None, // Preserve existing parent
-                        page: Some("".to_string()), // Preserve existing page
-                        references: extract_references(&content),
-                        children: vec![], // Preserve existing children
-                        created: node.created_at.to_rfc3339(),
-                        updated: chrono::Utc::now().to_rfc3339(),
-                        reference_content: None, // Let apply_to_graph handle resolution
-                    };
+                // Get existing node data to preserve all fields
+                if let Some(existing_node) = graph_manager.get_node(node_idx) {
+                    // Clone existing data and update only what we need
+                    let mut node_data = existing_node.clone();
                     
-                    // Update the node
-                    updated_block.apply_to_graph(graph_manager)
-                        .map(|_| ())
-                        .map_err(|e| e.to_string())
+                    // Update content and timestamp
+                    node_data.content = content.clone();
+                    node_data.updated_at = chrono::Utc::now();
+                    
+                    // Resolve references if content changed
+                    if existing_node.content != content {
+                        // Build block map for reference resolution
+                        let mut block_map = HashMap::new();
+                        for idx in graph_manager.graph.node_indices() {
+                            if let Some(node) = graph_manager.graph.node_weight(idx) {
+                                if matches!(node.node_type, crate::graph_manager::NodeType::Block) {
+                                    block_map.insert(node.pkm_id.clone(), node.content.clone());
+                                }
+                            }
+                        }
+                        
+                        // Resolve references in the new content
+                        let mut visited = std::collections::HashSet::new();
+                        node_data.reference_content = Some(
+                            crate::import::reference_resolver::resolve_block_references(
+                                &content, 
+                                &block_map, 
+                                &mut visited, 
+                                Some(&block_id)
+                            )
+                        );
+                    }
+                    
+                    // Use create_or_update_node to update the node directly
+                    graph_manager.create_or_update_node(
+                        node_data.pkm_id,
+                        node_data.id,
+                        node_data.node_type,
+                        node_data.content,
+                        node_data.reference_content,
+                        node_data.properties,
+                        node_data.created_at,
+                        node_data.updated_at,
+                    )
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
                 } else {
                     Err(format!("Node not found: {}", block_id))
                 }
@@ -322,7 +345,6 @@ impl GraphOperationsExt for Arc<AppState> {
         properties: Option<serde_json::Value>,
     ) -> Result<()> {
         use tracing::debug;
-        debug!("create_page called for: {}", page_name);
         
         // Create transaction with full API parameters
         let operation = Operation::CreatePage {
@@ -332,23 +354,56 @@ impl GraphOperationsExt for Arc<AppState> {
         
         // Execute with transaction
         let result = self.with_active_graph_transaction(operation, |graph_manager| {
-            debug!("Creating page {} in graph", page_name);
-            // Create page data
-            let page_data = PKMPageData {
-                name: page_name.clone(),
-                normalized_name: Some(page_name.to_lowercase()),
-                properties: properties.clone().unwrap_or(json!({})),
-                created: chrono::Utc::now().to_rfc3339(),
-                updated: chrono::Utc::now().to_rfc3339(),
-                blocks: vec![],
-            };
             
-            // Add to graph
-            let res = page_data.apply_to_graph(graph_manager)
-                .map(|_| ())
-                .map_err(|e| e.to_string());
-            debug!("Page creation result: {:?}", res);
-            res
+            let normalized_name = page_name.to_lowercase();
+            
+            // Check if page already exists
+            if let Some(node_idx) = graph_manager.find_node(&page_name)
+                .or_else(|| graph_manager.find_node(&normalized_name)) {
+                
+                // Page exists - just update properties if provided
+                if let Some(existing_node) = graph_manager.get_node(node_idx) {
+                    if properties.is_some() {
+                        // Update only properties and timestamp
+                        let mut node_data = existing_node.clone();
+                        node_data.properties = crate::utils::parse_properties(&properties.unwrap_or(json!({})));
+                        node_data.updated_at = chrono::Utc::now();
+                        
+                        graph_manager.create_or_update_node(
+                            node_data.pkm_id,
+                            node_data.id,
+                            node_data.node_type,
+                            node_data.content,
+                            node_data.reference_content,
+                            node_data.properties,
+                            node_data.created_at,
+                            node_data.updated_at,
+                        )
+                        .map(|_| ())
+                        .map_err(|e| e.to_string())
+                    } else {
+                        // Page exists and no properties to update
+                        Ok(())
+                    }
+                } else {
+                    Err("Failed to get existing page node".to_string())
+                }
+            } else {
+                // Page doesn't exist - create it
+                let page_data = PKMPageData {
+                    name: page_name.clone(),
+                    normalized_name: Some(normalized_name),
+                    properties: properties.clone().unwrap_or(json!({})),
+                    created: chrono::Utc::now().to_rfc3339(),
+                    updated: chrono::Utc::now().to_rfc3339(),
+                    blocks: vec![],
+                };
+                
+                // Add to graph
+                page_data.apply_to_graph(graph_manager)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            }
         }).await;
         
         result.map_err(|e| GraphOperationError::GraphError(e.to_string()))
@@ -431,15 +486,13 @@ impl GraphOperationsExt for Arc<AppState> {
     /// Switch to a different graph by ID
     async fn switch_graph(&self, graph_id: String) -> Result<serde_json::Value> {
         use tracing::debug;
-        debug!("switch_graph called for graph_id: {}", graph_id);
         
         // Save the current active graph before switching
         if let Some(current_active) = self.get_active_graph_manager().await {
-            debug!("Saving current active graph {} before switch", current_active);
             let managers = self.graph_managers.read().await;
             if let Some(manager_lock) = managers.get(&current_active) {
                 match manager_lock.write().await.save_graph() {
-                    Ok(_) => debug!("✅ Saved graph {} before switch", current_active),
+                    Ok(_) => {},
                     Err(e) => error!("Failed to save graph {} before switch: {}", current_active, e),
                 }
             }
@@ -454,19 +507,15 @@ impl GraphOperationsExt for Arc<AppState> {
         self.set_active_graph(graph_id.clone()).await;
         
         // Now run recovery on the newly active graph
-        debug!("Checking for transaction coordinator for graph: {}", graph_id);
         if let Some(coordinator) = self.get_transaction_coordinator(&graph_id).await {
-            debug!("Found transaction coordinator, running recovery");
             match coordinator.recover_pending_transactions().await {
                 Ok(pending_transactions) => {
-                    debug!("Recovery found {} pending transactions", pending_transactions.len());
                     if !pending_transactions.is_empty() {
                         info!("🔄 Replaying {} pending transactions for graph {}", 
                               pending_transactions.len(), graph_id);
                         
                         // Replay each transaction with proper state updates
                         for transaction in pending_transactions {
-                            debug!("Replaying transaction: {:?}", transaction.id);
                             if let Err(e) = self.replay_transaction(transaction, coordinator.clone()).await {
                                 error!("Failed to replay transaction: {}", e);
                             }
@@ -476,7 +525,7 @@ impl GraphOperationsExt for Arc<AppState> {
                         let managers = self.graph_managers.read().await;
                         if let Some(manager_lock) = managers.get(&graph_id) {
                             match manager_lock.write().await.save_graph() {
-                                Ok(_) => debug!("✅ Saved graph {} after recovery", graph_id),
+                                Ok(_) => {},
                                 Err(e) => error!("Failed to save graph {} after recovery: {}", graph_id, e),
                             }
                         }
@@ -489,7 +538,6 @@ impl GraphOperationsExt for Arc<AppState> {
                 }
             }
         } else {
-            debug!("No transaction coordinator found for graph: {}", graph_id);
         }
         
         // Update registry to track the switch and get graph info
@@ -618,7 +666,6 @@ impl GraphOperationsExt for Arc<AppState> {
         let tx_id = transaction.id.clone();
         let operation = transaction.operation.clone();
         
-        debug!("Replaying operation: {} ({})", operation.name(), tx_id);
         
         // Execute the operation using the OperationExecutor trait
         let result = OperationExecutor::execute_operation(self, operation).await;

@@ -65,7 +65,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
-use tracing::{error, info, debug};
+use tracing::{error, info};
 use uuid::Uuid;
 use async_trait::async_trait;
 
@@ -119,26 +119,13 @@ pub enum Operation {
     },
 }
 
-impl Operation {
-    /// Get the operation name for logging/debugging
-    pub fn name(&self) -> &'static str {
-        match self {
-            Operation::CreateBlock { .. } => "CreateBlock",
-            Operation::UpdateBlock { .. } => "UpdateBlock",
-            Operation::DeleteBlock { .. } => "DeleteBlock",
-            Operation::CreatePage { .. } => "CreatePage",
-            Operation::DeletePage { .. } => "DeletePage",
-        }
-    }
-}
-
 /// Trait for executing operations
 /// This allows the storage layer to define operations without knowing about
 /// the specific implementation details of graph operations
 #[async_trait]
 pub trait OperationExecutor: Send + Sync {
     /// Execute an operation and return success/failure
-    async fn execute_operation(&self, operation: Operation) -> std::result::Result<(), String>;
+    async fn execute_operation(&self, graph_id: &uuid::Uuid, operation: Operation) -> std::result::Result<(), String>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -214,13 +201,20 @@ impl TransactionLog {
     /// Flush and close the database, ensuring all pending writes are persisted
     pub async fn close(&self) -> Result<()> {
         info!("Flushing transaction log to disk...");
-        let mut db_guard = self.db.lock().unwrap();
-        if let Some(ref db) = *db_guard {
+        
+        // Extract the db from the mutex to avoid holding guard across await
+        let db_to_flush = {
+            let mut db_guard = self.db.lock().unwrap();
+            db_guard.take()
+        };
+        
+        // Now flush if we had a database
+        if let Some(db) = db_to_flush {
             db.flush_async().await?;
             info!("Transaction log flushed successfully");
+            // db is dropped here, triggering sled cleanup
         }
-        // Drop the database to trigger sled cleanup
-        db_guard.take();
+        
         Ok(())
     }
     

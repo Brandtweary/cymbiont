@@ -258,7 +258,7 @@ fn build_block_content_map(graph: &GraphManager) -> HashMap<String, String> {
 
 /// Ensure a page exists in the graph, creating a placeholder if necessary
 fn ensure_page_exists(graph: &mut GraphManager, page_name: &str) -> GraphResult<NodeIndex> {
-    use tracing::debug;
+    
     let normalized_name = page_name.to_lowercase();
     
     // Check both original and normalized names

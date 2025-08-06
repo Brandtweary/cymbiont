@@ -98,10 +98,8 @@ cargo run
 # Import knowledge from Logseq
 cargo run -- --import-logseq /path/to/notes
 
-# Delete a graph by name or ID
+# Delete a graph by name or UUID
 cargo run -- --delete-graph my-old-notes
-# Force delete even if it's the active graph
-cargo run -- --delete-graph my-old-notes --force
 
 # Use custom data directory
 cargo run -- --data-dir ./my-graphs

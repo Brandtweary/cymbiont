@@ -36,13 +36,14 @@
  * 
  * ### Graph Management
  * - `create_graph()` - Initialize new knowledge graph with registry entry
- * - `delete_graph()` - Archive entire graph (prevents deleting active graph)
- * - `switch_graph()` - Change active graph context with crash recovery
+ * - `delete_graph()` - Archive entire graph (can delete both open and closed)
+ * - `open_graph()` - Load graph into RAM and trigger recovery
+ * - `close_graph()` - Save graph and unload from RAM
  * - `list_graphs()` - Enumerate all registered graphs
+ * - `list_open_graphs()` - List currently open graphs
  * 
  * ### Query Operations
  * - `get_node()` - Retrieve node by ID with PKM-aware formatting
- * - `get_active_graph()` - Get current graph ID
  * - `query_graph_bfs()` - Breadth-first traversal (TODO)
  * 
  * ### Recovery Operations
@@ -69,14 +70,16 @@
  * ## Crash Recovery
  * 
  * Recovery happens at two points:
- * 1. **Startup** (main.rs): Replays pending transactions for active graph
- * 2. **Graph Switch**: Replays pending transactions before activation
+ * 1. **Startup** (main.rs): Runs `run_all_graphs_recovery()` for ALL graphs (both open and closed)
+ * 2. **Graph Open**: Each `open_graph()` call triggers recovery for that specific graph
  * 
  * The recovery process:
- * - Finds all Active transactions in WAL
- * - Calls `replay_transaction()` for each
+ * - Startup: Iterates all graphs, temporarily opens closed ones for recovery
+ * - Finds all Active transactions in each graph's WAL
+ * - Calls `replay_transaction()` for each pending transaction
  * - Updates transaction state based on result
  * - No PKM reconstruction needed - exact API replay
+ * - Closed graphs are closed again after recovery
  * 
  * ## OperationExecutor Trait Implementation
  * 
@@ -121,10 +124,11 @@ use crate::{
 };
 use std::sync::Arc;
 use std::collections::HashMap;
-use tracing::{warn, error, info};
+use tracing::{warn, error, info, debug};
 use thiserror::Error;
 use serde_json::json;
 use async_trait::async_trait;
+use uuid::Uuid;
 
 #[derive(Error, Debug)]
 pub enum GraphOperationError {
@@ -146,31 +150,35 @@ pub trait GraphOperationsExt {
         parent_id: Option<String>,
         page_name: Option<String>,
         properties: Option<serde_json::Value>,
+        graph_id: &Uuid,
     ) -> Result<String>;
     
     /// Update an existing block
-    async fn update_block(&self, block_id: String, content: String) -> Result<()>;
+    async fn update_block(&self, block_id: String, content: String, graph_id: &Uuid) -> Result<()>;
     
     /// Delete a block
-    async fn delete_block(&self, block_id: String) -> Result<()>;
+    async fn delete_block(&self, block_id: String, graph_id: &Uuid) -> Result<()>;
     
     /// Create a new page
-    async fn create_page(&self, page_name: String, properties: Option<serde_json::Value>) -> Result<()>;
+    async fn create_page(&self, page_name: String, properties: Option<serde_json::Value>, graph_id: &Uuid) -> Result<()>;
     
     /// Delete a page
-    async fn delete_page(&self, page_name: String) -> Result<()>;
+    async fn delete_page(&self, page_name: String, graph_id: &Uuid) -> Result<()>;
     
     /// Get a node by ID
-    async fn get_node(&self, node_id: &str) -> Result<serde_json::Value>;
+    async fn get_node(&self, node_id: &str, graph_id: &Uuid) -> Result<serde_json::Value>;
     
     /// Query graph with BFS traversal
-    fn query_graph_bfs(&self, start_id: &str, max_depth: usize) -> Result<Vec<serde_json::Value>>;
+    fn query_graph_bfs(&self, start_id: &str, max_depth: usize, graph_id: &Uuid) -> Result<Vec<serde_json::Value>>;
     
-    /// Switch to a different graph by ID
-    async fn switch_graph(&self, graph_id: String) -> Result<serde_json::Value>;
+    /// Open a graph (load into RAM and trigger recovery)
+    async fn open_graph(&self, graph_id: Uuid) -> Result<serde_json::Value>;
     
-    /// Get the currently active graph ID
-    async fn get_active_graph(&self) -> Result<Option<String>>;
+    /// Close a graph (save and unload from RAM)
+    async fn close_graph(&self, graph_id: Uuid) -> Result<()>;
+    
+    /// List all open graphs
+    async fn list_open_graphs(&self) -> Result<Vec<Uuid>>;
     
     /// List all available graphs
     async fn list_graphs(&self) -> Result<Vec<serde_json::Value>>;
@@ -179,10 +187,10 @@ pub trait GraphOperationsExt {
     async fn create_graph(&self, name: Option<String>, description: Option<String>) -> Result<serde_json::Value>;
     
     /// Delete a knowledge graph
-    async fn delete_graph(&self, graph_id: String, force: bool) -> Result<()>;
+    async fn delete_graph(&self, graph_id: &Uuid) -> Result<()>;
     
     /// Replay a transaction during recovery with proper state management
-    async fn replay_transaction(&self, transaction: crate::storage::Transaction, coordinator: Arc<crate::storage::TransactionCoordinator>) -> Result<()>;
+    async fn replay_transaction(&self, graph_id: &Uuid, transaction: crate::storage::Transaction, coordinator: Arc<crate::storage::TransactionCoordinator>) -> Result<()>;
 }
 
 impl GraphOperationsExt for Arc<AppState> {
@@ -192,8 +200,8 @@ impl GraphOperationsExt for Arc<AppState> {
         parent_id: Option<String>,
         page_name: Option<String>,
         properties: Option<serde_json::Value>,
+        graph_id: &Uuid,
     ) -> Result<String> {
-        use tracing::debug;
         
         // Generate a proper UUID for this block
         let block_id = uuid::Uuid::new_v4().to_string();
@@ -206,8 +214,8 @@ impl GraphOperationsExt for Arc<AppState> {
             properties: properties.clone(),
         };
         
-        // Execute with transaction
-        self.with_active_graph_transaction(operation, |graph_manager| {
+        // Execute with transaction on specific graph
+        self.with_graph_transaction(graph_id, operation, |graph_manager| {
             // Create the block data
             let block_data = PKMBlockData {
                 id: block_id.clone(),
@@ -223,12 +231,9 @@ impl GraphOperationsExt for Arc<AppState> {
             };
             
             // Add to graph
-            let result = block_data.apply_to_graph(graph_manager)
-                .map(|node_idx| {
-                    block_id.clone()
-                })
-                .map_err(|e| e.to_string());
-            result
+            block_data.apply_to_graph(graph_manager)
+                .map(|_| block_id.clone())
+                .map_err(|e| e.to_string())
         }).await
         .map_err(|e| GraphOperationError::GraphError(e.to_string()))
     }
@@ -238,15 +243,17 @@ impl GraphOperationsExt for Arc<AppState> {
         &self,
         block_id: String,
         content: String,
+        graph_id: &Uuid,
     ) -> Result<()> {
+        
         // Create transaction with full API parameters
         let operation = Operation::UpdateBlock {
             block_id: block_id.clone(),
             content: content.clone(),
         };
         
-        // Execute with transaction
-        self.with_active_graph_transaction(operation, |graph_manager| {
+        // Execute with transaction on specific graph
+        self.with_graph_transaction(graph_id, operation, |graph_manager| {
             // Find the node
             if let Some(node_idx) = graph_manager.find_node(&block_id) {
                 // Get existing node data to preserve all fields
@@ -312,14 +319,15 @@ impl GraphOperationsExt for Arc<AppState> {
     }
     
     /// Delete a block from both graph and via WebSocket
-    async fn delete_block(&self, block_id: String) -> Result<()> {
+    async fn delete_block(&self, block_id: String, graph_id: &Uuid) -> Result<()> {
+        
         // Create transaction with full API parameters
         let operation = Operation::DeleteBlock {
             block_id: block_id.clone(),
         };
         
-        // Execute with transaction
-        self.with_active_graph_transaction(operation, |graph_manager| {
+        // Execute with transaction on specific graph
+        self.with_graph_transaction(graph_id, operation, |graph_manager| {
             if let Some(node_idx) = graph_manager.find_node(&block_id) {
                 // Archive the node
                 graph_manager.archive_nodes(vec![(block_id.clone(), node_idx)])
@@ -343,8 +351,8 @@ impl GraphOperationsExt for Arc<AppState> {
         &self,
         page_name: String,
         properties: Option<serde_json::Value>,
+        graph_id: &Uuid,
     ) -> Result<()> {
-        use tracing::debug;
         
         // Create transaction with full API parameters
         let operation = Operation::CreatePage {
@@ -352,8 +360,8 @@ impl GraphOperationsExt for Arc<AppState> {
             properties: properties.clone(),
         };
         
-        // Execute with transaction
-        let result = self.with_active_graph_transaction(operation, |graph_manager| {
+        // Execute with transaction on specific graph
+        let result = self.with_graph_transaction(graph_id, operation, |graph_manager| {
             
             let normalized_name = page_name.to_lowercase();
             
@@ -410,14 +418,15 @@ impl GraphOperationsExt for Arc<AppState> {
     }
     
     /// Delete a page from both graph and via WebSocket
-    async fn delete_page(&self, page_name: String) -> Result<()> {
+    async fn delete_page(&self, page_name: String, graph_id: &Uuid) -> Result<()> {
+        
         // Create transaction with full API parameters
         let operation = Operation::DeletePage {
             page_name: page_name.clone(),
         };
         
-        // Execute with transaction
-        self.with_active_graph_transaction(operation, |graph_manager| {
+        // Execute with transaction on specific graph
+        self.with_graph_transaction(graph_id, operation, |graph_manager| {
             // Pages are stored with normalized names as keys
             let normalized_name = page_name.to_lowercase();
             
@@ -443,15 +452,12 @@ impl GraphOperationsExt for Arc<AppState> {
         })
     }
     
-    async fn get_node(&self, node_id: &str) -> Result<serde_json::Value> {
-        // Get active graph
-        let active_graph_id = self.get_active_graph_manager().await
-            .ok_or_else(|| GraphOperationError::GraphError("No active graph".to_string()))?;
+    async fn get_node(&self, node_id: &str, graph_id: &Uuid) -> Result<serde_json::Value> {
         
-        let managers = self.graph_managers.read().await;
-        let manager_lock = managers.get(&active_graph_id)
-            .ok_or_else(|| GraphOperationError::GraphError("Graph manager not found".to_string()))?;
-        let graph_manager = manager_lock.read().await;
+        let resources = self.graph_resources.read().await;
+        let graph_resources = resources.get(graph_id)
+            .ok_or_else(|| GraphOperationError::GraphError("Graph not found".to_string()))?;
+        let graph_manager = graph_resources.manager.read().await;
         
         if let Some(node_idx) = graph_manager.find_node(node_id) {
             if let Some(node) = graph_manager.get_node(node_idx) {
@@ -476,6 +482,7 @@ impl GraphOperationsExt for Arc<AppState> {
         &self,
         _start_id: &str,
         _max_depth: usize,
+        _graph_id: &Uuid,
     ) -> Result<Vec<serde_json::Value>> {
         // TODO: Implement BFS traversal in graph_manager
         // For now, return empty result
@@ -483,30 +490,15 @@ impl GraphOperationsExt for Arc<AppState> {
         Ok(vec![])
     }
     
-    /// Switch to a different graph by ID
-    async fn switch_graph(&self, graph_id: String) -> Result<serde_json::Value> {
-        use tracing::debug;
+    /// Open a graph (load into RAM and trigger recovery)
+    async fn open_graph(&self, graph_id: Uuid) -> Result<serde_json::Value> {
+        info!("📂 Opening graph: {}", graph_id);
         
-        // Save the current active graph before switching
-        if let Some(current_active) = self.get_active_graph_manager().await {
-            let managers = self.graph_managers.read().await;
-            if let Some(manager_lock) = managers.get(&current_active) {
-                match manager_lock.write().await.save_graph() {
-                    Ok(_) => {},
-                    Err(e) => error!("Failed to save graph {} before switch: {}", current_active, e),
-                }
-            }
-            drop(managers);
-        }
+        // Open the graph (handles loading and registry update)
+        AppState::open_graph(self, &graph_id).await
+            .map_err(|e| GraphOperationError::GraphError(format!("Failed to open graph: {}", e)))?;
         
-        // Ensure the graph exists or create it
-        self.get_or_create_graph_manager(&graph_id).await
-            .map_err(|e| GraphOperationError::GraphError(format!("Failed to switch graph: {}", e)))?;
-        
-        // Set as active graph FIRST
-        self.set_active_graph(graph_id.clone()).await;
-        
-        // Now run recovery on the newly active graph
+        // Run recovery on the newly opened graph
         if let Some(coordinator) = self.get_transaction_coordinator(&graph_id).await {
             match coordinator.recover_pending_transactions().await {
                 Ok(pending_transactions) => {
@@ -516,36 +508,36 @@ impl GraphOperationsExt for Arc<AppState> {
                         
                         // Replay each transaction with proper state updates
                         for transaction in pending_transactions {
-                            if let Err(e) = self.replay_transaction(transaction, coordinator.clone()).await {
+                            if let Err(e) = self.replay_transaction(&graph_id, transaction, coordinator.clone()).await {
                                 error!("Failed to replay transaction: {}", e);
                             }
                         }
                         
                         // Save the graph after recovery to ensure replayed changes are persisted
-                        let managers = self.graph_managers.read().await;
-                        if let Some(manager_lock) = managers.get(&graph_id) {
-                            match manager_lock.write().await.save_graph() {
-                                Ok(_) => {},
+                        let resources = self.graph_resources.read().await;
+                        if let Some(graph_resources) = resources.get(&graph_id) {
+                            match graph_resources.manager.write().await.save_graph() {
+                                Ok(_) => info!("💾 Saved graph {} after recovery", graph_id),
                                 Err(e) => error!("Failed to save graph {} after recovery: {}", graph_id, e),
                             }
                         }
-                        drop(managers);
+                        drop(resources);
                     }
                 }
                 Err(e) => {
-                    error!("Failed to recover transactions for {}: {}", graph_id, e);
+                    error!("❌ Failed to recover transactions for {}: {}", graph_id, e);
                     return Err(GraphOperationError::GraphError(format!("Transaction recovery failed: {}", e)));
                 }
             }
-        } else {
         }
         
-        // Update registry to track the switch and get graph info
+        // Get graph info from registry
         let graph_info = {
-            let mut registry = self.graph_registry.lock()
-                .map_err(|_| GraphOperationError::GraphError("Failed to lock registry".into()))?;
-            registry.switch_graph(&graph_id)
-                .map_err(|e| GraphOperationError::GraphError(format!("Failed to switch graph: {}", e)))?
+            let registry = self.graph_registry.read()
+                .map_err(|_| GraphOperationError::GraphError("Failed to read registry".into()))?;
+            registry.get_graph(&graph_id)
+                .ok_or_else(|| GraphOperationError::GraphError(format!("Graph '{}' not found", graph_id)))?
+                .clone()
         };
         
         Ok(json!({
@@ -557,14 +549,25 @@ impl GraphOperationsExt for Arc<AppState> {
         }))
     }
     
-    /// Get the currently active graph ID
-    async fn get_active_graph(&self) -> Result<Option<String>> {
-        Ok(self.get_active_graph_manager().await)
+    /// Close a graph (save and unload from RAM)
+    async fn close_graph(&self, graph_id: Uuid) -> Result<()> {
+        // Close the graph (handles saving and registry update)
+        AppState::close_graph(self, &graph_id).await
+            .map_err(|e| GraphOperationError::GraphError(format!("Failed to close graph: {}", e)))?;
+        
+        Ok(())
+    }
+    
+    /// List all open graphs
+    async fn list_open_graphs(&self) -> Result<Vec<Uuid>> {
+        let registry = self.graph_registry.read()
+            .map_err(|_| GraphOperationError::GraphError("Failed to read registry".into()))?;
+        Ok(registry.get_open_graphs())
     }
     
     /// List all available graphs
     async fn list_graphs(&self) -> Result<Vec<serde_json::Value>> {
-        if let Ok(registry) = self.graph_registry.lock() {
+        if let Ok(registry) = self.graph_registry.read() {
             let graphs = registry.get_all_graphs();
             Ok(graphs.into_iter().map(|info| {
                 json!({
@@ -588,8 +591,14 @@ impl GraphOperationsExt for Arc<AppState> {
     ) -> Result<serde_json::Value> {
         // Register the graph in the registry
         let graph_info = {
-            let mut registry = self.graph_registry.lock()
-                .map_err(|_| GraphOperationError::GraphError("Failed to lock registry".into()))?;
+            // Debug assertion to check we're not already holding a lock
+            debug_assert!(
+                self.graph_registry.try_read().is_ok(),
+                "Attempting to write to registry while already holding a lock!"
+            );
+            
+            let mut registry = self.graph_registry.write()
+                .map_err(|_| GraphOperationError::GraphError("Failed to write registry".into()))?;
             
             registry.register_graph(None, name, description, &self.data_dir)
                 .map_err(|e| GraphOperationError::GraphError(format!("Failed to register graph: {}", e)))?
@@ -597,8 +606,8 @@ impl GraphOperationsExt for Arc<AppState> {
         
         // Save registry after creating new graph
         {
-            let registry = self.graph_registry.lock()
-                .map_err(|_| GraphOperationError::GraphError("Failed to lock registry".into()))?;
+            let registry = self.graph_registry.read()
+                .map_err(|_| GraphOperationError::GraphError("Failed to read registry".into()))?;
             
             registry.save()
                 .map_err(|e| GraphOperationError::GraphError(format!("Failed to save registry: {}", e)))?;
@@ -622,21 +631,21 @@ impl GraphOperationsExt for Arc<AppState> {
     /// Delete a knowledge graph
     /// 
     /// Archives the graph to `{data_dir}/archived_graphs/` with timestamp.
-    /// Prevents deletion of the active graph unless `force` is true.
-    /// When active graph is deleted, automatically switches to another available graph.
-    async fn delete_graph(&self, graph_id: String, force: bool) -> Result<()> {
-        // Check if this is the active graph
-        let active_graph = self.get_active_graph_manager().await;
-        if active_graph.as_ref() == Some(&graph_id) && !force {
-            return Err(GraphOperationError::GraphError("Cannot delete the currently active graph".into()));
-        }
+    /// Can delete both open and closed graphs.
+    async fn delete_graph(&self, graph_id: &Uuid) -> Result<()> {
         
         // Remove from registry (this also archives the data)
         {
-            let mut registry = self.graph_registry.lock()
-                .map_err(|_| GraphOperationError::GraphError("Failed to lock registry".into()))?;
+            // Debug assertion to check we're not already holding a lock
+            debug_assert!(
+                self.graph_registry.try_read().is_ok(),
+                "Attempting to write to registry while already holding a lock!"
+            );
             
-            registry.remove_graph(&graph_id)
+            let mut registry = self.graph_registry.write()
+                .map_err(|_| GraphOperationError::GraphError("Failed to write registry".into()))?;
+            
+            registry.remove_graph(graph_id)
                 .map_err(|e| GraphOperationError::GraphError(format!("Failed to remove graph: {}", e)))?;
             
             // Save registry
@@ -644,16 +653,10 @@ impl GraphOperationsExt for Arc<AppState> {
                 .map_err(|e| GraphOperationError::GraphError(format!("Failed to save registry: {}", e)))?;
         }
         
-        // Remove from managers
+        // Remove from resources (manager + coordinator bundled together)
         {
-            let mut managers = self.graph_managers.write().await;
-            managers.remove(&graph_id);
-        }
-        
-        // Remove from transaction coordinators
-        {
-            let mut coordinators = self.transaction_coordinators.write().await;
-            coordinators.remove(&graph_id);
+            let mut resources = self.graph_resources.write().await;
+            resources.remove(graph_id);
         }
         
         Ok(())
@@ -661,21 +664,18 @@ impl GraphOperationsExt for Arc<AppState> {
     
     /// Replay a transaction during recovery
     /// This handles the complete transaction lifecycle: execution and state update
-    async fn replay_transaction(&self, transaction: crate::storage::Transaction, coordinator: Arc<crate::storage::TransactionCoordinator>) -> Result<()> {
-        use tracing::debug;
+    async fn replay_transaction(&self, graph_id: &Uuid, transaction: crate::storage::Transaction, coordinator: Arc<crate::storage::TransactionCoordinator>) -> Result<()> {
         let tx_id = transaction.id.clone();
         let operation = transaction.operation.clone();
         
-        
-        // Execute the operation using the OperationExecutor trait
-        let result = OperationExecutor::execute_operation(self, operation).await;
+        // Execute the operation using the OperationExecutor trait with graph context
+        let result = OperationExecutor::execute_operation(self, graph_id, operation).await;
         
         // Update transaction state based on result
         match result {
             Ok(()) => {
                 coordinator.commit_transaction(&tx_id).await
                     .map_err(|e| GraphOperationError::GraphError(e.to_string()))?;
-                info!("✅ Successfully replayed transaction {}", tx_id);
             }
             Err(e) => {
                 coordinator.abort_transaction(&tx_id, &e).await
@@ -692,34 +692,172 @@ impl GraphOperationsExt for Arc<AppState> {
 // This allows the storage layer to execute operations without knowing about GraphOperationsExt
 #[async_trait]
 impl OperationExecutor for Arc<AppState> {
-    async fn execute_operation(&self, operation: Operation) -> std::result::Result<(), String> {
+    async fn execute_operation(&self, graph_id: &Uuid, operation: Operation) -> std::result::Result<(), String> {
         match operation {
             Operation::CreateBlock { content, parent_id, page_name, properties } => {
-                GraphOperationsExt::add_block(self, content, parent_id, page_name, properties)
+                GraphOperationsExt::add_block(self, content, parent_id, page_name, properties, graph_id)
                     .await
                     .map(|_| ())
                     .map_err(|e| e.to_string())
             },
             Operation::UpdateBlock { block_id, content } => {
-                GraphOperationsExt::update_block(self, block_id, content)
+                GraphOperationsExt::update_block(self, block_id, content, graph_id)
                     .await
                     .map_err(|e| e.to_string())
             },
             Operation::DeleteBlock { block_id } => {
-                GraphOperationsExt::delete_block(self, block_id)
+                GraphOperationsExt::delete_block(self, block_id, graph_id)
                     .await
                     .map_err(|e| e.to_string())
             },
             Operation::CreatePage { page_name, properties } => {
-                GraphOperationsExt::create_page(self, page_name, properties)
+                GraphOperationsExt::create_page(self, page_name, properties, graph_id)
                     .await
                     .map_err(|e| e.to_string())
             },
             Operation::DeletePage { page_name } => {
-                GraphOperationsExt::delete_page(self, page_name)
+                GraphOperationsExt::delete_page(self, page_name, graph_id)
                     .await
                     .map_err(|e| e.to_string())
             },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::{Operation, Transaction};
+    use crate::storage::transaction_log::TransactionState;
+    
+    #[test]
+    fn test_error_types() {
+        // Test GraphError creation
+        let graph_err = GraphOperationError::GraphError("Test error".to_string());
+        assert_eq!(graph_err.to_string(), "Graph error: Test error");
+        
+        // Test NodeNotFound creation
+        let node_err = GraphOperationError::NodeNotFound("block-123".to_string());
+        assert_eq!(node_err.to_string(), "Node not found: block-123");
+    }
+    
+    #[test]
+    fn test_operation_variants() {
+        // Test that all Operation variants can be created
+        let create_block = Operation::CreateBlock {
+            content: "Test content".to_string(),
+            parent_id: Some("parent-123".to_string()),
+            page_name: Some("TestPage".to_string()),
+            properties: Some(json!({"key": "value"})),
+        };
+        assert!(matches!(create_block, Operation::CreateBlock { .. }));
+        
+        let update_block = Operation::UpdateBlock {
+            block_id: "block-123".to_string(),
+            content: "Updated content".to_string(),
+        };
+        assert!(matches!(update_block, Operation::UpdateBlock { .. }));
+        
+        let delete_block = Operation::DeleteBlock {
+            block_id: "block-123".to_string(),
+        };
+        assert!(matches!(delete_block, Operation::DeleteBlock { .. }));
+        
+        let create_page = Operation::CreatePage {
+            page_name: "NewPage".to_string(),
+            properties: Some(json!({"type": "journal"})),
+        };
+        assert!(matches!(create_page, Operation::CreatePage { .. }));
+        
+        let delete_page = Operation::DeletePage {
+            page_name: "OldPage".to_string(),
+        };
+        assert!(matches!(delete_page, Operation::DeletePage { .. }));
+    }
+    
+    #[test]
+    fn test_transaction_creation() {
+        // Test that transactions are created properly for operations
+        let operation = Operation::CreateBlock {
+            content: "Test block".to_string(),
+            parent_id: None,
+            page_name: Some("TestPage".to_string()),
+            properties: None,
+        };
+        
+        let transaction = Transaction::new(operation.clone());
+        
+        // Verify transaction fields
+        assert!(!transaction.id.is_empty());
+        assert!(matches!(transaction.operation, Operation::CreateBlock { .. }));
+        assert_eq!(transaction.state, TransactionState::Active);
+        assert!(transaction.content_hash.is_some()); // CreateBlock should have content hash
+        assert!(transaction.error_message.is_none());
+        
+        // Test operation without content hash
+        let delete_op = Operation::DeleteBlock {
+            block_id: "block-456".to_string(),
+        };
+        let delete_tx = Transaction::new(delete_op);
+        assert!(delete_tx.content_hash.is_none()); // DeleteBlock should not have content hash
+    }
+    
+    
+    #[test]
+    fn test_result_type_conversions() {
+        // Test that our Result type works with error conversions
+        fn returns_graph_error() -> Result<String> {
+            Err(GraphOperationError::GraphError("Something went wrong".to_string()))
+        }
+        
+        fn returns_node_not_found() -> Result<String> {
+            Err(GraphOperationError::NodeNotFound("node-123".to_string()))
+        }
+        
+        // Test error matching
+        match returns_graph_error() {
+            Err(GraphOperationError::GraphError(msg)) => {
+                assert_eq!(msg, "Something went wrong");
+            }
+            _ => panic!("Expected GraphError"),
+        }
+        
+        match returns_node_not_found() {
+            Err(GraphOperationError::NodeNotFound(id)) => {
+                assert_eq!(id, "node-123");
+            }
+            _ => panic!("Expected NodeNotFound"),
+        }
+    }
+    
+    #[test]
+    fn test_json_serialization_for_operations() {
+        // Test that operations can be serialized/deserialized for transaction log
+        let op = Operation::CreateBlock {
+            content: "Test content with «reference»".to_string(),
+            parent_id: Some("parent-id".to_string()),
+            page_name: Some("Daily Note".to_string()),
+            properties: Some(json!({
+                "tags": ["important", "review"],
+                "priority": "high"
+            })),
+        };
+        
+        // Serialize
+        let json = serde_json::to_string(&op).unwrap();
+        assert!(json.contains("CreateBlock"));
+        assert!(json.contains("Test content with «reference»"));
+        
+        // Deserialize
+        let deserialized: Operation = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            Operation::CreateBlock { content, parent_id, page_name, properties } => {
+                assert_eq!(content, "Test content with «reference»");
+                assert_eq!(parent_id, Some("parent-id".to_string()));
+                assert_eq!(page_name, Some("Daily Note".to_string()));
+                assert!(properties.is_some());
+            }
+            _ => panic!("Wrong operation type after deserialization"),
         }
     }
 }

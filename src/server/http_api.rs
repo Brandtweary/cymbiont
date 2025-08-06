@@ -40,7 +40,7 @@
  * 
  * ### GET /api/websocket/status
  * Returns WebSocket connection metrics for monitoring.
- * - **Response**: JSON with connection count, active graph info
+ * - **Response**: JSON with connection count, open graph IDs
  * - **Use Cases**: System monitoring, integration testing, debugging
  * - **Performance**: Fast read-only operation, no heavy processing
  * 
@@ -251,13 +251,17 @@ pub async fn get_websocket_status(
         0
     };
     
-    // Get active graph for context
-    let active_graph_id = state.get_active_graph_manager().await;
+    // Get open graphs for context
+    let open_graph_ids: Vec<String> = if let Ok(registry) = state.graph_registry.read() {
+        registry.get_open_graphs().iter().map(|id| id.to_string()).collect()
+    } else {
+        vec![]
+    };
     
     Json(serde_json::json!({
         "connected": connections > 0,
         "connection_count": connections,
-        "active_graph_id": active_graph_id,
+        "open_graphs": open_graph_ids,
         // TODO: Add more detailed connection info when needed
     }))
 }

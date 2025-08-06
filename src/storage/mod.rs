@@ -19,7 +19,7 @@
 //! - Graph switching and lifecycle management with timestamps
 //! - Registry persistence to `graph_registry.json` with atomic writes
 //! - Graph archival and removal with data preservation
-//! - Active graph tracking for session management
+//! - Open/closed graph state tracking for session management
 //!
 //! ### Transaction Log (`transaction_log.rs`)
 //! Write-ahead logging with ACID guarantees using sled embedded database:

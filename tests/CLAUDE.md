@@ -36,7 +36,7 @@
 - `authenticate_websocket(ws, token) -> bool`: Authenticate WebSocket connection
 - `import_dummy_graph(env) -> String`: Import dummy graph via CLI and return graph ID
 - `read_auth_token(data_dir) -> String`: Read and trim auth token from data directory
-- `get_active_graph_id(data_dir) -> String`: Get active graph ID from registry
+- `get_single_open_graph_id(data_dir) -> String`: Get ID when exactly one graph is open
 - `setup_with_graph(env) -> (TestServer, String)`: Import graph and start server, returning both
 - `freeze_operations(ws) -> bool`: Pause graph operations after transaction creation
 - `unfreeze_operations(ws) -> bool`: Resume paused graph operations

@@ -80,7 +80,7 @@ fn import_directory(
         
         if path.extension().and_then(|s| s.to_str()) == Some("md") {
             if let Err(e) = import_file(&path, pages, blocks, _is_journal) {
-                warn!("Failed to import {:?}: {}", path, e);
+                error!("Failed to import {:?}: {}", path, e);
             }
         }
     }

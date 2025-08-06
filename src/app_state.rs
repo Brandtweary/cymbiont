@@ -6,9 +6,8 @@
 //! ## Architecture Role
 //! 
 //! AppState serves as the "central nervous system" that connects:
-//! - Graph managers (actual graph data storage)
-//! - Transaction coordinators (WAL for each graph)
-//! - Graph registry (multi-graph metadata)
+//! - Graph resources (bundled managers + coordinators via GraphResources)
+//! - Graph registry (multi-graph metadata and open/closed state tracking)
 //! - WebSocket connections (real-time communication)
 //! - Configuration (runtime settings)
 //! 
@@ -19,12 +18,19 @@
 //! - PKM operations → Handled by GraphOperationsExt trait
 //! - Graph storage → Handled by GraphManager
 //! - Transactions → Handled by TransactionCoordinator
-//! - Multi-graph → Handled by GraphRegistry
+//! - Open/closed state → Handled by GraphRegistry (single source of truth)
+//! 
+//! ## Resource Management
+//! 
+//! The GraphResources struct bundles graph managers with their transaction
+//! coordinators to ensure atomic lifecycle management. This prevents
+//! inconsistent states where one resource exists without the other.
 //! 
 //! ## Key Methods
 //! 
-//! - `with_active_graph_transaction()` - Wraps operations in transactions
-//! - `get_or_create_graph_manager()` - Lazy initialization of graphs
+//! - `with_graph_transaction(graph_id)` - Wraps operations in transactions for specific graph
+//! - `get_or_create_graph_manager()` - Lazy initialization of bundled graph resources
+//! - `open_graph()` / `close_graph()` - Explicit graph lifecycle management
 //! - `get_transaction_coordinator()` - Access to per-graph WAL
 //! - `cleanup_and_save()` - Graceful shutdown coordination
 //! 
@@ -35,11 +41,12 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock as SyncRwLock, Mutex};
 use std::error::Error;
 use std::fs;
 use tokio::sync::{oneshot, RwLock};
-use tracing::{info, error, debug};
+use tracing::{info, error};
+use uuid::Uuid;
 
 use crate::{
     graph_manager::GraphManager,
@@ -50,17 +57,20 @@ use crate::{
 // Re-export the real WsConnection from server module
 pub use crate::server::websocket::WsConnection;
 
+/// Bundle of resources for a single graph
+/// This ensures graph manager and transaction coordinator are always created/destroyed together
+pub struct GraphResources {
+    pub manager: RwLock<GraphManager>,
+    pub coordinator: Arc<TransactionCoordinator>,
+}
+
 /// Central application state that coordinates all Cymbiont components
 pub struct AppState {
-    // Core graph management (always present)
-    pub graph_managers: Arc<RwLock<HashMap<String, RwLock<GraphManager>>>>,
-    pub graph_registry: Arc<Mutex<GraphRegistry>>,
-    pub active_graph_id: Arc<RwLock<Option<String>>>,
+    // Core graph management - bundled resources ensure consistency
+    pub graph_resources: Arc<RwLock<HashMap<Uuid, GraphResources>>>,
+    pub graph_registry: Arc<SyncRwLock<GraphRegistry>>,
     pub config: Config,
     pub data_dir: PathBuf,  // Resolved absolute path
-    
-    // Transaction management (always present)
-    pub transaction_coordinators: Arc<RwLock<HashMap<String, Arc<TransactionCoordinator>>>>,
     
     // Server-specific components (optional)
     pub ws_ready_tx: Mutex<Option<oneshot::Sender<()>>>,
@@ -105,14 +115,17 @@ impl AppState {
         
         // Initialize graph registry
         let registry_path = data_dir.join("graph_registry.json");
-        let graph_registry = Arc::new(Mutex::new(
-            GraphRegistry::load_or_create(&registry_path, &data_dir)
-                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Graph registry error: {e:?}")))?
-        ));
+        let mut registry = GraphRegistry::load_or_create(&registry_path, &data_dir)
+            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Graph registry error: {e:?}")))?;
         
-        // Initialize multi-graph managers and coordinators
-        let graph_managers = Arc::new(RwLock::new(HashMap::new()));
-        let transaction_coordinators = Arc::new(RwLock::new(HashMap::new()));
+        // Ensure at least one graph is open
+        registry.ensure_graph_open()
+            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to ensure graph open: {e:?}")))?;
+        
+        let graph_registry = Arc::new(SyncRwLock::new(registry));
+        
+        // Initialize graph resources map (managers + coordinators bundled)
+        let graph_resources = Arc::new(RwLock::new(HashMap::new()));
         
         
         // Create WebSocket connections if server mode
@@ -122,33 +135,28 @@ impl AppState {
             None
         };
         
-        // Get the active graph from registry
-        let initial_active_graph = {
-            let registry = graph_registry.lock()
-                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to lock registry: {}", e)))?;
-            registry.get_active_graph_id().map(|s| s.to_string())
+        // Get the open graphs from registry
+        let initial_open_graphs = {
+            let registry = graph_registry.read()
+                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to read registry: {}", e)))?;
+            registry.get_open_graphs()
         };
         
         let app_state = Arc::new(AppState {
-            graph_managers,
+            graph_resources,
             graph_registry,
-            active_graph_id: Arc::new(RwLock::new(initial_active_graph.clone())),
             config,
             data_dir: data_dir.clone(),
-            transaction_coordinators,
             ws_ready_tx: Mutex::new(None),
             ws_connections,
             auth_token: Arc::new(RwLock::new(None)),
             operation_freeze: Arc::new(RwLock::new(false)),
         });
         
-        // If there's an active graph, ensure its manager is loaded
-        if let Some(graph_id) = initial_active_graph {
+        // Load all open graphs
+        for graph_id in initial_open_graphs {
             app_state.get_or_create_graph_manager(&graph_id).await?;
-            
-            // Note: Recovery for the active graph happens in main.rs after AppState is created
-            
-            info!("Loaded active graph: {}", graph_id);
+            info!("Loaded open graph: {}", graph_id);
         }
         
         // Initialize authentication if in server mode
@@ -164,36 +172,35 @@ impl AppState {
         Ok(app_state)
     }
     
-    /// Get or create a GraphManager for the given graph ID
-    pub async fn get_or_create_graph_manager(&self, graph_id: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let managers = self.graph_managers.read().await;
+    /// Get or create graph resources (manager + coordinator) for the given graph ID
+    /// 
+    /// Resources are bundled together to ensure they're always created/destroyed atomically.
+    pub async fn get_or_create_graph_manager(&self, graph_id: &Uuid) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let resources = self.graph_resources.read().await;
         
-        // Check if manager already exists
-        if managers.contains_key(graph_id) {
+        // Check if resources already exist
+        if resources.contains_key(graph_id) {
             return Ok(());
         }
         
         // Drop read lock before acquiring write lock
-        drop(managers);
+        drop(resources);
         
-        // Acquire write lock to create new manager
-        let mut managers = self.graph_managers.write().await;
+        // Acquire write lock to create new resources
+        let mut resources = self.graph_resources.write().await;
         
         // Double-check pattern - another thread may have created it
-        if managers.contains_key(graph_id) {
+        if resources.contains_key(graph_id) {
             return Ok(());
         }
         
-        // Create new GraphManager using the resolved data_dir
-        let data_dir = self.data_dir.join("graphs").join(graph_id);
+        // Create new GraphManager and TransactionCoordinator together
+        let data_dir = self.data_dir.join("graphs").join(graph_id.to_string());
         fs::create_dir_all(&data_dir)?;
         
         let graph_manager = GraphManager::new(data_dir.clone())
             .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to create graph manager for {}: {:?}", graph_id, e)))?;
         
-        managers.insert(graph_id.to_string(), RwLock::new(graph_manager));
-        
-        // Create transaction coordinator for this graph
         // Transaction log is inside the graph-specific directory
         let transaction_log_dir = data_dir.join("transaction_log");
         fs::create_dir_all(&transaction_log_dir)?;
@@ -202,30 +209,102 @@ impl AppState {
         
         let transaction_coordinator = Arc::new(TransactionCoordinator::new(transaction_log));
         
-        // Store the coordinator
-        let mut coordinators = self.transaction_coordinators.write().await;
-        coordinators.insert(graph_id.to_string(), transaction_coordinator);
+        // Bundle them together and insert atomically
+        resources.insert(*graph_id, GraphResources {
+            manager: RwLock::new(graph_manager),
+            coordinator: transaction_coordinator,
+        });
         
         Ok(())
     }
     
-    /// Get the active graph manager (returns None if no active graph)
-    pub async fn get_active_graph_manager(&self) -> Option<String> {
-        self.active_graph_id.read().await.clone()
-    }
-    
     /// Get the transaction coordinator for a specific graph
-    pub async fn get_transaction_coordinator(&self, graph_id: &str) -> Option<Arc<TransactionCoordinator>> {
-        let coordinators = self.transaction_coordinators.read().await;
-        coordinators.get(graph_id).cloned()
+    pub async fn get_transaction_coordinator(&self, graph_id: &Uuid) -> Option<Arc<TransactionCoordinator>> {
+        let resources = self.graph_resources.read().await;
+        resources.get(graph_id).map(|r| r.coordinator.clone())
     }
     
-    /// Set the active graph ID
-    pub async fn set_active_graph(&self, graph_id: String) {
-        let mut active = self.active_graph_id.write().await;
-        *active = Some(graph_id.clone());
-        drop(active); // Release the write lock
+    /// Check if a graph is open
+    pub fn is_graph_open(&self, graph_id: &Uuid) -> bool {
+        if let Ok(registry) = self.graph_registry.read() {
+            registry.is_graph_open(graph_id)
+        } else {
+            false
+        }
     }
+    
+    /// Open a graph (ensure manager is loaded and update registry)
+    /// 
+    /// This performs the following steps:
+    /// 1. Creates/loads the graph manager and transaction coordinator
+    /// 2. Updates the registry to mark the graph as open
+    /// 
+    /// Note: Transaction recovery is handled by the caller (GraphOperationsExt::open_graph)
+    /// after this method completes successfully.
+    pub async fn open_graph(&self, graph_id: &Uuid) -> Result<(), Box<dyn Error + Send + Sync>> {
+        // First ensure the graph manager and coordinator exist
+        // This will either:
+        // - Return immediately if already loaded
+        // - Load from disk if closed
+        // - Create new empty graph if doesn't exist
+        self.get_or_create_graph_manager(graph_id).await?;
+        
+        // Debug assertion to check we're not already holding a lock
+        debug_assert!(
+            self.graph_registry.try_read().is_ok(),
+            "Attempting to write to registry while already holding a lock!"
+        );
+        
+        // Update registry (single source of truth)
+        let mut registry = self.graph_registry.write()
+            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to write registry: {}", e)))?;
+        registry.open_graph(graph_id)
+            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to open graph: {}", e)))?;
+        
+        Ok(())
+    }
+    
+    /// Close a graph (save and update registry)
+    /// 
+    /// Resources are bundled so removing from graph_resources removes BOTH
+    /// the manager and coordinator atomically, preventing inconsistent state.
+    pub async fn close_graph(&self, graph_id: &Uuid) -> Result<(), Box<dyn Error + Send + Sync>> {
+        // Get the resources to save and close
+        let mut resources = self.graph_resources.write().await;
+        
+        if let Some(graph_resources) = resources.get(graph_id) {
+            // Save the graph before removing from memory
+            graph_resources.manager.write().await.save_graph()
+                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to save graph before closing: {}", e)))?;
+            
+            // Flush and close the transaction coordinator
+            if let Err(e) = graph_resources.coordinator.close().await {
+                error!("Failed to close transaction log for graph {}: {}", graph_id, e);
+                // Continue anyway - we still want to remove it from memory
+            }
+        }
+        
+        // Remove all resources atomically
+        resources.remove(graph_id);
+        drop(resources);
+        
+        // Step 4: Update registry (single source of truth)
+        // Debug assertion to check we're not already holding a lock
+        debug_assert!(
+            self.graph_registry.try_read().is_ok(),
+            "Attempting to write to registry while already holding a lock!"
+        );
+        
+        let mut registry = self.graph_registry.write()
+            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to write registry: {}", e)))?;
+        registry.close_graph(graph_id)
+            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to close graph: {}", e)))?;
+        
+        info!("Closed graph {} and removed all resources from memory", graph_id);
+        
+        Ok(())
+    }
+    
     
     
     /// Save all graphs and registry on shutdown
@@ -252,30 +331,27 @@ impl AppState {
             }
         }
         
-        // Save all loaded graphs
-        let managers = self.graph_managers.read().await;
+        // Save all loaded graphs and close transaction logs
+        let resources = self.graph_resources.read().await;
         
-        for (graph_id, manager_lock) in managers.iter() {
-            match manager_lock.write().await.save_graph() {
+        for (graph_id, graph_resources) in resources.iter() {
+            // Save graph
+            match graph_resources.manager.write().await.save_graph() {
                 Ok(_) => {
                     info!("✅ Saved graph: {}", graph_id);
                 }
                 Err(e) => error!("Failed to save graph {}: {}", graph_id, e),
             }
-        }
-        drop(managers);
-        
-        // Flush and close transaction logs
-        let coordinators = self.transaction_coordinators.read().await;
-        for (graph_id, coordinator) in coordinators.iter() {
-            if let Err(e) = coordinator.close().await {
+            
+            // Flush and close transaction log
+            if let Err(e) = graph_resources.coordinator.close().await {
                 error!("Failed to close transaction log for graph {}: {}", graph_id, e);
             }
         }
-        drop(coordinators);
+        drop(resources);
         
         // Save graph registry
-        if let Ok(registry_guard) = self.graph_registry.lock() {
+        if let Ok(registry_guard) = self.graph_registry.read() {
             if let Err(e) = registry_guard.save() {
                 error!("Failed to save graph registry: {}", e);
             } else {
@@ -284,27 +360,31 @@ impl AppState {
         }
     }
     
-    /// Execute an operation with transaction on the active graph
-    pub async fn with_active_graph_transaction<F, T>(
+    /// Execute an operation with transaction on a specific graph
+    pub async fn with_graph_transaction<F, T>(
         &self,
+        graph_id: &Uuid,
         operation: crate::storage::Operation,
         executor: F,
     ) -> Result<T, Box<dyn Error + Send + Sync>>
     where
         F: FnOnce(&mut GraphManager) -> std::result::Result<T, String>,
     {
-        // Get active graph ID
-        let active_id = self.get_active_graph_manager().await
-            .ok_or_else(|| "No active graph".to_string())?;
+        // Verify graph is open
+        if !self.is_graph_open(graph_id) {
+            return Err(Box::<dyn Error + Send + Sync>::from(
+                format!("Graph '{}' is not open", graph_id)
+            ));
+        }
         
-        // Get transaction coordinator
-        let coordinators = self.transaction_coordinators.read().await;
-        let coordinator = coordinators.get(&active_id)
-            .ok_or_else(|| "Transaction coordinator not found".to_string())?;
+        // Get transaction coordinator from bundled resources
+        let resources = self.graph_resources.read().await;
+        let graph_resources = resources.get(graph_id)
+            .ok_or_else(|| format!("Graph resources not found for graph '{}'", graph_id))?;
         
         // Clone coordinator to use in closure
-        let coordinator = Arc::clone(coordinator);
-        drop(coordinators); // Release lock early
+        let coordinator = Arc::clone(&graph_resources.coordinator);
+        drop(resources); // Release lock early
         
         // Create transaction (includes deduplication check)
         let tx_id = coordinator.create_transaction(operation).await
@@ -316,10 +396,10 @@ impl AppState {
         }
         
         // Get graph manager and execute operation
-        let managers = self.graph_managers.read().await;
-        let manager_lock = managers.get(&active_id)
-            .ok_or_else(|| "Graph manager not found".to_string())?;
-        let mut manager = manager_lock.write().await;
+        let resources = self.graph_resources.read().await;
+        let graph_resources = resources.get(graph_id)
+            .ok_or_else(|| format!("Graph resources not found for graph '{}'", graph_id))?;
+        let mut manager = graph_resources.manager.write().await;
         
         
         // Execute the operation
@@ -328,7 +408,7 @@ impl AppState {
         
         // Drop locks before updating transaction state
         drop(manager);
-        drop(managers);
+        drop(resources);
         
         // Complete transaction based on result
         coordinator.complete_transaction(&tx_id, result).await

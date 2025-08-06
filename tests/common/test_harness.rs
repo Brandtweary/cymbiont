@@ -54,8 +54,8 @@
 //!         assert_phase(PostShutdown);
 //!         
 //!         // Verify persistence - graph should be saved
-//!         let active_id = get_active_graph_id(&test_env.data_dir);
-//!         assert_eq!(active_id, graph_id);
+//!         let saved_graph_id = get_single_open_graph_id(&test_env.data_dir);
+//!         assert_eq!(saved_graph_id, graph_id);
 //!         
 //!         test_env
 //!     });
@@ -115,7 +115,7 @@
 //! 
 //! **Data Access:**
 //! - `read_auth_token()` - Read authentication token from data directory
-//! - `get_active_graph_id()` - Extract active graph ID from registry
+//! - `get_single_open_graph_id()` - Get ID when exactly one graph is open
 //! - `import_dummy_graph()` - Import test graph via CLI
 //! 
 //! **Freeze Operations (Test Infrastructure):**
@@ -611,7 +611,8 @@ pub fn import_dummy_graph(test_env: &TestEnv) -> String {
         output.status.code());
     
     // Get the imported graph ID from registry
-    get_active_graph_id(&test_env.data_dir)
+    // Since we just imported one graph and tests start fresh, it should be the only open graph
+    get_single_open_graph_id(&test_env.data_dir)
 }
 
 /// Read auth token from test data directory
@@ -623,16 +624,22 @@ pub fn read_auth_token(data_dir: &Path) -> String {
         .to_string()
 }
 
-/// Get active graph ID from registry
-pub fn get_active_graph_id(data_dir: &Path) -> String {
+/// Get the single open graph ID from registry (panics if not exactly one open graph)
+pub fn get_single_open_graph_id(data_dir: &Path) -> String {
     let registry_path = data_dir.join("graph_registry.json");
     let registry_content = fs::read_to_string(&registry_path)
         .expect("Failed to read graph registry");
     let registry: Value = serde_json::from_str(&registry_content)
         .expect("Failed to parse graph registry");
     
-    registry["active_graph_id"].as_str()
-        .expect("No active graph ID in registry")
+    let open_graphs = registry["open_graphs"].as_array()
+        .expect("No open_graphs array in registry");
+    
+    assert_eq!(open_graphs.len(), 1, 
+        "Expected exactly one open graph, found {}", open_graphs.len());
+    
+    open_graphs[0].as_str()
+        .expect("Graph ID is not a string")
         .to_string()
 }
 

@@ -4,7 +4,7 @@ use crate::common::{setup_test_env, cleanup_test_env, GraphValidationFixture};
 use crate::common::test_harness::{
     PreShutdown, PostShutdown, assert_phase,
     WsConnection, connect_websocket, send_command, expect_success, 
-    authenticate_websocket, setup_with_graph, read_auth_token, get_active_graph_id
+    authenticate_websocket, setup_with_graph, read_auth_token, get_single_open_graph_id
 };
 
 /// Test creating a new block
@@ -173,10 +173,10 @@ fn test_multiple_block_updates(ws: &mut WsConnection, fixture: &mut GraphValidat
     child_id
 }
 
-/// Test graph operations (create and switch)
+/// Test graph operations (create and delete)
 fn test_graph_operations(ws: &mut WsConnection, data_dir: &std::path::Path) -> String {
-    // Get the current active graph ID first
-    let original_graph_id = get_active_graph_id(data_dir);
+    // Get the current open graph ID (should be the imported one)
+    let original_graph_id = get_single_open_graph_id(data_dir);
     
     // Create a new graph
     let create_cmd = json!({
@@ -192,32 +192,7 @@ fn test_graph_operations(ws: &mut WsConnection, data_dir: &std::path::Path) -> S
         .expect("No graph ID in response")
         .to_string();
     
-    
-    // Switch to the new graph
-    let switch_cmd = json!({
-        "type": "switch_graph",
-        "graph_id": new_graph_id
-    });
-    
-    let response = send_command(ws, switch_cmd);
-    let data = expect_success(response).expect("No data in switch_graph response");
-    
-    assert_eq!(
-        data["id"].as_str(),
-        Some(new_graph_id.as_str()),
-        "Switched graph ID mismatch"
-    );
-    
-    // Switch back to original graph
-    let switch_back_cmd = json!({
-        "type": "switch_graph",
-        "graph_id": &original_graph_id
-    });
-    
-    let response = send_command(ws, switch_back_cmd);
-    expect_success(response);
-    
-    // Delete the test graph
+    // Delete the test graph (it was auto-opened on creation)
     let delete_cmd = json!({
         "type": "delete_graph",
         "graph_id": &new_graph_id
@@ -232,12 +207,11 @@ fn test_graph_operations(ws: &mut WsConnection, data_dir: &std::path::Path) -> S
         "Deleted graph ID mismatch"
     );
     
-    
     original_graph_id
 }
 
 /// Test error cases
-fn test_error_cases(ws: &mut WsConnection, port: u16, active_graph_id: &str) {
+fn test_error_cases(ws: &mut WsConnection, port: u16, _original_graph_id: &str) {
     // Test invalid block ID for update
     let cmd = json!({
         "type": "update_block",
@@ -253,23 +227,6 @@ fn test_error_cases(ws: &mut WsConnection, port: u16, active_graph_id: &str) {
     assert!(
         response["message"].as_str().unwrap().contains("not found") ||
         response["message"].as_str().unwrap().contains("Failed to update"),
-        "Unexpected error message: {}",
-        response["message"]
-    );
-    
-    // Test deleting the currently active graph
-    let cmd = json!({
-        "type": "delete_graph",
-        "graph_id": active_graph_id
-    });
-    
-    let response = send_command(ws, cmd);
-    assert_eq!(
-        response["type"], "error",
-        "Expected error response for deleting active graph"
-    );
-    assert!(
-        response["message"].as_str().unwrap().contains("Cannot delete the currently active graph"),
         "Unexpected error message: {}",
         response["message"]
     );
@@ -298,19 +255,21 @@ fn test_error_cases(ws: &mut WsConnection, port: u16, active_graph_id: &str) {
     assert!(!authenticate_websocket(&mut invalid_auth_ws, "invalid-token"), "Authentication should fail with invalid token");
 }
 
-/// Validate registry state (graph switching and deletion)
+/// Validate registry state (graph creation and deletion)
 fn validate_registry_state(data_dir: &std::path::Path, original_graph_id: &str) {
-    // Verify we're back on the original graph
+    // Verify the original graph is still open
     let registry_path = data_dir.join("graph_registry.json");
     let registry_content = fs::read_to_string(&registry_path)
         .expect("Failed to read registry");
     let registry: Value = serde_json::from_str(&registry_content)
         .expect("Failed to parse registry");
     
-    assert_eq!(
-        registry["active_graph_id"].as_str(),
-        Some(original_graph_id),
-        "Not switched back to original graph"
+    let open_graphs = registry["open_graphs"].as_array()
+        .expect("No open_graphs in registry");
+    
+    assert!(
+        open_graphs.iter().any(|g| g.as_str() == Some(original_graph_id)),
+        "Original graph is not open"
     );
     
     // Verify the test graph was deleted

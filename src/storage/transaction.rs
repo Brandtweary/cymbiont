@@ -23,7 +23,7 @@ use crate::storage::transaction_log::{Operation, Transaction, TransactionLog, Tr
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use std::collections::HashMap;
-use tracing::{warn, error, debug};
+use tracing::{warn, error};
 use thiserror::Error;
 
 #[derive(Error, Debug)]

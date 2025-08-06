@@ -1,19 +1,20 @@
 //! Graph Registry: Multi-Graph Knowledge Base Management
 //!
 //! This module provides the core infrastructure for managing multiple knowledge graphs,
-//! enabling creation, registration, and switching between isolated graph instances.
+//! enabling creation, registration, and open/closed state management for parallel graphs.
 //!
 //! ## Overview
 //!
 //! The graph registry serves as the single source of truth for all knowledge graphs
 //! in the system. Each graph is identified by a UUID and has its own isolated storage
-//! directory, GraphManager instance, and TransactionCoordinator.
+//! directory, GraphManager instance, and TransactionCoordinator. Multiple graphs can
+//! be open simultaneously, replacing the previous single active graph model.
 //!
 //! ## Key Components
 //!
 //! ### GraphInfo
 //! Metadata for a registered knowledge graph:
-//! - **id**: UUID (stable identifier)
+//! - **id**: UUID (stable identifier, type-safe throughout the system)
 //! - **name**: Friendly display name
 //! - **kg_path**: Storage directory (always `{data_dir}/graphs/{id}/`)
 //! - **created**: Creation timestamp
@@ -22,16 +23,20 @@
 //!
 //! ### GraphRegistry
 //! Central registry that manages all graphs:
-//! - Maintains mapping from UUID to GraphInfo
-//! - Tracks the currently active graph
-//! - Handles graph creation and switching
+//! - Maintains mapping from UUID to GraphInfo with custom JSON serialization
+//! - Tracks open graphs in `HashSet<Uuid>` (replaces single active_graph_id)
+//! - Handles graph lifecycle: register, open, close, remove
+//! - Provides centralized graph resolution by UUID or name
 //! - Persists registry state to `{data_dir}/graph_registry.json`
 //!
-//! ## Graph Management
+//! ## Graph State Management
 //!
-//! Graphs are created with auto-generated UUIDs and stored in isolated directories.
-//! The registry ensures each graph has a unique identifier and prevents duplicates.
-//! All graph data is owned and managed by Cymbiont - there's no external data to recover.
+//! Graphs exist in two states:
+//! - **Open**: Loaded in memory with active manager and transaction coordinator
+//! - **Closed**: Persisted to disk, resources freed from memory
+//!
+//! The registry tracks open graphs and persists this state across restarts,
+//! enabling automatic recovery of all previously open graphs on startup.
 //!
 //! ## Data Directory Structure
 //!
@@ -46,7 +51,7 @@
 //!       ...
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::fs;
 use serde::{Deserialize, Serialize};
@@ -74,7 +79,7 @@ type Result<T> = std::result::Result<T, GraphRegistryError>;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphInfo {
     /// Internal Cymbiont UUID
-    pub id: String,
+    pub id: Uuid,
     /// Friendly name for the graph
     pub name: String,
     /// Path where we store the knowledge graph data
@@ -92,12 +97,76 @@ pub struct GraphInfo {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GraphRegistry {
     /// Map of graph ID to graph info
-    graphs: HashMap<String, GraphInfo>,
-    /// Currently active graph ID
-    active_graph_id: Option<String>,
+    #[serde(with = "uuid_hashmap_serde")]
+    graphs: HashMap<Uuid, GraphInfo>,
+    /// Currently open graph IDs (replaces active_graph_id)
+    #[serde(default, with = "uuid_hashset_serde")]
+    open_graphs: HashSet<Uuid>,
     /// Base data directory (not serialized)
     #[serde(skip)]
     data_dir: Option<PathBuf>,
+}
+
+/// Custom serialization for HashMap with UUID keys
+mod uuid_hashmap_serde {
+    use super::*;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::HashMap;
+    
+    pub fn serialize<S>(map: &HashMap<Uuid, GraphInfo>, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let string_map: HashMap<String, &GraphInfo> = map
+            .iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
+        string_map.serialize(serializer)
+    }
+    
+    pub fn deserialize<'de, D>(deserializer: D) -> std::result::Result<HashMap<Uuid, GraphInfo>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let string_map = HashMap::<String, GraphInfo>::deserialize(deserializer)?;
+        string_map
+            .into_iter()
+            .map(|(k, v)| {
+                Uuid::parse_str(&k)
+                    .map(|uuid| (uuid, v))
+                    .map_err(serde::de::Error::custom)
+            })
+            .collect()
+    }
+}
+
+/// Custom serialization for HashSet with UUID values
+mod uuid_hashset_serde {
+    use super::*;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::HashSet;
+    
+    pub fn serialize<S>(set: &HashSet<Uuid>, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let string_vec: Vec<String> = set
+            .iter()
+            .map(|uuid| uuid.to_string())
+            .collect();
+        string_vec.serialize(serializer)
+    }
+    
+    pub fn deserialize<'de, D>(deserializer: D) -> std::result::Result<HashSet<Uuid>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let string_vec = Vec::<String>::deserialize(deserializer)?;
+        string_vec
+            .into_iter()
+            .map(|s| Uuid::parse_str(&s).map_err(serde::de::Error::custom))
+            .collect()
+    }
 }
 
 impl GraphRegistry {
@@ -105,7 +174,7 @@ impl GraphRegistry {
     pub fn new() -> Self {
         GraphRegistry {
             graphs: HashMap::new(),
-            active_graph_id: None,
+            open_graphs: HashSet::new(),
             data_dir: None,
         }
     }
@@ -115,7 +184,8 @@ impl GraphRegistry {
         let mut registry = if registry_path.exists() {
             let content = fs::read_to_string(registry_path)?;
             let loaded: GraphRegistry = serde_json::from_str(&content)?;
-            info!("Loaded graph registry with {} graphs", loaded.graphs.len());
+            info!("Loaded graph registry with {} graphs, {} open", 
+                  loaded.graphs.len(), loaded.open_graphs.len());
             loaded
         } else {
             info!("Creating new graph registry");
@@ -152,13 +222,13 @@ impl GraphRegistry {
     /// Register a new knowledge graph
     pub fn register_graph(
         &mut self, 
-        id: Option<String>, 
+        id: Option<Uuid>, 
         name: Option<String>,
         description: Option<String>,
         data_dir: &Path
     ) -> Result<GraphInfo> {
-        let graph_id = id.unwrap_or_else(|| Uuid::new_v4().to_string());
-        let name = name.unwrap_or_else(|| format!("Graph {}", &graph_id[..8]));
+        let graph_id = id.unwrap_or_else(|| Uuid::new_v4());
+        let name = name.unwrap_or_else(|| format!("Graph {}", &graph_id.to_string()[..8]));
         
         // Check if this ID already exists
         if let Some(existing) = self.graphs.get_mut(&graph_id) {
@@ -172,10 +242,10 @@ impl GraphRegistry {
         }
         
         // Create new graph
-        let kg_path = data_dir.join("graphs").join(&graph_id);
+        let kg_path = data_dir.join("graphs").join(graph_id.to_string());
         
         let graph_info = GraphInfo {
-            id: graph_id.clone(),
+            id: graph_id,
             name,
             kg_path,
             created: Utc::now(),
@@ -183,12 +253,11 @@ impl GraphRegistry {
             description,
         };
 
-        self.graphs.insert(graph_id.clone(), graph_info.clone());
+        self.graphs.insert(graph_id, graph_info.clone());
         
-        // If this is the first graph, make it active
-        if self.active_graph_id.is_none() {
-            self.active_graph_id = Some(graph_id);
-        }
+        // Always open newly registered graphs
+        self.open_graphs.insert(graph_id);
+        info!("Opened newly registered graph: {} ({})", graph_info.name, graph_id);
         
         info!("Registered knowledge graph: {} ({})", graph_info.name, graph_info.id);
         
@@ -197,7 +266,7 @@ impl GraphRegistry {
 
 
     /// Get graph info by ID
-    pub fn get_graph(&self, id: &str) -> Option<&GraphInfo> {
+    pub fn get_graph(&self, id: &Uuid) -> Option<&GraphInfo> {
         self.graphs.get(id)
     }
 
@@ -209,35 +278,116 @@ impl GraphRegistry {
         self.graphs.values().cloned().collect()
     }
 
-    /// Get the currently active graph ID
-    pub fn get_active_graph_id(&self) -> Option<&str> {
-        self.active_graph_id.as_deref()
+    /// Get all currently open graph IDs
+    pub fn get_open_graphs(&self) -> Vec<Uuid> {
+        self.open_graphs.iter().copied().collect()
     }
     
-    /// Switch active graph by ID
-    pub fn switch_graph(&mut self, graph_id: &str) -> Result<GraphInfo> {
-        // Simple validation - does this graph exist?
+    /// Check if a graph is open
+    pub fn is_graph_open(&self, graph_id: &Uuid) -> bool {
+        self.open_graphs.contains(graph_id)
+    }
+    
+    /// Open a graph (add to open set)
+    pub fn open_graph(&mut self, graph_id: &Uuid) -> Result<GraphInfo> {
+        // Validate graph exists
         let graph_info = self.graphs.get(graph_id)
             .ok_or_else(|| GraphRegistryError::ValidationError(
                 format!("Graph '{}' not found in registry", graph_id)
             ))?
             .clone();
         
-        // Update active graph
-        if self.active_graph_id.as_ref() != Some(&graph_id.to_string()) {
-            info!("Switching active graph: {:?} -> {} ({})", 
-                  self.active_graph_id, graph_id, graph_info.name);
-            self.active_graph_id = Some(graph_id.to_string());
+        // Add to open set
+        if self.open_graphs.insert(*graph_id) {
+            info!("Opened graph: {} ({})", graph_info.name, graph_id);
+        }
+        
+        // Update last accessed time
+        if let Some(graph) = self.graphs.get_mut(graph_id) {
+            graph.last_accessed = Utc::now();
         }
         
         Ok(graph_info)
     }
     
+    /// Close a graph (remove from open set)
+    pub fn close_graph(&mut self, graph_id: &Uuid) -> Result<()> {
+        if self.open_graphs.remove(graph_id) {
+            info!("Closed graph: {}", graph_id);
+            Ok(())
+        } else {
+            Err(GraphRegistryError::ValidationError(
+                format!("Graph '{}' was not open", graph_id)
+            ))
+        }
+    }
+    
+    /// Resolve graph target from optional UUID and name with smart defaults
+    /// 
+    /// Priority order:
+    /// 1. If graph_id provided, validate it exists
+    /// 2. Else if graph_name provided, resolve to UUID
+    /// 3. Else if allow_smart_default and exactly one open, use it
+    /// 4. Else error
+    pub fn resolve_graph_target(
+        &self,
+        graph_id: Option<&Uuid>,
+        graph_name: Option<&str>,
+        allow_smart_default: bool,
+    ) -> Result<Uuid> {
+        if let Some(id) = graph_id {
+            // Validate the UUID exists
+            if self.graphs.contains_key(id) {
+                Ok(*id)
+            } else {
+                Err(GraphRegistryError::ValidationError(
+                    format!("Graph ID not found: {}", id)
+                ))
+            }
+        } else if let Some(name) = graph_name {
+            // Find graph by name
+            self.graphs.values()
+                .find(|g| g.name == name)
+                .map(|g| g.id)
+                .ok_or_else(|| GraphRegistryError::ValidationError(
+                    format!("Graph name not found: {}", name)
+                ))
+        } else if allow_smart_default {
+            let open_graphs = self.get_open_graphs();
+            match open_graphs.len() {
+                0 => Err(GraphRegistryError::ValidationError(
+                    "No graphs are open".to_string()
+                )),
+                1 => Ok(open_graphs[0]),
+                _ => Err(GraphRegistryError::ValidationError(
+                    "Multiple graphs open, must specify target".to_string()
+                )),
+            }
+        } else {
+            Err(GraphRegistryError::ValidationError(
+                "Must specify graph_id or graph_name".to_string()
+            ))
+        }
+    }
+    
+    
+    /// Ensure at least one graph is open. If no graphs are open and graphs exist,
+    /// opens the first available graph.
+    pub fn ensure_graph_open(&mut self) -> Result<()> {
+        if self.open_graphs.is_empty() && !self.graphs.is_empty() {
+            // Get the first graph (deterministic, not random)
+            if let Some((&graph_id, graph_info)) = self.graphs.iter().next() {
+                self.open_graphs.insert(graph_id);
+                info!("No graphs were open, auto-opened: {} ({})", graph_info.name, graph_id);
+            }
+        }
+        Ok(())
+    }
+    
     /// Remove a graph from the registry and archive its data
     /// 
     /// Archives the graph directory to `{data_dir}/archived_graphs/` with timestamp.
-    /// If removing the active graph, automatically activates the first remaining graph.
-    pub fn remove_graph(&mut self, graph_id: &str) -> Result<()> {
+    pub fn remove_graph(&mut self, graph_id: &Uuid) -> Result<()> {
         // Get the graph info
         let graph_info = self.graphs.get(graph_id)
             .ok_or_else(|| GraphRegistryError::ValidationError(
@@ -247,7 +397,7 @@ impl GraphRegistry {
         
         // Archive the graph data if we have a data directory
         if let Some(data_dir) = &self.data_dir {
-            let graph_data_dir = data_dir.join("graphs").join(graph_id);
+            let graph_data_dir = data_dir.join("graphs").join(graph_id.to_string());
             if graph_data_dir.exists() {
                 // Create archive directory if it doesn't exist
                 let archive_dir = data_dir.join("archived_graphs");
@@ -267,17 +417,9 @@ impl GraphRegistry {
         // Remove from registry
         self.graphs.remove(graph_id);
         
-        // If this was the active graph, try to set another one as active
-        if self.active_graph_id.as_ref() == Some(&graph_id.to_string()) {
-            // Try to find another graph to make active
-            if let Some(first_remaining) = self.graphs.keys().next() {
-                self.active_graph_id = Some(first_remaining.clone());
-                info!("Active graph removed, switched to: {} ({})", 
-                      self.graphs[first_remaining].name, first_remaining);
-            } else {
-                self.active_graph_id = None;
-                info!("Removed active graph, no graphs remaining");
-            }
+        // Also remove from open graphs if it was open
+        if self.open_graphs.remove(graph_id) {
+            info!("Removed graph was open, closing it");
         }
         
         Ok(())
@@ -294,7 +436,7 @@ mod tests {
     fn test_new_registry() {
         let registry = GraphRegistry::new();
         assert!(registry.graphs.is_empty());
-        assert!(registry.active_graph_id.is_none());
+        assert!(registry.open_graphs.is_empty());
     }
 
     #[test]
@@ -311,33 +453,9 @@ mod tests {
         ).unwrap();
 
         assert_eq!(info.name, "TestGraph");
-        assert!(!info.id.is_empty());
-        assert_eq!(info.kg_path, data_dir.join("graphs").join(&info.id));
+        assert_eq!(info.kg_path, data_dir.join("graphs").join(info.id.to_string()));
         assert_eq!(info.description, Some("A test graph".to_string()));
-        assert_eq!(registry.active_graph_id, Some(info.id.clone()));
-    }
-
-    #[test]
-    fn test_save_and_load() {
-        let dir = tempdir().unwrap();
-        let registry_path = dir.path().join("graph_registry.json");
-        let data_dir = dir.path();
-
-        // Create and save
-        let mut registry = GraphRegistry::load_or_create(&registry_path, data_dir).unwrap();
-        let info = registry.register_graph(
-            Some("test-id-123".to_string()),
-            Some("TestGraph".to_string()),
-            None,
-            data_dir
-        ).unwrap();
-        registry.save().unwrap();
-
-        // Load and verify
-        let loaded = GraphRegistry::load_or_create(&registry_path, data_dir).unwrap();
-        let loaded_info = loaded.get_graph("test-id-123").unwrap();
-        assert_eq!(loaded_info.name, info.name);
-        assert_eq!(loaded_info.id, "test-id-123");
+        assert!(registry.is_graph_open(&info.id));
     }
 
     #[test]
@@ -346,9 +464,11 @@ mod tests {
         let data_dir = temp_dir.path();
         let mut registry = GraphRegistry::new();
         
+        let existing_uuid = Uuid::new_v4();
+        
         // Register first time
         let info1 = registry.register_graph(
-            Some("existing-id".to_string()),
+            Some(existing_uuid),
             Some("Graph One".to_string()),
             None,
             data_dir
@@ -356,7 +476,7 @@ mod tests {
 
         // Register again with same ID - should update metadata
         let info2 = registry.register_graph(
-            Some("existing-id".to_string()),
+            Some(existing_uuid),
             Some("Updated Name".to_string()),
             Some("New description".to_string()),
             data_dir
@@ -372,35 +492,222 @@ mod tests {
     }
 
     #[test]
-    fn test_switch_graph() {
+    fn test_open_close_graphs() {
         let temp_dir = tempdir().unwrap();
         let data_dir = temp_dir.path();
         let mut registry = GraphRegistry::new();
         
+        let uuid1 = Uuid::new_v4();
+        let uuid2 = Uuid::new_v4();
+        
         // Register two graphs
         let _graph1 = registry.register_graph(
-            Some("graph-1".to_string()),
+            Some(uuid1),
             Some("First Graph".to_string()),
             None,
             data_dir
         ).unwrap();
         
-        let graph2 = registry.register_graph(
-            Some("graph-2".to_string()),
+        let _graph2 = registry.register_graph(
+            Some(uuid2),
             Some("Second Graph".to_string()),
             None,
             data_dir
         ).unwrap();
         
-        // First graph should be active
-        assert_eq!(registry.get_active_graph_id(), Some("graph-1"));
+        // Both graphs should be open (all newly registered graphs are auto-opened)
+        assert!(registry.is_graph_open(&uuid1));
+        assert!(registry.is_graph_open(&uuid2));
+        assert_eq!(registry.get_open_graphs().len(), 2);
         
-        // Switch to second graph
-        let switched = registry.switch_graph("graph-2").unwrap();
-        assert_eq!(switched.id, graph2.id);
-        assert_eq!(registry.get_active_graph_id(), Some("graph-2"));
+        // Close first graph
+        registry.close_graph(&uuid1).unwrap();
+        assert!(!registry.is_graph_open(&uuid1));
+        assert!(registry.is_graph_open(&uuid2));
         
-        // Try to switch to non-existent graph
-        assert!(registry.switch_graph("non-existent").is_err());
+        // Try to open non-existent graph
+        let non_existent = Uuid::new_v4();
+        assert!(registry.open_graph(&non_existent).is_err());
+    }
+
+    #[test]
+    fn test_ensure_graph_open() {
+        let temp_dir = tempdir().unwrap();
+        let data_dir = temp_dir.path();
+        let mut registry = GraphRegistry::new();
+        
+        // Test 1: Empty registry - ensure_graph_open should do nothing
+        registry.ensure_graph_open().unwrap();
+        assert_eq!(registry.get_open_graphs().len(), 0);
+        
+        // Test 2: Register graphs and close them all
+        let uuid1 = Uuid::new_v4();
+        let uuid2 = Uuid::new_v4();
+        
+        registry.register_graph(
+            Some(uuid1),
+            Some("Graph 1".to_string()),
+            None,
+            data_dir
+        ).unwrap();
+        
+        registry.register_graph(
+            Some(uuid2),
+            Some("Graph 2".to_string()),
+            None,
+            data_dir
+        ).unwrap();
+        
+        // Both should be open after registration
+        assert_eq!(registry.get_open_graphs().len(), 2);
+        
+        // Close all graphs
+        registry.close_graph(&uuid1).unwrap();
+        registry.close_graph(&uuid2).unwrap();
+        assert_eq!(registry.get_open_graphs().len(), 0);
+        
+        // Test 3: ensure_graph_open should open one graph
+        registry.ensure_graph_open().unwrap();
+        assert_eq!(registry.get_open_graphs().len(), 1);
+        
+        // Test 4: If graphs are already open, ensure_graph_open does nothing
+        registry.ensure_graph_open().unwrap();
+        assert_eq!(registry.get_open_graphs().len(), 1);
+    }
+    
+    #[test]
+    fn test_open_graphs_persistence() {
+        let dir = tempdir().unwrap();
+        let registry_path = dir.path().join("graph_registry.json");
+        let data_dir = dir.path();
+
+        // Create registry and register multiple graphs
+        let mut registry = GraphRegistry::load_or_create(&registry_path, data_dir).unwrap();
+        
+        let uuid1 = Uuid::new_v4();
+        let uuid2 = Uuid::new_v4();
+        let uuid3 = Uuid::new_v4();
+        
+        // Register three graphs (all will be auto-opened)
+        registry.register_graph(
+            Some(uuid1),
+            Some("Graph 1".to_string()),
+            None,
+            data_dir
+        ).unwrap();
+        
+        registry.register_graph(
+            Some(uuid2),
+            Some("Graph 2".to_string()),
+            None,
+            data_dir
+        ).unwrap();
+        
+        registry.register_graph(
+            Some(uuid3),
+            Some("Graph 3".to_string()),
+            None,
+            data_dir
+        ).unwrap();
+        
+        // All should be open after registration
+        assert_eq!(registry.get_open_graphs().len(), 3);
+        
+        // Close one graph
+        registry.close_graph(&uuid2).unwrap();
+        assert_eq!(registry.get_open_graphs().len(), 2);
+        assert!(registry.is_graph_open(&uuid1));
+        assert!(!registry.is_graph_open(&uuid2));
+        assert!(registry.is_graph_open(&uuid3));
+        
+        // Save registry
+        registry.save().unwrap();
+        
+        // Load registry from disk
+        let loaded_registry = GraphRegistry::load_or_create(&registry_path, data_dir).unwrap();
+        
+        // Verify open graphs were persisted
+        let open_graphs = loaded_registry.get_open_graphs();
+        assert_eq!(open_graphs.len(), 2);
+        assert!(open_graphs.contains(&uuid1));
+        assert!(!open_graphs.contains(&uuid2));
+        assert!(open_graphs.contains(&uuid3));
+        
+        // Verify all graphs still exist in registry
+        assert!(loaded_registry.get_graph(&uuid1).is_some());
+        assert!(loaded_registry.get_graph(&uuid2).is_some());
+        assert!(loaded_registry.get_graph(&uuid3).is_some());
+    }
+    
+    #[test]
+    fn test_resolve_graph_target() {
+        let temp_dir = tempdir().unwrap();
+        let data_dir = temp_dir.path();
+        let mut registry = GraphRegistry::new();
+        
+        let uuid1 = Uuid::new_v4();
+        let uuid2 = Uuid::new_v4();
+        
+        // Register two graphs
+        registry.register_graph(
+            Some(uuid1),
+            Some("First Graph".to_string()),
+            None,
+            data_dir
+        ).unwrap();
+        
+        registry.register_graph(
+            Some(uuid2),
+            Some("Second Graph".to_string()),
+            None,
+            data_dir
+        ).unwrap();
+        
+        // Test 1: Resolve by UUID
+        let resolved = registry.resolve_graph_target(Some(&uuid1), None, false).unwrap();
+        assert_eq!(resolved, uuid1);
+        
+        // Test 2: Resolve by name
+        let resolved = registry.resolve_graph_target(None, Some("Second Graph"), false).unwrap();
+        assert_eq!(resolved, uuid2);
+        
+        // Test 3: UUID takes precedence over name
+        let resolved = registry.resolve_graph_target(Some(&uuid1), Some("Second Graph"), false).unwrap();
+        assert_eq!(resolved, uuid1);
+        
+        // Test 4: Smart default with single open graph
+        // Both graphs are open from registration, so close uuid2
+        registry.close_graph(&uuid2).unwrap();
+        let resolved = registry.resolve_graph_target(None, None, true).unwrap();
+        assert_eq!(resolved, uuid1);
+        
+        // Test 5: Smart default with multiple open graphs should fail
+        registry.open_graph(&uuid2).unwrap(); // Both are open now
+        let result = registry.resolve_graph_target(None, None, true);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Multiple graphs open"));
+        
+        // Test 6: Smart default with no open graphs should fail
+        registry.close_graph(&uuid1).unwrap();
+        registry.close_graph(&uuid2).unwrap();
+        let result = registry.resolve_graph_target(None, None, true);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No graphs are open"));
+        
+        // Test 7: Invalid UUID should fail
+        let invalid_uuid = Uuid::new_v4();
+        let result = registry.resolve_graph_target(Some(&invalid_uuid), None, false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Graph ID not found"));
+        
+        // Test 8: Invalid name should fail
+        let result = registry.resolve_graph_target(None, Some("Non-existent Graph"), false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Graph name not found"));
+        
+        // Test 9: No parameters without smart default should fail
+        let result = registry.resolve_graph_target(None, None, false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Must specify graph_id or graph_name"));
     }
 }

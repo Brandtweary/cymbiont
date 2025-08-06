@@ -45,7 +45,7 @@
 
 use std::error::Error;
 use clap::Parser;
-use tracing::{info, error, warn, debug};
+use tracing::{info, error, warn};
 
 // Internal modules
 mod app_state;
@@ -86,10 +86,6 @@ struct Args {
     #[arg(long, value_name = "NAME_OR_ID")]
     delete_graph: Option<String>,
     
-    /// Force deletion even if it's the active graph
-    #[arg(long, requires = "delete_graph")]
-    force: bool,
-    
     // Server-specific args (only used when --server is provided)
     /// Run server for a specific duration in seconds (for testing)
     #[arg(long)]
@@ -128,8 +124,8 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
         // Create server app state
         let app_state = AppState::new_server(args.config.clone(), args.data_dir.clone()).await?;
         
-        // Run recovery for active graph (same as CLI path)
-        run_active_graph_recovery(&app_state).await;
+        // Run recovery for all open graphs (same as CLI path)
+        run_all_graphs_recovery(&app_state).await;
         
         // Run server (will handle its own tokio::select! for shutdown)
         server::run_server_with_duration(app_state.clone(), args.duration).await?;
@@ -152,9 +148,9 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
             
             // Report any errors that occurred during import
             if !result.errors.is_empty() {
-                warn!("Import completed with {} errors:", result.errors.len());
+                error!("Import completed with {} errors:", result.errors.len());
                 for err in &result.errors {
-                    warn!("  - {}", err);
+                    error!("  - {}", err);
                 }
             }
             
@@ -164,14 +160,28 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
         // Handle graph deletion if requested
         if let Some(graph_identifier) = args.delete_graph {
             use crate::graph_operations::GraphOperationsExt;
+            use uuid::Uuid;
             
-            // Resolve the graph by name or ID
-            let graph_id = resolve_graph_by_name_or_id(&app_state, &graph_identifier).await?;
+            // Resolve the graph using centralized logic
+            let graph_uuid = {
+                let registry = app_state.graph_registry.read()
+                    .map_err(|e| format!("Failed to read registry: {}", e))?;
+                
+                // Try to parse as UUID first
+                let uuid_opt = Uuid::parse_str(&graph_identifier).ok();
+                
+                // Use resolve_graph_target to handle both UUID and name
+                registry.resolve_graph_target(
+                    uuid_opt.as_ref(),
+                    if uuid_opt.is_none() { Some(&graph_identifier) } else { None },
+                    false  // No smart default for delete
+                ).map_err(|e| format!("Failed to resolve graph: {}", e))?
+            };
             
             info!("🗑️  Deleting graph: {}", graph_identifier);
             
             // Delete the graph using GraphOperations extension
-            app_state.delete_graph(graph_id, args.force).await
+            app_state.delete_graph(&graph_uuid).await
                 .map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)?;
             
             info!("✅ Graph deleted successfully");
@@ -179,7 +189,7 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
         }
         
         let graphs = {
-            let registry_guard = app_state.graph_registry.lock().unwrap();
+            let registry_guard = app_state.graph_registry.read().unwrap();
             registry_guard.get_all_graphs()
         };
         
@@ -189,20 +199,25 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
             info!("📊 Found {} registered graph(s)", graphs.len());
         }
         
-        let active_graph = {
-            let registry_guard = app_state.graph_registry.lock().unwrap();
-            if let Some(active_id) = registry_guard.get_active_graph_id() {
-                registry_guard.get_graph(active_id).cloned()
-            } else {
-                None
-            }
-        };
+        // Get open graphs
+        let open_graphs = app_state.list_open_graphs().await
+            .map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)?;
         
-        if let Some(active_graph) = active_graph {
-            info!("🎯 Active graph: {} ({})", active_graph.name, active_graph.id);
+        if !open_graphs.is_empty() {
+            {
+                let registry_guard = app_state.graph_registry.read().unwrap();
+                info!("📂 {} open graph(s):", open_graphs.len());
+                for graph_id in &open_graphs {
+                    if let Some(graph_info) = registry_guard.get_graph(graph_id) {
+                        info!("  - {} ({})", graph_info.name, graph_info.id);
+                    }
+                }
+            } // registry_guard drops here
             
-            // Run recovery for the active graph on startup
-            run_active_graph_recovery(&app_state).await;
+            // Run recovery for all open graphs on startup
+            run_all_graphs_recovery(&app_state).await;
+        } else {
+            info!("📂 No open graphs");
         }
         
         // Handle duration for CLI mode
@@ -234,87 +249,93 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
     std::process::exit(0)
 }
 
-/// Resolve a graph by name or ID
-async fn resolve_graph_by_name_or_id(
-    app_state: &AppState,
-    identifier: &str,
-) -> Result<String, Box<dyn Error + Send + Sync>> {
-    // Get all graphs from registry
-    let graphs = {
-        let registry = app_state.graph_registry.lock()
-            .map_err(|e| format!("Failed to lock registry: {}", e))?;
-        registry.get_all_graphs()
-    };
-    
-    if graphs.is_empty() {
-        return Err("No graphs found".into());
-    }
-    
-    // First try exact ID match
-    if let Some(graph) = graphs.iter().find(|g| g.id == identifier) {
-        return Ok(graph.id.clone());
-    }
-    
-    // Then try name match
-    if let Some(graph) = graphs.iter().find(|g| g.name == identifier) {
-        return Ok(graph.id.clone());
-    }
-    
-    // Not found - provide helpful error with available graphs
-    let mut error_msg = format!("Graph not found: '{}'", identifier);
-    error_msg.push_str("\nAvailable graphs:");
-    for graph in &graphs {
-        error_msg.push_str(&format!("\n  - {} ({})", graph.name, graph.id));
-    }
-    
-    Err(error_msg.into())
-}
-
-/// Run recovery for the active graph (shared between CLI and server)
-async fn run_active_graph_recovery(app_state: &std::sync::Arc<AppState>) {
-    let active_graph = {
-        let registry_guard = match app_state.graph_registry.lock() {
+/// Run recovery for all graphs on startup (shared between CLI and server)
+/// This includes both open and closed graphs to ensure no pending transactions are lost
+async fn run_all_graphs_recovery(app_state: &std::sync::Arc<AppState>) {
+    let all_graphs = {
+        let registry_guard = match app_state.graph_registry.read() {
             Ok(guard) => guard,
             Err(e) => {
-                error!("Failed to lock registry for recovery: {}", e);
+                error!("Failed to read registry for recovery: {}", e);
                 return;
             }
         };
-        if let Some(active_id) = registry_guard.get_active_graph_id() {
-            registry_guard.get_graph(active_id).cloned()
-        } else {
-            None
-        }
+        registry_guard.get_all_graphs()
     };
     
-    if let Some(active_graph) = active_graph {
+    info!("🔄 Running recovery for {} graphs", all_graphs.len());
+    
+    for graph_info in all_graphs {
+        let graph_id = graph_info.id;
+        let graph_name = graph_info.name.clone();
         
-        // Ensure the graph manager is loaded first
-        if let Err(e) = app_state.get_or_create_graph_manager(&active_graph.id).await {
-            error!("Failed to create graph manager for recovery: {}", e);
-            return;
+        // Check if graph is already open
+        let was_open = {
+            let registry_guard = match app_state.graph_registry.read() {
+                Ok(guard) => guard,
+                Err(e) => {
+                    error!("Failed to read registry: {}", e);
+                    continue;
+                }
+            };
+            registry_guard.is_graph_open(&graph_id)
+        };
+        
+        // If graph is closed, temporarily open it for recovery
+        if !was_open {
+            if let Err(e) = app_state.open_graph(graph_id).await {
+                error!("Failed to open graph {} for recovery: {}", graph_name, e);
+                continue;
+            }
         }
         
+        // Ensure the graph manager is loaded
+        if let Err(e) = app_state.get_or_create_graph_manager(&graph_id).await {
+            error!("Failed to create graph manager for {}: {}", graph_name, e);
+            if !was_open {
+                // Try to close it again if we opened it
+                let _ = app_state.close_graph(graph_id).await;
+            }
+            continue;
+        }
         
-        if let Some(coordinator) = app_state.get_transaction_coordinator(&active_graph.id).await {
+        // Run recovery
+        if let Some(coordinator) = app_state.get_transaction_coordinator(&graph_id).await {
             match coordinator.recover_pending_transactions().await {
                 Ok(pending_transactions) => {
                     if !pending_transactions.is_empty() {
-                        info!("🔄 Replaying {} pending transactions for active graph", 
-                              pending_transactions.len());
+                        info!("🔄 Replaying {} pending transactions for graph {}", 
+                              pending_transactions.len(), graph_name);
                         
                         for transaction in pending_transactions {
-                            if let Err(e) = app_state.replay_transaction(transaction, coordinator.clone()).await {
+                            if let Err(e) = app_state.replay_transaction(&graph_id, transaction, coordinator.clone()).await {
                                 error!("Failed to replay transaction: {}", e);
+                            }
+                        }
+                        
+                        // Save the graph after recovery
+                        let resources = app_state.graph_resources.read().await;
+                        if let Some(graph_resources) = resources.get(&graph_id) {
+                            match graph_resources.manager.write().await.save_graph() {
+                                Ok(_) => info!("💾 Saved graph {} after recovery", graph_name),
+                                Err(e) => error!("Failed to save graph {} after recovery: {}", graph_name, e),
                             }
                         }
                     }
                 }
                 Err(e) => {
-                    error!("Failed to recover transactions: {}", e);
+                    error!("Failed to recover transactions for {}: {}", graph_name, e);
                 }
             }
-        } else {
+        }
+        
+        // If graph was originally closed, close it again
+        if !was_open {
+            if let Err(e) = app_state.close_graph(graph_id).await {
+                error!("Failed to close graph {} after recovery: {}", graph_name, e);
+            }
         }
     }
+    
+    info!("✅ Recovery complete for all graphs");
 }

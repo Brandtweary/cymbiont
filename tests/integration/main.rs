@@ -56,6 +56,11 @@ fn test_startup_recovery() {
 }
 
 #[test]
-fn test_graph_switch_recovery() {
-    crash_recovery::test_graph_switch_recovery();
+fn test_mixed_open_closed_graphs() {
+    crash_recovery::test_mixed_open_closed_graphs();
+}
+
+#[test]
+fn test_open_graph_recovery() {
+    crash_recovery::test_open_graph_recovery();
 }

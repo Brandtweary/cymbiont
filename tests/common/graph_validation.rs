@@ -44,6 +44,48 @@ use std::path::Path;
 use std::collections::{HashMap, HashSet};
 use serde_json::Value;
 
+/// Validate that the graph registry has the correct schema and contains the expected graph
+pub fn validate_registry_schema(data_dir: &Path, graph_id: &str) {
+    let registry_path = data_dir.join("graph_registry.json");
+    
+    // Load and parse registry
+    let registry_content = fs::read_to_string(&registry_path)
+        .expect("Failed to read graph registry");
+    let registry: Value = serde_json::from_str(&registry_content)
+        .expect("Failed to parse graph registry");
+    
+    // Validate top-level structure
+    assert!(registry["graphs"].is_object(), "Registry must have 'graphs' object");
+    assert!(registry["open_graphs"].is_array(), "Registry must have 'open_graphs' array");
+    
+    // Validate the tested graph exists
+    let graphs = registry["graphs"].as_object().unwrap();
+    assert!(graphs.contains_key(graph_id), 
+        "Graph {} not found in registry", graph_id);
+    
+    // Validate graph entry schema
+    let graph_info = &graphs[graph_id];
+    assert_eq!(graph_info["id"].as_str(), Some(graph_id), 
+        "Graph ID mismatch in registry");
+    assert!(graph_info["name"].is_string(), 
+        "Graph must have 'name' field");
+    assert!(graph_info["kg_path"].is_string(), 
+        "Graph must have 'kg_path' field");
+    assert!(graph_info["created"].is_string(), 
+        "Graph must have 'created' field");
+    assert!(graph_info["last_accessed"].is_string(), 
+        "Graph must have 'last_accessed' field");
+    
+    // Validate open_graphs references valid graphs
+    let open_graphs = registry["open_graphs"].as_array().unwrap();
+    for open_id in open_graphs {
+        let id_str = open_id.as_str()
+            .expect("open_graphs must contain strings");
+        assert!(graphs.contains_key(id_str), 
+            "open_graphs references non-existent graph: {}", id_str);
+    }
+}
+
 /// Represents the expected state of a graph for validation
 pub struct GraphValidator {
     nodes: Vec<Value>,
@@ -290,6 +332,10 @@ impl GraphValidationFixture {
     
     /// Validate that the actual graph matches all expectations
     pub fn validate_graph(&self, data_dir: &Path, graph_id: &str) {
+        // First validate the registry structure
+        validate_registry_schema(data_dir, graph_id);
+        
+        // Then validate the graph contents
         let validator = GraphValidator::load(data_dir, graph_id);
         
         // Check all expected nodes exist with correct properties

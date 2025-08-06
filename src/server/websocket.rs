@@ -25,10 +25,17 @@
  * ## Command Protocol
  * 
  * JSON-based request/response system:
- * - **Client→Server**: `Auth`, `Heartbeat`, `CreateBlock`, `UpdateBlock`, `DeleteBlock`, `CreatePage`, `DeletePage`, etc.
+ * - **Client→Server**: 
+ *   - `Auth`, `Heartbeat` - Connection management
+ *   - `OpenGraph`, `CloseGraph` - Graph lifecycle (replaces SwitchGraph)
+ *   - `CreateBlock`, `UpdateBlock`, `DeleteBlock` - Block operations (accept optional graph_id/graph_name)
+ *   - `CreatePage`, `DeletePage` - Page operations (accept optional graph_id/graph_name)
+ *   - `CreateGraph`, `DeleteGraph` - Graph management
+ *   - `FreezeOperations`, `UnfreezeOperations` - Test infrastructure
  * - **Server→Client**: `Success`, `Error`, `Heartbeat`
  * - Commands execute asynchronously with transaction wrapping
- * - Freeze mechanism allows pausing operations for testing/recovery
+ * - Graph targeting via optional `graph_id` (UUID string) or `graph_name` fields
+ * - Centralized graph resolution with smart defaults for CRUD operations
  * 
  * ## Transaction Integration
  * 
@@ -54,7 +61,7 @@ use std::{
     time::Duration,
 };
 use tokio::time::interval;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::AppState;
@@ -77,17 +84,40 @@ pub enum Command {
         page_name: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         temp_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        graph_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        graph_name: Option<String>,
     },
     UpdateBlock {
         block_id: String,
         content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        graph_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        graph_name: Option<String>,
     },
     DeleteBlock {
         block_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        graph_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        graph_name: Option<String>,
     },
     CreatePage {
         name: String,
         properties: Option<HashMap<String, String>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        graph_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        graph_name: Option<String>,
+    },
+    DeletePage {
+        page_name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        graph_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        graph_name: Option<String>,
     },
     Heartbeat,
     Auth {
@@ -96,18 +126,21 @@ pub enum Command {
     Test {
         message: String,
     },
-    SwitchGraph {
-        graph_id: String,
+    OpenGraph {
+        graph_id: Option<String>,
+        graph_name: Option<String>,
+    },
+    CloseGraph {
+        graph_id: Option<String>,
+        graph_name: Option<String>,
     },
     CreateGraph {
         name: Option<String>,
         description: Option<String>,
     },
     DeleteGraph {
-        graph_id: String,
-    },
-    DeletePage {
-        page_name: String,
+        graph_id: Option<String>,
+        graph_name: Option<String>,
     },
     FreezeOperations,
     UnfreezeOperations,
@@ -170,7 +203,6 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     // Spawn heartbeat task
     let heartbeat_tx = tx.clone();
     let mut heartbeat_shutdown_rx = shutdown_rx.clone();
-    let heartbeat_conn_id = connection_id.clone();
     let heartbeat_task = tokio::spawn(async move {
         let mut interval = interval(Duration::from_secs(30));
         loop {
@@ -252,6 +284,31 @@ async fn handle_message(
     Ok(())
 }
 
+
+/// Helper to resolve graph ID from optional graph_id and graph_name
+async fn resolve_graph_for_command(
+    state: &Arc<AppState>,
+    graph_id: Option<&str>,
+    graph_name: Option<&str>,
+    allow_smart_default: bool,
+) -> Result<uuid::Uuid, Box<dyn std::error::Error + Send + Sync>> {
+    let registry = state.graph_registry.read()
+        .map_err(|e| format!("Failed to read registry: {}", e))?;
+    
+    let graph_uuid = if let Some(id_str) = graph_id {
+        Some(uuid::Uuid::parse_str(id_str)
+            .map_err(|_| format!("Invalid UUID: {}", id_str))?)
+    } else {
+        None
+    };
+    
+    Ok(registry.resolve_graph_target(
+        graph_uuid.as_ref(),
+        graph_name.as_deref(),
+        allow_smart_default,
+    )?)
+}
+
 /// Handle command execution
 async fn handle_command(
     command: Command,
@@ -310,13 +367,20 @@ async fn handle_command(
             // Client sent a heartbeat/pong - just acknowledge receipt, don't respond
             // This prevents infinite heartbeat loops
         }
-        Command::CreateBlock { content, parent_id, page_name, temp_id: _ } => {
+        Command::CreateBlock { content, parent_id, page_name, temp_id: _, graph_id, graph_name } => {
             // Call kg_api to create the block
             info!("📝 CreateBlock command received via WebSocket");
             
             use crate::graph_operations::GraphOperationsExt;
             
-            match state.add_block(content, parent_id, page_name, None).await {
+            let resolved_graph_id = resolve_graph_for_command(
+                state,
+                graph_id.as_deref(),
+                graph_name.as_deref(),
+                true  // allow smart default
+            ).await?;
+            
+            match state.add_block(content, parent_id, page_name, None, &resolved_graph_id).await {
                 Ok(block_id) => {
                     let data = serde_json::json!({ "block_id": block_id });
                     send_success_response(connection_id, state, Some(data)).await?;
@@ -326,13 +390,20 @@ async fn handle_command(
                 }
             }
         }
-        Command::UpdateBlock { block_id, content } => {
+        Command::UpdateBlock { block_id, content, graph_id, graph_name } => {
             // Call kg_api to update the block
             info!("✏️ UpdateBlock command received via WebSocket: {}", block_id);
             
             use crate::graph_operations::GraphOperationsExt;
             
-            match state.update_block(block_id.clone(), content).await {
+            let resolved_graph_id = resolve_graph_for_command(
+                state,
+                graph_id.as_deref(),
+                graph_name.as_deref(),
+                true  // allow smart default
+            ).await?;
+            
+            match state.update_block(block_id.clone(), content, &resolved_graph_id).await {
                 Ok(()) => {
                     let data = serde_json::json!({ "block_id": block_id });
                     send_success_response(connection_id, state, Some(data)).await?;
@@ -342,13 +413,20 @@ async fn handle_command(
                 }
             }
         }
-        Command::DeleteBlock { block_id } => {
+        Command::DeleteBlock { block_id, graph_id, graph_name } => {
             // Call kg_api to delete the block
             info!("🗑️ DeleteBlock command received via WebSocket: {}", block_id);
             
             use crate::graph_operations::GraphOperationsExt;
             
-            match state.delete_block(block_id.clone()).await {
+            let resolved_graph_id = resolve_graph_for_command(
+                state,
+                graph_id.as_deref(),
+                graph_name.as_deref(),
+                true  // allow smart default
+            ).await?;
+            
+            match state.delete_block(block_id.clone(), &resolved_graph_id).await {
                 Ok(()) => {
                     let data = serde_json::json!({ "block_id": block_id });
                     send_success_response(connection_id, state, Some(data)).await?;
@@ -358,11 +436,18 @@ async fn handle_command(
                 }
             }
         }
-        Command::CreatePage { name, properties } => {
+        Command::CreatePage { name, properties, graph_id, graph_name } => {
             // Call kg_api to create the page
             info!("📄 CreatePage command received via WebSocket: {}", name);
             
             use crate::graph_operations::GraphOperationsExt;
+            
+            let resolved_graph_id = resolve_graph_for_command(
+                state,
+                graph_id.as_deref(),
+                graph_name.as_deref(),
+                true  // allow smart default
+            ).await?;
             
             // Convert HashMap<String, String> to serde_json::Value
             let properties_json = properties.map(|props| {
@@ -373,7 +458,7 @@ async fn handle_command(
                 )
             });
             
-            match state.create_page(name.clone(), properties_json).await {
+            match state.create_page(name.clone(), properties_json, &resolved_graph_id).await {
                 Ok(()) => {
                     let data = serde_json::json!({ "page_name": name });
                     send_success_response(connection_id, state, Some(data)).await?;
@@ -397,18 +482,47 @@ async fn handle_command(
             
             send_success_response(connection_id, state, Some(response_data)).await?;
         }
-        Command::SwitchGraph { graph_id } => {
-            // Switch the active graph
-            info!("🔄 SwitchGraph command received via WebSocket: {}", graph_id);
+        Command::OpenGraph { graph_id, graph_name } => {
+            // Open a graph
+            info!("📂 OpenGraph command received via WebSocket");
             
             use crate::graph_operations::GraphOperationsExt;
             
-            match state.switch_graph(graph_id).await {
+            let resolved_graph_id = resolve_graph_for_command(
+                state,
+                graph_id.as_deref(),
+                graph_name.as_deref(),
+                false  // no smart default - must specify which graph to open
+            ).await?;
+            
+            match state.open_graph(resolved_graph_id).await {
                 Ok(graph_info) => {
                     send_success_response(connection_id, state, Some(graph_info)).await?;
                 }
                 Err(e) => {
-                    send_error_response(connection_id, state, &format!("Failed to switch graph: {}", e)).await?;
+                    send_error_response(connection_id, state, &format!("Failed to open graph: {}", e)).await?;
+                }
+            }
+        }
+        Command::CloseGraph { graph_id, graph_name } => {
+            // Close a graph
+            info!("📁 CloseGraph command received via WebSocket");
+            
+            use crate::graph_operations::GraphOperationsExt;
+            
+            let resolved_graph_id = resolve_graph_for_command(
+                state,
+                graph_id.as_deref(),
+                graph_name.as_deref(),
+                false  // no smart default - must specify which graph to close
+            ).await?;
+            
+            match state.close_graph(resolved_graph_id).await {
+                Ok(()) => {
+                    send_success_response(connection_id, state, None).await?;
+                }
+                Err(e) => {
+                    send_error_response(connection_id, state, &format!("Failed to close graph: {}", e)).await?;
                 }
             }
         }
@@ -427,15 +541,22 @@ async fn handle_command(
                 }
             }
         }
-        Command::DeleteGraph { graph_id } => {
+        Command::DeleteGraph { graph_id, graph_name } => {
             // Delete a graph
-            info!("🗑️ DeleteGraph command received via WebSocket: {}", graph_id);
+            info!("🗑️ DeleteGraph command received via WebSocket");
             
             use crate::graph_operations::GraphOperationsExt;
             
-            match state.delete_graph(graph_id.clone(), false).await {
+            let resolved_graph_id = resolve_graph_for_command(
+                state,
+                graph_id.as_deref(),
+                graph_name.as_deref(),
+                false  // no smart default - must specify which graph to delete
+            ).await?;
+            
+            match state.delete_graph(&resolved_graph_id).await {
                 Ok(()) => {
-                    let data = serde_json::json!({ "deleted_graph_id": graph_id });
+                    let data = serde_json::json!({ "deleted_graph_id": resolved_graph_id.to_string() });
                     send_success_response(connection_id, state, Some(data)).await?;
                 }
                 Err(e) => {
@@ -443,13 +564,20 @@ async fn handle_command(
                 }
             }
         }
-        Command::DeletePage { page_name } => {
+        Command::DeletePage { page_name, graph_id, graph_name } => {
             // Delete a page
             info!("🗑️ DeletePage command received via WebSocket: {}", page_name);
             
             use crate::graph_operations::GraphOperationsExt;
             
-            match state.delete_page(page_name.clone()).await {
+            let resolved_graph_id = resolve_graph_for_command(
+                state,
+                graph_id.as_deref(),
+                graph_name.as_deref(),
+                true  // allow smart default
+            ).await?;
+            
+            match state.delete_page(page_name.clone(), &resolved_graph_id).await {
                 Ok(()) => {
                     let data = serde_json::json!({ "page_name": page_name });
                     send_success_response(connection_id, state, Some(data)).await?;
@@ -598,6 +726,8 @@ mod tests {
             parent_id: None,
             page_name: Some("TestPage".to_string()),
             temp_id: Some("temp-456".to_string()),
+            graph_id: None,
+            graph_name: None,
         };
         
         let json = serde_json::to_string(&cmd).unwrap();
@@ -636,6 +766,65 @@ mod tests {
         let json = r#"{"type": "heartbeat"}"#;
         let cmd: Command = serde_json::from_str(json).unwrap();
         assert!(matches!(cmd, Command::Heartbeat));
+    }
+    
+    #[test]
+    fn test_graph_fields_serialization() {
+        // Test with both graph_id and graph_name
+        let cmd = Command::UpdateBlock {
+            block_id: "block-123".to_string(),
+            content: "Updated content".to_string(),
+            graph_id: Some("550e8400-e29b-41d4-a716-446655440000".to_string()),
+            graph_name: Some("My Graph".to_string()),
+        };
+        
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(json.contains("\"graph_id\":\"550e8400-e29b-41d4-a716-446655440000\""));
+        assert!(json.contains("\"graph_name\":\"My Graph\""));
+        
+        // Test with only graph_name (graph_id should be omitted)
+        let cmd = Command::DeleteBlock {
+            block_id: "block-456".to_string(),
+            graph_id: None,
+            graph_name: Some("Another Graph".to_string()),
+        };
+        
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(!json.contains("\"graph_id\""));
+        assert!(json.contains("\"graph_name\":\"Another Graph\""));
+    }
+    
+    #[test]
+    fn test_graph_command_deserialization() {
+        // Test OpenGraph command
+        let json = r#"{
+            "type": "open_graph",
+            "graph_id": "550e8400-e29b-41d4-a716-446655440000"
+        }"#;
+        
+        let cmd: Command = serde_json::from_str(json).unwrap();
+        match cmd {
+            Command::OpenGraph { graph_id, graph_name } => {
+                assert_eq!(graph_id, Some("550e8400-e29b-41d4-a716-446655440000".to_string()));
+                assert_eq!(graph_name, None);
+            }
+            _ => panic!("Wrong command type"),
+        }
+        
+        // Test with graph_name
+        let json = r#"{
+            "type": "close_graph",
+            "graph_name": "Test Graph"
+        }"#;
+        
+        let cmd: Command = serde_json::from_str(json).unwrap();
+        match cmd {
+            Command::CloseGraph { graph_id, graph_name } => {
+                assert_eq!(graph_id, None);
+                assert_eq!(graph_name, Some("Test Graph".to_string()));
+            }
+            _ => panic!("Wrong command type"),
+        }
     }
 
 }

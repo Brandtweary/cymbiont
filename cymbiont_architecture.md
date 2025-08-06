@@ -39,9 +39,11 @@ cymbiont/
 └── tests/                         # Integration tests - see tests/CLAUDE.md
     ├── common/                    # Shared test utilities
     │   ├── mod.rs                 # Test environment setup
-    │   └── test_harness.rs        # TestServer lifecycle management
+    │   ├── test_harness.rs        # TestServer lifecycle management
+    │   └── graph_validation.rs    # Automated graph state validation
     └── integration/               # Integration test suite (single binary)
         ├── main.rs                # Test entry point
+        ├── crash_recovery.rs      # Transaction recovery tests
         ├── http_logseq_import.rs  # HTTP API tests
         ├── logseq_import.rs       # CLI import tests
         └── websocket_commands.rs  # WebSocket tests
@@ -54,6 +56,7 @@ cymbiont/
 **Key functionality**: 
 - Parse command line arguments
 - Create AppState (both CLI and server modes)
+- Run `run_all_graphs_recovery()` on startup for all open graphs
 - Handle shutdown signals (SIGINT/Ctrl+C)
 - Execute cleanup_and_save() on exit
 **CLI mode** (default): Local operations, imports, graph management
@@ -69,7 +72,7 @@ cymbiont/
 **Key methods**: 
 - `new_cli()`, `new_server()` - initialization for different modes
 - `get_or_create_graph_manager()` - lazy graph manager creation
-- `with_active_graph_transaction()` - wraps operations in transactions
+- `with_graph_transaction(graph_id)` - wraps operations in transactions for specific graph
 - `get_transaction_coordinator()` - access to per-graph WAL
 **Role**: Acts as the central nervous system, connecting all components without implementing business logic
 
@@ -92,7 +95,13 @@ cymbiont/
 **Purpose**: PKM-specific operations as an extension trait on Arc<AppState>  
 **Design**: Extension trait pattern (`GraphOperationsExt`) provides PKM operations directly on AppState
 **Key role**: Adds domain-specific graph operations with full transaction support and crash recovery
-**Operations**: `add_block()`, `update_block()`, `delete_block()`, `create_page()`, `delete_page()`, `create_graph()`, `delete_graph(force)`, `switch_graph()`, `list_graphs()`, `get_node()`, `replay_operation()`
+**Operations**: All operations now require explicit `graph_id: &Uuid` parameter:
+- `add_block()`, `update_block()`, `delete_block()` - block CRUD operations
+- `create_page()`, `delete_page()` - page management
+- `create_graph()`, `delete_graph()` - graph lifecycle
+- `open_graph()`, `close_graph()` - replaces switch_graph() with explicit resource management
+- `list_graphs()`, `list_open_graphs()` - graph enumeration
+- `get_node()`, `replay_transaction()` - query and recovery
 **Transaction integration**: Each operation stores full API parameters in WAL for perfect recovery
 **Note**: Not a separate service - these are extension methods on Arc<AppState>
 
@@ -107,9 +116,16 @@ cymbiont/
 **Features**: JSON serialization, auto-save thresholds, node archival
 
 ### storage/graph_registry.rs
-**Purpose**: Multi-graph UUID tracking and management  
-**Key operations**: `register_graph()`, `switch_graph()`, `remove_graph()`, registry persistence
-**Fallback**: Automatically activates first available graph when active graph is deleted
+**Purpose**: Multi-graph UUID tracking and management with open/closed state  
+**Key types**: Uses `Uuid` type throughout with custom JSON serialization
+**Key operations**: 
+- `register_graph()`, `remove_graph()` - graph lifecycle
+- `open_graph()`, `close_graph()` - explicit state management (replaces switch_graph)
+- `get_open_graphs()`, `is_graph_open()` - query graph states
+- `resolve_graph_target()` - centralized UUID/name resolution with smart defaults
+- `ensure_graph_open()` - startup logic to guarantee at least one open graph
+**Data structure**: Tracks `open_graphs: HashSet<Uuid>` instead of single active_graph_id
+**Persistence**: Open graph state persists across restarts for automatic recovery
 
 ### server/server.rs
 **Purpose**: Server-specific setup and HTTP/WebSocket configuration  
@@ -123,13 +139,21 @@ cymbiont/
 ### storage/transaction.rs
 **Purpose**: Transaction lifecycle coordination  
 **States**: `Active` → `Committed` | `Aborted`
-**Key methods**: `execute_with_transaction()`, `begin_transaction()`, `commit_transaction()`
+**Key methods**: `create_transaction()`, `complete_transaction()`, `recover_pending_transactions()`
+**Per-graph isolation**: Each graph has its own TransactionCoordinator instance
 
 ### server/websocket.rs
 **Purpose**: Real-time WebSocket communication with high-throughput async processing  
 **Architecture**: Each command spawns as independent async task for concurrent execution
 **Protocol**: Request/response with token auth, heartbeat, async command execution
-**Commands**: `Auth`, `CreateBlock`, `UpdateBlock`, `DeleteBlock`, `CreatePage`, `DeletePage`, `SwitchGraph`, `CreateGraph`, `DeleteGraph`, `FreezeOperations`, `UnfreezeOperations`
+**Commands**: 
+- `Auth { token }` - authentication
+- `OpenGraph`, `CloseGraph` - explicit graph lifecycle (replaces SwitchGraph)
+- `CreateBlock`, `UpdateBlock`, `DeleteBlock` - block operations (now accept optional graph_id/graph_name)
+- `CreatePage`, `DeletePage` - page operations (now accept optional graph_id/graph_name)
+- `CreateGraph`, `DeleteGraph` - graph management
+- `FreezeOperations`, `UnfreezeOperations` - test infrastructure
+**Graph targeting**: All CRUD commands accept optional `graph_id` (UUID string) or `graph_name` fields
 **Responses**: `Success`, `Error`, `Heartbeat`
 **Authentication**: Requires `Auth { token }` command before other operations
 **Performance**: Supports high-throughput scenarios with multiple concurrent operations
@@ -208,7 +232,14 @@ cymbiont/
 ```
 
 ### WebSocket Message Types
-- **Client→Server**: `Auth { token }`, `Heartbeat`, `CreateBlock`, `UpdateBlock`, `DeleteBlock`, `CreatePage`, `DeletePage`, `SwitchGraph`, `CreateGraph`, `DeleteGraph`, `FreezeOperations`, `UnfreezeOperations`, `GetFreezeState`
+- **Client→Server**: 
+  - `Auth { token }` - authentication
+  - `OpenGraph { graph_id?, graph_name? }`, `CloseGraph { graph_id?, graph_name? }` - graph lifecycle
+  - `CreateBlock { ..., graph_id?, graph_name? }`, `UpdateBlock { ..., graph_id?, graph_name? }`, `DeleteBlock { ..., graph_id?, graph_name? }` - block operations
+  - `CreatePage { ..., graph_id?, graph_name? }`, `DeletePage { ..., graph_id?, graph_name? }` - page operations
+  - `CreateGraph`, `DeleteGraph` - graph management
+  - `FreezeOperations`, `UnfreezeOperations`, `GetFreezeState` - test infrastructure
+  - `Heartbeat` - connection keep-alive
 - **Server→Client**: `Success { data? }`, `Error { message }`, `Heartbeat`
 - **Processing**: Commands execute asynchronously as independent tasks for high-throughput performance
 
@@ -250,8 +281,7 @@ cymbiont [OPTIONS]
   --data-dir <PATH>             # Override data directory
   --config <PATH>               # Use specific configuration file
   --import-logseq <PATH>        # Import Logseq graph directory
-  --delete-graph <NAME_OR_ID>   # Delete a graph by name or ID
-  --force                       # Force deletion even if active (with --delete-graph)
+  --delete-graph <NAME_OR_ID>   # Delete a graph by name or UUID
   --duration <SECONDS>          # Run for specific duration
 ```
 
@@ -274,7 +304,11 @@ After graceful cleanup, the process uses `std::process::exit(0)` to terminate im
 **Authentication**: Server generates auth token on startup, saves to `{data_dir}/auth_token`. HTTP endpoints check Authorization header, WebSocket requires Auth command. Token rotates on restart for security.
 
 **Crash Recovery**: 
-1. On startup (main.rs): Replays pending transactions for active graph
-2. On graph switch: Replays pending transactions before activating
+1. On startup (main.rs): Runs `run_all_graphs_recovery()` for ALL graphs (both open and closed)
+   - Iterates through every registered graph
+   - Temporarily opens closed graphs for recovery
+   - Closes them again after recovery completes
+2. On graph open: `open_graph()` triggers recovery for that specific graph
 3. Recovery mechanism: Operations store full API parameters, replay calls exact same methods
 4. Transaction states: Active → Committed (success) or Aborted (failure)
+5. Open graphs persist across restarts: Registry tracks which graphs were open for automatic recovery

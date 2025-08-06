@@ -69,8 +69,14 @@ pub async fn import_logseq_graph(
     
     // Register the graph with the registry and get its ID
     let graph_id = {
-        let mut registry = app_state.graph_registry.lock()
-            .map_err(|e| format!("Failed to lock graph registry: {}", e))?;
+        // Debug assertion to check we're not already holding a lock
+        debug_assert!(
+            app_state.graph_registry.try_read().is_ok(),
+            "Attempting to write to registry while already holding a lock!"
+        );
+        
+        let mut registry = app_state.graph_registry.write()
+            .map_err(|e| format!("Failed to write graph registry: {}", e))?;
         
         let graph_info = registry.register_graph(
             None,  // Let registry generate ID
@@ -92,12 +98,12 @@ pub async fn import_logseq_graph(
     
     // Import the data
     let (page_count, block_count, errors) = {
-        let managers = app_state.graph_managers.read().await;
+        let resources = app_state.graph_resources.read().await;
         
-        let manager_lock = managers.get(&graph_id)
-            .ok_or_else(|| format!("Graph manager not found for ID: {}", graph_id))?;
+        let graph_resources = resources.get(&graph_id)
+            .ok_or_else(|| format!("Graph not found for ID: {}", graph_id))?;
         
-        let mut graph_manager = manager_lock.write().await;
+        let mut graph_manager = graph_resources.manager.write().await;
         
         // Disable auto-save during bulk import for performance
         graph_manager.disable_auto_save();
@@ -157,7 +163,7 @@ pub async fn import_logseq_graph(
     
     // Return the import result
     Ok(ImportResult {
-        graph_id,
+        graph_id: graph_id.to_string(),
         graph_name,
         pages_imported: page_count,
         blocks_imported: block_count,

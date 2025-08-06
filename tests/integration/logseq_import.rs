@@ -1,7 +1,7 @@
 use std::fs;
 use serde_json::Value;
 use crate::common::{setup_test_env, cleanup_test_env};
-use crate::common::test_harness::{TestServer, PostShutdown, assert_phase, get_active_graph_id};
+use crate::common::test_harness::{TestServer, PostShutdown, assert_phase, get_single_open_graph_id};
 
 pub fn test_logseq_import_cyberorganism_test_1() {
     // Set up test environment
@@ -28,8 +28,8 @@ pub fn test_logseq_import_cyberorganism_test_1() {
     let registry_path = data_dir.join("graph_registry.json");
     assert!(registry_path.exists(), "Graph registry not created");
     
-    // Get the active graph ID
-    let graph_id = get_active_graph_id(&data_dir);
+    // Get the imported graph ID (should be the only open graph)
+    let graph_id = get_single_open_graph_id(&data_dir);
     
     // Read the registry to verify graph name
     let registry_content = fs::read_to_string(&registry_path).expect("Failed to read registry");

@@ -17,7 +17,7 @@ env RUST_LOG=debug cargo test -- --nocapture 2>&1 | tee test_output.log  # Captu
 - `--data-dir <PATH>`: Override data directory path (defaults to config value)
 - `--config <PATH>`: Use specific configuration file
 - `--import-logseq <PATH>`: Import Logseq graph directory (then continues running)
-- `--delete-graph <NAME_OR_ID>`: Archive a graph by name or ID (use `--force` if active graph)
+- `--delete-graph <NAME_OR_ID>`: Archive a graph by name or ID
 
 ### Core Directories
 - **src/**: Cymbiont server - graph management, API endpoints

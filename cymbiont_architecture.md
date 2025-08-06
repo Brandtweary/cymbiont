@@ -52,15 +52,15 @@ cymbiont/
 ## Module Requirements and Data Flow
 
 ### main.rs
-**Purpose**: CLI entry point with lifecycle management  
+**Purpose**: CLI entry point with unified runtime lifecycle management  
 **Key functionality**: 
 - Parse command line arguments
 - Create AppState (both CLI and server modes)
 - Run `run_all_graphs_recovery()` on startup for all open graphs
-- Handle shutdown signals (SIGINT/Ctrl+C)
+- Handle duration limits and shutdown signals uniformly for both modes
 - Execute cleanup_and_save() on exit
-**CLI mode** (default): Local operations, imports, graph management
-**Server mode** (--server flag): HTTP/WebSocket server via server::run_server_with_duration()
+**Runtime behavior**: Controls duration timeout and graceful shutdown for both CLI and server modes
+**Server mode**: Starts server via `server::start_server()` but manages lifecycle in main.rs
 
 ### config.rs
 **Purpose**: YAML configuration loading with CLI overrides  
@@ -73,6 +73,7 @@ cymbiont/
 - `new_cli()`, `new_server()` - initialization for different modes
 - `get_or_create_graph_manager()` - lazy graph manager creation
 - `with_graph_transaction(graph_id)` - wraps operations in transactions for specific graph
+- `initiate_graceful_shutdown()`, `wait_for_transactions()` - shutdown coordination
 - `get_transaction_coordinator()` - access to per-graph WAL
 **Role**: Acts as the central nervous system, connecting all components without implementing business logic
 
@@ -130,8 +131,8 @@ cymbiont/
 **Safety pattern**: Write operations use `debug_assert!(registry.try_write().is_ok())` as tripwires to detect lock contention during development. These can be removed after profiling if some contention is acceptable, but never preemptively.
 
 ### server/server.rs
-**Purpose**: Server-specific setup and HTTP/WebSocket configuration  
-**Functions**: `run_server_with_duration()` - creates and runs the axum server
+**Purpose**: Server initialization and HTTP/WebSocket setup  
+**Functions**: `start_server()` - creates axum server and returns handle for external lifecycle management
 
 ### storage/transaction_log.rs
 **Purpose**: Write-ahead logging with sled database  
@@ -139,10 +140,14 @@ cymbiont/
 **Trees**: Transactions, content hash index, pending index
 
 ### storage/transaction.rs
-**Purpose**: Transaction lifecycle coordination  
+**Purpose**: Transaction lifecycle coordination with graceful shutdown support  
 **States**: `Active` → `Committed` | `Aborted`
-**Key methods**: `create_transaction()`, `complete_transaction()`, `recover_pending_transactions()`
+**Key methods**: 
+- `create_transaction()`, `complete_transaction()` - transaction lifecycle
+- `recover_pending_transactions()` - crash recovery
+- `initiate_shutdown()`, `wait_for_completion()` - graceful shutdown coordination
 **Per-graph isolation**: Each graph has its own TransactionCoordinator instance
+**Shutdown behavior**: Tracks all active transactions, rejects new ones during shutdown
 
 ### server/websocket.rs
 **Purpose**: Real-time WebSocket communication with high-throughput async processing  
@@ -289,9 +294,11 @@ cymbiont [OPTIONS]
 
 ## Graceful Shutdown
 
-`main.rs` handles SIGINT (Ctrl+C) for graceful shutdown in both CLI and server modes, running `cleanup_and_save()` to close WebSocket connections, persist all graphs, and flush transaction logs. 
+`main.rs` handles SIGINT (Ctrl+C) for graceful shutdown in both CLI and server modes:
+- First Ctrl+C: Initiates graceful shutdown, waits up to 30 seconds for active transactions to complete
+- Second Ctrl+C: Forces immediate termination with transaction log flush
 
-After graceful cleanup, the process uses `std::process::exit(0)` to terminate immediately due to sled database background I/O threads that cannot be cleanly shutdown (known upstream issue). This ensures reliable process termination without affecting data integrity.
+The shutdown sequence runs `cleanup_and_save()` to close WebSocket connections, persist all graphs, and flush transaction logs. After graceful cleanup, the process uses `std::process::exit(0)` to terminate immediately due to sled database background I/O threads that cannot be cleanly shutdown (known upstream issue).
 
 ## Key Flows
 

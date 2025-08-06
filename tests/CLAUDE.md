@@ -28,6 +28,7 @@
 - `TestServer::wait_for_completion(self) -> TestEnv`: Wait for natural process exit
 - `TestServer::port() -> u16`: Get server port (0 for CLI mode)
 - `TestServer::force_kill()`: Force kill process with SIGKILL for crash tests
+- `TestServer::send_sigint(&mut self)`: Send SIGINT without waiting (for multi-signal tests)
 - `TestServer::pid() -> u32`: Get process ID
 - `assert_phase(PreShutdown/PostShutdown)`: Document test phase for clarity
 - `connect_websocket(port) -> WsConnection`: Connect to WebSocket endpoint with retries

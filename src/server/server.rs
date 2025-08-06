@@ -6,8 +6,7 @@
 
 use std::net::SocketAddr;
 use std::error::Error;
-use std::time::{Duration, Instant};
-use tracing::{info, error};
+use tracing::info;
 
 use crate::{
     AppState,
@@ -15,11 +14,11 @@ use crate::{
     server::http_api::create_router,
 };
 
-/// Run server with all the necessary setup and teardown
-pub async fn run_server_with_duration(
+/// Start the HTTP server and return it for external lifecycle management
+/// The caller is responsible for handling shutdown signals and cleanup
+pub async fn start_server(
     app_state: std::sync::Arc<AppState>,
-    duration: Option<u64>,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> Result<(tokio::task::JoinHandle<Result<(), std::io::Error>>, String), Box<dyn Error + Send + Sync>> {
     let server_info_file = &app_state.config.backend.server_info_file;
     
     // Terminate any previous instance
@@ -27,11 +26,6 @@ pub async fn run_server_with_duration(
         terminate_previous_instance(server_info_file);
         let _ = std::fs::remove_file(server_info_file);
     }
-    
-    // No signal handler needed - we'll handle shutdown in the main async context
-    
-    // Determine duration
-    let duration_secs = duration.or(app_state.config.development.default_duration);
     
     // Create and start server
     let app = create_router(app_state.clone());
@@ -47,49 +41,15 @@ pub async fn run_server_with_duration(
     
     info!("🚀 Cymbiont Server listening on {}", addr);
     
-    // NOW start the duration timer - server is ready to serve requests
-    let start_time = Instant::now();
-    info!("⏱️ Server duration timer started - server is ready");
+    // Spawn the server task and return handle
+    let server_handle = tokio::spawn(async move {
+        axum::serve(listener, app).await
+    });
     
-    // Run server with integrated shutdown handling
-    if let Some(duration) = duration_secs {
-        
-        tokio::select! {
-            result = axum::serve(listener, app) => {
-                if let Err(e) = result {
-                    error!("Server error: {}", e);
-                }
-            }
-            _ = tokio::time::sleep(Duration::from_secs(duration)) => {
-                info!("⏱️ Duration limit reached, shutting down gracefully");
-            }
-            _ = tokio::signal::ctrl_c() => {
-                info!("🛑 Received shutdown signal, shutting down gracefully");
-            }
-        }
-    } else {
-        // Run indefinitely with shutdown signal handling
-        tokio::select! {
-            result = axum::serve(listener, app) => {
-                if let Err(e) = result {
-                    error!("Server error: {}", e);
-                }
-            }
-            _ = tokio::signal::ctrl_c() => {
-                info!("🛑 Received shutdown signal, shutting down gracefully");
-            }
-        }
-    }
-    
-    // Cleanup server info file
-    cleanup_server_info(server_info_file);
-    let total_runtime = start_time.elapsed();
-    info!("🧹 Server completed after {:.2}s", total_runtime.as_secs_f64());
-    
-    Ok(())
+    Ok((server_handle, server_info_file.to_string()))
 }
 
 /// Clean up server info file
-fn cleanup_server_info(filename: &str) {
+pub fn cleanup_server_info(filename: &str) {
     let _ = std::fs::remove_file(filename);
 }

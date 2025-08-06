@@ -9,4 +9,4 @@ pub mod server;
 pub mod auth;
 
 // Internal server utilities
-pub use server::run_server_with_duration;
+pub use server::{start_server, cleanup_server_info};

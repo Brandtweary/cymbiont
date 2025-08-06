@@ -39,13 +39,16 @@
  * 
  * ## Graceful Shutdown
  * 
- * Both CLI and server modes handle SIGINT (Ctrl+C) to trigger cleanup_and_save() before exit.
+ * Both CLI and server modes handle SIGINT (Ctrl+C) uniformly:
+ * - First Ctrl+C: Initiates graceful shutdown, waits for active transactions to complete (up to 30s)
+ * - Second Ctrl+C: Forces immediate termination with transaction log flush
+ * 
  * After graceful cleanup, the process uses std::process::exit(0) due to sled database background threads.
  */
 
 use std::error::Error;
 use clap::Parser;
-use tracing::{info, error};
+use tracing::{info, error, warn};
 
 // Internal modules
 mod app_state;
@@ -127,10 +130,50 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
         // Run recovery for all open graphs (same as CLI path)
         run_all_graphs_recovery(&app_state).await;
         
-        // Run server (will handle its own tokio::select! for shutdown)
-        server::run_server_with_duration(app_state.clone(), args.duration).await?;
+        // Start server and get handle
+        let (server_handle, server_info_file) = server::start_server(app_state.clone()).await?;
+        
+        // Handle duration and shutdown uniformly with CLI mode
+        if let Some(duration) = args.duration.or(app_state.config.development.default_duration) {
+            tokio::select! {
+                result = server_handle => {
+                    if let Err(e) = result {
+                        error!("Server task error: {}", e);
+                    }
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_secs(duration)) => {
+                    info!("⏱️ Duration limit reached");
+                }
+                _ = tokio::signal::ctrl_c() => {
+                    info!("🛑 Received shutdown signal");
+                    if handle_graceful_shutdown(&app_state).await {
+                        // Force quit requested
+                        server::cleanup_server_info(&server_info_file);
+                        std::process::exit(1);
+                    }
+                }
+            }
+        } else {
+            // Run indefinitely
+            tokio::select! {
+                result = server_handle => {
+                    if let Err(e) = result {
+                        error!("Server task error: {}", e);
+                    }
+                }
+                _ = tokio::signal::ctrl_c() => {
+                    info!("🛑 Received shutdown signal");
+                    if handle_graceful_shutdown(&app_state).await {
+                        // Force quit requested
+                        server::cleanup_server_info(&server_info_file);
+                        std::process::exit(1);
+                    }
+                }
+            }
+        }
         
         // Cleanup for server mode
+        server::cleanup_server_info(&server_info_file);
         app_state.cleanup_and_save().await;
         info!("🧹 Server shutdown complete");
     } else {
@@ -230,8 +273,16 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
                 .map_err(|e| Box::<dyn Error + Send + Sync>::from(e.to_string()))?;
             
             info!("Running indefinitely. Press Ctrl+C to exit.");
+            
+            // First Ctrl+C - initiate graceful shutdown
             tokio::signal::ctrl_c().await?;
             info!("🛑 Received shutdown signal");
+            
+            if handle_graceful_shutdown(&app_state).await {
+                // Force quit requested
+                utils::remove_pid_file();
+                std::process::exit(1);
+            }
         }
         
         // Cleanup for CLI mode
@@ -247,6 +298,36 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
     // This is the recommended workaround for sled issue #1234
     error!("FORCING PROCESS EXIT NOW");
     std::process::exit(0)
+}
+
+/// Handle graceful shutdown with transaction completion
+/// Returns true if should exit immediately (force quit), false to continue with normal cleanup
+async fn handle_graceful_shutdown(app_state: &std::sync::Arc<AppState>) -> bool {
+    // Brief grace period for spawned tasks to reach transaction boundary
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    
+    let active_count = app_state.initiate_graceful_shutdown().await;
+    if active_count > 0 {
+        info!("⏳ Waiting for {} transactions to complete... Press Ctrl+C again to force quit", active_count);
+        
+        tokio::select! {
+            completed = app_state.wait_for_transactions(std::time::Duration::from_secs(30)) => {
+                if completed {
+                    info!("✅ All transactions completed");
+                } else {
+                    warn!("⚠️ Timeout waiting for transactions");
+                }
+                false // Continue with normal cleanup
+            }
+            _ = tokio::signal::ctrl_c() => {
+                error!("⚡ Force quit requested");
+                app_state.force_flush_transactions().await;
+                true // Force immediate exit
+            }
+        }
+    } else {
+        false // No active transactions, continue with normal cleanup
+    }
 }
 
 /// Run recovery for all graphs on startup (shared between CLI and server)

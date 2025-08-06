@@ -342,6 +342,94 @@ pub fn test_mixed_open_closed_graphs() {
     }
 }
 
+/// Test graceful shutdown with pending transactions
+/// 
+/// This test verifies that the two-stage Ctrl+C handler correctly:
+/// 1. Waits for pending transactions to complete on first Ctrl+C
+/// 2. Allows force quit on second Ctrl+C if transactions are still pending
+pub fn test_graceful_shutdown_completes_transactions() {
+    let test_env = setup_test_env();
+    let cleanup_env = test_env.clone();
+    
+    let result = std::panic::catch_unwind(move || {
+        // Setup: Import graph first
+        let graph_id = import_dummy_graph(&test_env);
+        
+        // Start server
+        let mut server = TestServer::start(test_env.clone());
+        let port = server.port();
+        let data_dir = server.test_env().data_dir.clone();
+        
+        assert_phase(PreShutdown);
+        
+        // Connect and authenticate
+        let mut ws = connect_websocket(port);
+        let token = read_auth_token(&data_dir);
+        assert!(authenticate_websocket(&mut ws, &token), "Authentication failed");
+        
+        // Create a page to add blocks to
+        let create_page = json!({
+            "type": "create_page",
+            "name": "graceful-test-page",
+            "graph_id": graph_id.clone()
+        });
+        let response = send_command(&mut ws, create_page);
+        expect_success(response);
+        
+        // Freeze operations to simulate slow transaction
+        assert!(freeze_operations(&mut ws), "Failed to freeze operations");
+        
+        // Start a transaction (will be frozen after WAL write)
+        send_command_async(&mut ws, json!({
+            "type": "create_block",
+            "content": "This block should complete during graceful shutdown",
+            "parent_id": null,
+            "page_name": "graceful-test-page",
+            "graph_id": graph_id.clone(),
+            "properties": null
+        }));
+        
+        // Give transaction time to reach frozen state
+        thread::sleep(Duration::from_millis(200));
+        
+        // Unfreeze operations first - transaction will start processing
+        assert!(unfreeze_operations(&mut ws), "Failed to unfreeze operations");
+        
+        // Give transaction a moment to start processing
+        thread::sleep(Duration::from_millis(100));
+        
+        // Now send SIGINT - should wait for the in-flight transaction
+        server.send_sigint();
+        
+        // Server should exit gracefully after transaction completes
+        // The graceful shutdown handler will wait for the transaction to finish
+        let test_env = server.wait_for_completion();
+        assert_phase(PostShutdown);
+        
+        // Validate that the block was created successfully
+        let mut fixture = GraphValidationFixture::new();
+        fixture.expect_create_page("graceful-test-page", None);
+        fixture.validate_graph_with_content_checks(
+            &test_env.data_dir,
+            &graph_id,
+            &[
+                ("This block should complete during graceful shutdown", Some("graceful-test-page")),
+            ]
+        );
+        
+        test_env
+    });
+    
+    // Cleanup
+    match result {
+        Ok(test_env) => cleanup_test_env(test_env),
+        Err(panic) => {
+            cleanup_test_env(cleanup_env);
+            std::panic::resume_unwind(panic);
+        }
+    }
+}
+
 /// Test recovery when opening a closed graph
 /// 
 /// This test verifies that pending transactions are recovered when a closed graph

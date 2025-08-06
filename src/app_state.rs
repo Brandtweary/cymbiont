@@ -42,10 +42,12 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock as SyncRwLock, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::error::Error;
 use std::fs;
+use std::time::Duration;
 use tokio::sync::{oneshot, RwLock};
-use tracing::{info, error};
+use tracing::{info, error, warn};
 use uuid::Uuid;
 
 use crate::{
@@ -79,6 +81,9 @@ pub struct AppState {
     
     // Test infrastructure
     pub operation_freeze: Arc<RwLock<bool>>,  // Freeze operations after transaction creation
+    
+    // Shutdown coordination
+    pub shutdown_initiated: Arc<AtomicBool>,  // Flag to prevent new transactions
 }
 
 impl AppState {
@@ -151,6 +156,7 @@ impl AppState {
             ws_connections,
             auth_token: Arc::new(RwLock::new(None)),
             operation_freeze: Arc::new(RwLock::new(false)),
+            shutdown_initiated: Arc::new(AtomicBool::new(false)),
         });
         
         // Load all open graphs
@@ -370,6 +376,14 @@ impl AppState {
     where
         F: FnOnce(&mut GraphManager) -> std::result::Result<T, String>,
     {
+        // Check if shutdown has been initiated
+        if self.shutdown_initiated.load(Ordering::Acquire) {
+            warn!("Transaction rejected at AppState level - graceful shutdown in progress");
+            return Err(Box::<dyn Error + Send + Sync>::from(
+                "Shutdown in progress - no new transactions allowed"
+            ));
+        }
+        
         // Verify graph is open
         if !self.is_graph_open(graph_id) {
             return Err(Box::<dyn Error + Send + Sync>::from(
@@ -413,6 +427,61 @@ impl AppState {
         // Complete transaction based on result
         coordinator.complete_transaction(&tx_id, result).await
             .map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)
+    }
+    
+    /// Initiate graceful shutdown across all graph transaction coordinators
+    /// Returns the total count of active transactions across all graphs
+    pub async fn initiate_graceful_shutdown(&self) -> usize {
+        // Set the local shutdown flag to prevent new transactions
+        self.shutdown_initiated.store(true, Ordering::Release);
+        
+        let mut total_active = 0;
+        
+        // Initiate shutdown on all transaction coordinators
+        let resources = self.graph_resources.read().await;
+        for (graph_id, graph_resources) in resources.iter() {
+            let active_count = graph_resources.coordinator.initiate_shutdown().await;
+            if active_count > 0 {
+                info!("Graph {} has {} active transactions", graph_id, active_count);
+            }
+            total_active += active_count;
+        }
+        
+        if total_active > 0 {
+            info!("Total active transactions across all graphs: {}", total_active);
+        }
+        
+        total_active
+    }
+    
+    /// Wait for all transactions to complete across all graphs
+    /// Returns true if all completed, false if timeout
+    pub async fn wait_for_transactions(&self, timeout: Duration) -> bool {
+        let resources = self.graph_resources.read().await;
+        
+        // Create futures for waiting on each coordinator
+        let mut wait_futures = Vec::new();
+        for graph_resources in resources.values() {
+            let coordinator = Arc::clone(&graph_resources.coordinator);
+            wait_futures.push(async move {
+                coordinator.wait_for_completion(timeout).await
+            });
+        }
+        drop(resources);
+        
+        // Wait for all coordinators - all must complete for success
+        let results = futures_util::future::join_all(wait_futures).await;
+        results.iter().all(|&completed| completed)
+    }
+    
+    /// Force flush all transaction coordinators for immediate shutdown
+    pub async fn force_flush_transactions(&self) {
+        let resources = self.graph_resources.read().await;
+        for (graph_id, graph_resources) in resources.iter() {
+            if let Err(e) = graph_resources.coordinator.force_shutdown().await {
+                error!("Failed to force flush transaction log for graph {}: {}", graph_id, e);
+            }
+        }
     }
     
 }

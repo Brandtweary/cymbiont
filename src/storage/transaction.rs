@@ -21,9 +21,11 @@
 
 use crate::storage::transaction_log::{Operation, Transaction, TransactionLog, TransactionLogError, TransactionState};
 use std::sync::Arc;
-use tokio::sync::RwLock;
-use std::collections::HashMap;
-use tracing::{warn, error};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::sync::{RwLock, Notify};
+use std::collections::{HashMap, HashSet};
+use std::time::Duration;
+use tracing::{warn, error, info};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -36,6 +38,9 @@ pub enum TransactionError {
     
     #[error("Operation failed: {0}")]
     OperationFailed(String),
+    
+    #[error("Shutdown in progress - no new transactions allowed")]
+    ShutdownInProgress,
 }
 
 pub type Result<T> = std::result::Result<T, TransactionError>;
@@ -43,6 +48,9 @@ pub type Result<T> = std::result::Result<T, TransactionError>;
 pub struct TransactionCoordinator {
     log: Arc<TransactionLog>,
     pending_operations: Arc<RwLock<HashMap<String, String>>>, // content_hash -> transaction_id
+    active_transactions: Arc<RwLock<HashSet<String>>>, // All active transaction IDs
+    shutdown_requested: Arc<AtomicBool>,
+    active_count_notify: Arc<Notify>,
 }
 
 impl TransactionCoordinator {
@@ -50,6 +58,9 @@ impl TransactionCoordinator {
         Self {
             log,
             pending_operations: Arc::new(RwLock::new(HashMap::new())),
+            active_transactions: Arc::new(RwLock::new(HashSet::new())),
+            shutdown_requested: Arc::new(AtomicBool::new(false)),
+            active_count_notify: Arc::new(Notify::new()),
         }
     }
     
@@ -68,6 +79,12 @@ impl TransactionCoordinator {
             pending.insert(content_hash.clone(), tx_id.clone());
         }
         
+        // Add to active transactions set
+        {
+            let mut active = self.active_transactions.write().await;
+            active.insert(tx_id.clone());
+        }
+        
         self.log.append_transaction(transaction)?;
         Ok(tx_id)
     }
@@ -81,6 +98,17 @@ impl TransactionCoordinator {
             pending.remove(content_hash);
         }
         
+        // Remove from active transactions and check if shutdown should complete
+        {
+            let mut active = self.active_transactions.write().await;
+            active.remove(tx_id);
+            
+            // If shutdown requested and no more active transactions, notify
+            if self.shutdown_requested.load(Ordering::Acquire) && active.is_empty() {
+                self.active_count_notify.notify_waiters();
+            }
+        }
+        
         self.log.update_transaction_state(tx_id, TransactionState::Committed)?;
         Ok(())
     }
@@ -92,6 +120,17 @@ impl TransactionCoordinator {
         if let Some(content_hash) = &transaction.content_hash {
             let mut pending = self.pending_operations.write().await;
             pending.remove(content_hash);
+        }
+        
+        // Remove from active transactions and check if shutdown should complete
+        {
+            let mut active = self.active_transactions.write().await;
+            active.remove(tx_id);
+            
+            // If shutdown requested and no more active transactions, notify
+            if self.shutdown_requested.load(Ordering::Acquire) && active.is_empty() {
+                self.active_count_notify.notify_waiters();
+            }
         }
         
         // Update transaction with error message
@@ -112,6 +151,12 @@ impl TransactionCoordinator {
     
     /// Create a transaction with deduplication check
     pub async fn create_transaction(&self, operation: Operation) -> Result<String> {
+        // Check if shutdown is in progress
+        if self.shutdown_requested.load(Ordering::Acquire) {
+            warn!("Transaction rejected - graceful shutdown in progress");
+            return Err(TransactionError::ShutdownInProgress);
+        }
+        
         // Check for duplicate content if applicable
         if let Operation::CreateBlock { content, .. } | Operation::UpdateBlock { content, .. } = &operation {
             let hash = compute_content_hash(content);
@@ -171,6 +216,50 @@ impl TransactionCoordinator {
         }
         
         Ok(recoverable)
+    }
+    
+    /// Initiate graceful shutdown - no new transactions will be accepted
+    /// Returns the count of currently active transactions
+    pub async fn initiate_shutdown(&self) -> usize {
+        self.shutdown_requested.store(true, Ordering::Release);
+        let active = self.active_transactions.read().await;
+        let count = active.len();
+        if count > 0 {
+            info!("Shutdown initiated for TransactionCoordinator with {} active transactions", count);
+        }
+        count
+    }
+    
+    /// Wait for all active transactions to complete or timeout
+    /// Returns true if all completed, false if timeout
+    pub async fn wait_for_completion(&self, timeout: Duration) -> bool {
+        let active_count = {
+            let active = self.active_transactions.read().await;
+            active.len()
+        };
+        
+        if active_count == 0 {
+            return true;
+        }
+        
+        // Wait for notification or timeout
+        match tokio::time::timeout(timeout, self.active_count_notify.notified()).await {
+            Ok(_) => {
+                info!("All transactions completed");
+                true
+            }
+            Err(_) => {
+                let remaining = self.active_transactions.read().await.len();
+                warn!("Timeout waiting for transactions - {} still active", remaining);
+                false
+            }
+        }
+    }
+    
+    /// Force shutdown - immediately flush transaction log
+    pub async fn force_shutdown(&self) -> Result<()> {
+        error!("Force shutdown requested - flushing transaction log");
+        self.log.close().await.map_err(|e| e.into())
     }
 }
 

@@ -104,6 +104,7 @@
 //! - `TestServer::start()` - Start server mode and wait for HTTP ready
 //! - `TestServer::start_with_args()` - Start with custom CLI arguments
 //! - `TestServer::shutdown()` - Graceful shutdown with SIGINT
+//! - `TestServer::send_sigint()` - Send SIGINT without waiting
 //! - `TestServer::force_kill()` - Immediate termination with SIGKILL
 //! - `TestServer::wait_for_completion()` - Wait for natural process exit
 //! 
@@ -489,6 +490,25 @@ impl TestServer {
     #[allow(dead_code)] // TODO: Remove when crash recovery test is implemented
     pub fn pid(&self) -> u32 {
         self.process.id()
+    }
+    
+    /// Send SIGINT to the server process (same as Ctrl+C)
+    pub fn send_sigint(&mut self) {
+        let pid = self.process.id();
+        
+        // Send SIGINT to the process
+        #[cfg(unix)]
+        {
+            let _ = Command::new("kill")
+                .args(&["-2", &pid.to_string()])
+                .status();
+        }
+        
+        #[cfg(not(unix))]
+        {
+            // On non-Unix, just kill the process
+            let _ = self.process.kill();
+        }
     }
 }
 

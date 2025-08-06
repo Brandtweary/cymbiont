@@ -64,3 +64,8 @@ fn test_mixed_open_closed_graphs() {
 fn test_open_graph_recovery() {
     crash_recovery::test_open_graph_recovery();
 }
+
+#[test]
+fn test_graceful_shutdown_completes_transactions() {
+    crash_recovery::test_graceful_shutdown_completes_transactions();
+}

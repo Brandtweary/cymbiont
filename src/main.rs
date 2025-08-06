@@ -45,7 +45,7 @@
 
 use std::error::Error;
 use clap::Parser;
-use tracing::{info, error, warn};
+use tracing::{info, error};
 
 // Internal modules
 mod app_state;

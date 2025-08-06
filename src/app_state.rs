@@ -249,10 +249,10 @@ impl AppState {
         // - Create new empty graph if doesn't exist
         self.get_or_create_graph_manager(graph_id).await?;
         
-        // Debug assertion to check we're not already holding a lock
+        // Debug assertion to fail fast if another thread holds the write lock
         debug_assert!(
-            self.graph_registry.try_read().is_ok(),
-            "Attempting to write to registry while already holding a lock!"
+            self.graph_registry.try_write().is_ok(),
+            "Registry write lock unavailable - another thread may be holding it"
         );
         
         // Update registry (single source of truth)
@@ -289,10 +289,10 @@ impl AppState {
         drop(resources);
         
         // Step 4: Update registry (single source of truth)
-        // Debug assertion to check we're not already holding a lock
+        // Debug assertion to fail fast if another thread holds the write lock
         debug_assert!(
-            self.graph_registry.try_read().is_ok(),
-            "Attempting to write to registry while already holding a lock!"
+            self.graph_registry.try_write().is_ok(),
+            "Registry write lock unavailable - another thread may be holding it"
         );
         
         let mut registry = self.graph_registry.write()

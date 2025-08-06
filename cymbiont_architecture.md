@@ -118,6 +118,7 @@ cymbiont/
 ### storage/graph_registry.rs
 **Purpose**: Multi-graph UUID tracking and management with open/closed state  
 **Key types**: Uses `Uuid` type throughout with custom JSON serialization
+**Concurrency**: Uses `Arc<RwLock<GraphRegistry>>` with development-time contention detection
 **Key operations**: 
 - `register_graph()`, `remove_graph()` - graph lifecycle
 - `open_graph()`, `close_graph()` - explicit state management (replaces switch_graph)
@@ -126,6 +127,7 @@ cymbiont/
 - `ensure_graph_open()` - startup logic to guarantee at least one open graph
 **Data structure**: Tracks `open_graphs: HashSet<Uuid>` instead of single active_graph_id
 **Persistence**: Open graph state persists across restarts for automatic recovery
+**Safety pattern**: Write operations use `debug_assert!(registry.try_write().is_ok())` as tripwires to detect lock contention during development. These can be removed after profiling if some contention is acceptable, but never preemptively.
 
 ### server/server.rs
 **Purpose**: Server-specific setup and HTTP/WebSocket configuration  

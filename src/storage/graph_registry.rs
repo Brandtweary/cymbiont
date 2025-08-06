@@ -38,6 +38,20 @@
 //! The registry tracks open graphs and persists this state across restarts,
 //! enabling automatic recovery of all previously open graphs on startup.
 //!
+//! ## Concurrency Safety
+//!
+//! The GraphRegistry is accessed through `Arc<RwLock<GraphRegistry>>` with development-time
+//! contention detection:
+//! 
+//! - **Write Pattern**: Use `debug_assert!(registry.try_write().is_ok())` before acquiring write locks
+//! - **Purpose**: Acts as a tripwire to detect lock contention during development, causing fast failure instead of mysterious hangs
+//! - **Scope Management**: Keep lock scopes minimal and never hold both registry and graph_resources locks simultaneously
+//! 
+//! **Important**: The debug assertions are tripwires for investigation, not concrete walls. 
+//! If profiling shows that some degree of lock contention is acceptable for your use case, 
+//! the assertions can be removed. However, this decision must be made after profiling and 
+//! measuring actual performance impact, never preemptively.
+//!
 //! ## Data Directory Structure
 //!
 //! ```

@@ -124,7 +124,7 @@ use crate::{
 };
 use std::sync::Arc;
 use std::collections::HashMap;
-use tracing::{warn, error, info, debug};
+use tracing::{warn, error, info};
 use thiserror::Error;
 use serde_json::json;
 use async_trait::async_trait;
@@ -591,10 +591,10 @@ impl GraphOperationsExt for Arc<AppState> {
     ) -> Result<serde_json::Value> {
         // Register the graph in the registry
         let graph_info = {
-            // Debug assertion to check we're not already holding a lock
+            // Debug assertion to fail fast if another thread holds the write lock
             debug_assert!(
-                self.graph_registry.try_read().is_ok(),
-                "Attempting to write to registry while already holding a lock!"
+                self.graph_registry.try_write().is_ok(),
+                "Registry write lock unavailable - another thread may be holding it"
             );
             
             let mut registry = self.graph_registry.write()
@@ -636,10 +636,10 @@ impl GraphOperationsExt for Arc<AppState> {
         
         // Remove from registry (this also archives the data)
         {
-            // Debug assertion to check we're not already holding a lock
+            // Debug assertion to fail fast if another thread holds the write lock
             debug_assert!(
-                self.graph_registry.try_read().is_ok(),
-                "Attempting to write to registry while already holding a lock!"
+                self.graph_registry.try_write().is_ok(),
+                "Registry write lock unavailable - another thread may be holding it"
             );
             
             let mut registry = self.graph_registry.write()

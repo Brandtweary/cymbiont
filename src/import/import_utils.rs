@@ -69,10 +69,10 @@ pub async fn import_logseq_graph(
     
     // Register the graph with the registry and get its ID
     let graph_id = {
-        // Debug assertion to check we're not already holding a lock
+        // Debug assertion to fail fast if another thread holds the write lock
         debug_assert!(
-            app_state.graph_registry.try_read().is_ok(),
-            "Attempting to write to registry while already holding a lock!"
+            app_state.graph_registry.try_write().is_ok(),
+            "Registry write lock unavailable - another thread may be holding it"
         );
         
         let mut registry = app_state.graph_registry.write()

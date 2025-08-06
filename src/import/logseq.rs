@@ -4,7 +4,7 @@ use std::path::Path;
 use chrono::Utc;
 use regex::Regex;
 use serde_json::json;
-use tracing::{info, warn};
+use tracing::{info, error};
 use super::pkm_data::{PKMBlockData, PKMPageData, PKMReference};
 use super::{ImportError, Result};
 use super::reference_resolver::resolve_block_references;

@@ -1,0 +1,3 @@
+[submodule "autodebugger"]
+	path = autodebugger
+	url = https://github.com/Brandtweary/autodebugger.git

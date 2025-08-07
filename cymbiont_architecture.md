@@ -36,17 +36,18 @@ cymbiont/
 │   │   ├── knowledge_graph.json   # Serialized petgraph
 │   │   └── transaction_log/       # Per-graph WAL database
 │   └── archived_graphs/           # Deleted graphs archive
-└── tests/                         # Integration tests - see tests/CLAUDE.md
-    ├── common/                    # Shared test utilities
-    │   ├── mod.rs                 # Test environment setup
-    │   ├── test_harness.rs        # TestServer lifecycle management
-    │   └── graph_validation.rs    # Automated graph state validation
-    └── integration/               # Integration test suite (single binary)
-        ├── main.rs                # Test entry point
-        ├── crash_recovery.rs      # Transaction recovery tests
-        ├── http_logseq_import.rs  # HTTP API tests
-        ├── logseq_import.rs       # CLI import tests
-        └── websocket_commands.rs  # WebSocket tests
+├── tests/                         # Integration tests - see tests/CLAUDE.md
+│   ├── common/                    # Shared test utilities
+│   │   ├── mod.rs                 # Test environment setup
+│   │   ├── test_harness.rs        # TestServer lifecycle management
+│   │   └── graph_validation.rs    # Automated graph state validation
+│   └── integration/               # Integration test suite (single binary)
+│       ├── main.rs                # Test entry point
+│       ├── crash_recovery.rs      # Transaction recovery tests
+│       ├── http_logseq_import.rs  # HTTP API tests
+│       ├── logseq_import.rs       # CLI import tests
+│       └── websocket_commands.rs  # WebSocket tests
+└── autodebugger/                  # Git submodule: LLM developer utilities toolbag
 ```
 
 ## Module Requirements and Data Flow
@@ -321,3 +322,7 @@ The shutdown sequence runs `cleanup_and_save()` to close WebSocket connections, 
 3. Recovery mechanism: Operations store full API parameters, replay calls exact same methods
 4. Transaction states: Active → Committed (success) or Aborted (failure)
 5. Open graphs persist across restarts: Registry tracks which graphs were open for automatic recovery
+
+### autodebugger/
+**Purpose**: Git submodule providing LLM-oriented developer utilities  
+**Vision**: Toolbag for automating development tasks that are challenging for LLMs, such as validating documentation consistency, checking log verbosity levels, and running CI validation checks. Currently provides basic command execution wrappers and includes a planned CI validation framework for automated code quality checks (cargo check/test/clippy, debug macro detection, TODO scanning).

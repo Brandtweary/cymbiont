@@ -57,6 +57,7 @@ env RUST_LOG=debug cargo test -- --nocapture 2>&1 | tee test_output.log  # Captu
     - **auth.rs**: Authentication system with token generation and validation
     - **server.rs**: HTTP/WebSocket server setup and configuration
 - **tests/**: Test binaries (e.g. integration tests) - see `tests/CLAUDE.md` for test harness details
+- **autodebugger/**: Git submodule - LLM developer utilities for CI validation and code quality checks
 - **.gitignore**: Git ignore patterns
 - **.gitmodules**: Git submodule configuration
 - **Cargo.toml**: Dependencies and metadata

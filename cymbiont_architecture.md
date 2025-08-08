@@ -326,3 +326,9 @@ The shutdown sequence runs `cleanup_and_save()` to close WebSocket connections, 
 ### autodebugger/
 **Purpose**: Git submodule providing LLM-oriented developer utilities  
 **Features**: Automated log verbosity detection via tracing Layer, command execution wrappers for structured results, and utilities that address common pain points in LLM-assisted development. The VerbosityCheckLayer automatically monitors log output and warns when applications exceed reasonable thresholds (50/100/200 logs for INFO/DEBUG/TRACE levels).
+
+**Usage Examples**:
+```bash
+autodebugger remove-debug              # Remove all debug! calls from current directory
+autodebugger remove-debug src/         # Target specific directory
+```

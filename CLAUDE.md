@@ -80,3 +80,6 @@ env RUST_LOG=debug cargo test -- --nocapture 2>&1 | tee test_output.log  # Captu
 - **WARN**: Use for problematic behavior that can be fully recovered from, e.g. an invalid parameter which gracefully falls back to a default value
 - **ERROR**: Use for any true software bugs - when in doubt whether something should be warn vs error, choose error
 - **TRACE**: Low-level implementation details worth preserving (e.g. "Entering function X", "Cache hit for key Y", "Parsed N bytes")
+
+### Autodebugger Commands
+- **Remove debug! calls**: `autodebugger remove-debug` (default: targets src/ and tests/ directories)

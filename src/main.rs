@@ -48,7 +48,7 @@
 
 use std::error::Error;
 use clap::Parser;
-use tracing::{info, error, warn, debug};
+use tracing::{info, error, warn, trace};
 
 // Internal modules
 mod app_state;
@@ -300,7 +300,7 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
     
     // Force exit because sled/tokio threads won't terminate
     // This is the recommended workaround for sled issue #1234
-    error!("FORCING PROCESS EXIT NOW");
+    trace!("Forcing process exit (sled workaround)");
     std::process::exit(0)
 }
 

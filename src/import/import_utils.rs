@@ -110,7 +110,6 @@ pub async fn import_logseq_graph(
         
         let mut errors = Vec::new();
         
-        info!("📝 Importing pages...");
         let mut page_count = 0;
         for page in pages {
             match page.apply_to_graph(&mut *graph_manager) {
@@ -121,14 +120,8 @@ pub async fn import_logseq_graph(
                     errors.push(err_msg);
                 }
             }
-            
-            // Progress indicator every 10 pages
-            if page_count % 10 == 0 {
-                info!("  Imported {} pages...", page_count);
-            }
         }
         
-        info!("📝 Importing blocks...");
         let mut block_count = 0;
         for block in blocks {
             match block.apply_to_graph(&mut *graph_manager) {
@@ -139,27 +132,19 @@ pub async fn import_logseq_graph(
                     errors.push(err_msg);
                 }
             }
-            
-            // Progress indicator every 50 blocks
-            if block_count % 50 == 0 {
-                info!("  Imported {} blocks...", block_count);
-            }
         }
         
         // Re-enable auto-save and force save
         graph_manager.enable_auto_save();
         
-        info!("💾 Saving graph to disk...");
         graph_manager.save_graph()
             .map_err(|e| format!("Failed to save imported graph: {}", e))?;
-        
-        info!("✅ Successfully imported {} pages and {} blocks", page_count, block_count);
         
         // Return the collected data
         (page_count, block_count, errors)
     };
     
-    info!("🎉 Import complete!");
+    info!("✅ Imported {} pages and {} blocks", page_count, block_count);
     
     // Return the import result
     Ok(ImportResult {

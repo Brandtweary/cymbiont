@@ -4,7 +4,7 @@ use std::path::Path;
 use chrono::Utc;
 use regex::Regex;
 use serde_json::json;
-use tracing::{info, error};
+use tracing::error;
 use super::pkm_data::{PKMBlockData, PKMPageData, PKMReference};
 use super::{ImportError, Result};
 use super::reference_resolver::resolve_block_references;
@@ -34,14 +34,12 @@ pub fn import_graph(logseq_dir: &Path) -> Result<(Vec<PKMPageData>, Vec<PKMBlock
     // Import pages
     let pages_dir = logseq_dir.join("pages");
     if pages_dir.exists() {
-        info!("Importing pages from {:?}", pages_dir);
         import_directory(&pages_dir, &mut pages, &mut blocks, false)?;
     }
     
     // Import journals
     let journals_dir = logseq_dir.join("journals");
     if journals_dir.exists() {
-        info!("Importing journals from {:?}", journals_dir);
         import_directory(&journals_dir, &mut pages, &mut blocks, true)?;
     }
     
@@ -63,7 +61,6 @@ pub fn import_graph(logseq_dir: &Path) -> Result<(Vec<PKMPageData>, Vec<PKMBlock
         block.reference_content = Some(expanded_content);
     }
     
-    info!("Import complete: {} pages, {} blocks", pages.len(), blocks.len());
     Ok((pages, blocks))
 }
 
@@ -98,8 +95,6 @@ fn import_file(
     let page_name = path.file_stem()
         .and_then(|s| s.to_str())
         .ok_or_else(|| ImportError::InvalidFormat("Invalid filename".to_string()))?;
-    
-    info!("Importing page: {}", page_name);
     
     // Parse the file into blocks
     let logseq_blocks = parse_logseq_file(&content)?;

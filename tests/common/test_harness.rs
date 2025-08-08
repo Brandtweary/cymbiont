@@ -150,7 +150,9 @@ use std::net::TcpStream;
 #[path = "../../src/logging.rs"]
 mod logging;
 
-use self::logging::{create_base_env_filter, create_subscriber_builder};
+use self::logging::init_logging;
+use autodebugger::VerbosityCheckLayer;
+use std::sync::Mutex;
 
 // Global counter for unique test directories
 static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -158,12 +160,19 @@ static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 // Ensure tracing is initialized only once
 static INIT: Once = Once::new();
 
+// Global storage for verbosity layer to check at test completion
+static VERBOSITY_LAYER: Mutex<Option<VerbosityCheckLayer>> = Mutex::new(None);
+
 /// Initialize test tracing
 fn init_test_tracing() {
     INIT.call_once(|| {
         // Use RUST_LOG if set, otherwise default to warn for tests
-        let env_filter = create_base_env_filter("warn");
-        create_subscriber_builder(env_filter).init();
+        let verbosity_layer = init_logging(Some("warn"));
+        
+        // Store the layer for later checking
+        if let Ok(mut guard) = VERBOSITY_LAYER.lock() {
+            *guard = Some(verbosity_layer);
+        }
     });
 }
 
@@ -233,8 +242,23 @@ pub fn get_cymbiont_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_cymbiont"))
 }
 
+/// Check test verbosity and report if excessive
+fn check_test_verbosity() {
+    if let Ok(guard) = VERBOSITY_LAYER.lock() {
+        if let Some(ref layer) = *guard {
+            if let Some(report) = layer.check_and_report() {
+                use tracing::warn;
+                warn!("{}", report);
+            }
+        }
+    }
+}
+
 /// Clean up test environment after tests
 pub fn cleanup_test_env(test_env: TestEnv) {
+    // Check log verbosity before cleanup
+    check_test_verbosity();
+    
     // Check if KEEP_TEST_DATA environment variable is set
     if env::var("KEEP_TEST_DATA").is_ok() {
         use tracing::info;

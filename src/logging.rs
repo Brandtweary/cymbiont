@@ -56,10 +56,13 @@
  * These utilities can be run via CLI flags on the backend server.
  */
 
+use autodebugger::VerbosityCheckLayer;
 use tracing::{Level};
 use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::{FmtContext, FormatEvent, FormatFields};
 use tracing_subscriber::registry::LookupSpan;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
 /// Custom formatter that conditionally shows file:line only for ERROR and WARN levels
@@ -128,21 +131,23 @@ pub fn create_base_env_filter(default_level: &str) -> EnvFilter {
         .add_directive("pagecache=warn".parse().unwrap())
 }
 
-/// Create a configured subscriber builder with our custom formatter
-/// This returns a builder that can be further customized before init()
-pub fn create_subscriber_builder(env_filter: EnvFilter) -> tracing_subscriber::fmt::SubscriberBuilder<
-    tracing_subscriber::fmt::format::DefaultFields,
-    ConditionalLocationFormatter,
-    tracing_subscriber::EnvFilter,
-> {
-    tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .event_format(ConditionalLocationFormatter)
-}
-
-/// Initialize the tracing subscriber with custom formatting
-#[allow(dead_code)] // TODO: Remove once we determine if this is needed vs create_subscriber_builder
-pub fn init_logging() {
-    let env_filter = create_base_env_filter("info");
-    create_subscriber_builder(env_filter).init();
+/// Initialize the tracing subscriber with custom formatting and verbosity checking
+/// Returns a handle to the VerbosityCheckLayer for later checking
+/// 
+/// # Arguments
+/// * `default_level` - Optional default log level (e.g., "info", "warn"). If None, defaults to "info"
+pub fn init_logging(default_level: Option<&str>) -> VerbosityCheckLayer {
+    let default = default_level.unwrap_or("info");
+    let env_filter = create_base_env_filter(default);
+    let verbosity_layer = VerbosityCheckLayer::new();
+    let verbosity_clone = verbosity_layer.clone();
+    
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(tracing_subscriber::fmt::layer()
+            .event_format(ConditionalLocationFormatter))
+        .with(verbosity_layer)
+        .init();
+    
+    verbosity_clone
 }

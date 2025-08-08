@@ -11,6 +11,7 @@ license = "AGPL-3.0"
 
 
 [dependencies]
+autodebugger = { path = "autodebugger" }
 async-trait = "0.1"
 serde = { version = "1.0.193", features = ["derive"] }
 serde_json = "1.0.108"

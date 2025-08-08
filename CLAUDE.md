@@ -8,6 +8,7 @@ cargo build                      # Build cymbiont
 cargo test                       # Run full test suite (preferred - only filter by test during active troubleshooting)
 RUST_LOG=debug cargo run         # Run cymbiont with debug logging (do not change duration or set a timeout unless user requests it)
 env RUST_LOG=debug cargo test -- --nocapture 2>&1 | tee test_output.log  # Capture console output to file; do not filter before piping the full output
+# NEVER: cargo run 2>&1 | tail   # WRONG: '2' becomes an argument to cargo! Plus we have verbosity checks now, just run without filtering
 ```
 
 ## CLI Flags
@@ -57,7 +58,7 @@ env RUST_LOG=debug cargo test -- --nocapture 2>&1 | tee test_output.log  # Captu
     - **auth.rs**: Authentication system with token generation and validation
     - **server.rs**: HTTP/WebSocket server setup and configuration
 - **tests/**: Test binaries (e.g. integration tests) - see `tests/CLAUDE.md` for test harness details
-- **autodebugger/**: Git submodule - LLM developer utilities for CI validation and code quality checks
+- **autodebugger/**: Git submodule - LLM developer utilities with automated log verbosity detection
 - **.gitignore**: Git ignore patterns
 - **.gitmodules**: Git submodule configuration
 - **Cargo.toml**: Dependencies and metadata

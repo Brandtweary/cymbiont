@@ -73,7 +73,6 @@ pub async fn save_auth_token(data_dir: &Path, token: &str) -> Result<(), std::io
         tokio::fs::set_permissions(&token_path, permissions).await?;
     }
     
-    info!("🔐 Authentication token saved to: {}", token_path.display());
     Ok(())
 }
 
@@ -99,20 +98,10 @@ pub async fn initialize_auth(
     
     // Always generate new token on startup for security (token rotation)
     // Only skip if user has explicitly configured a token
-    info!("🔐 Generating new authentication token (token rotation enabled)");
-    
-    // Generate new token
     let new_token = generate_auth_token();
     save_auth_token(&app_state.data_dir, &new_token).await?;
     
-    info!("🔐 Authentication token: {}", new_token);
-    info!("📁 Token saved to: {}/auth_token", app_state.data_dir.display());
-    info!("");
-    info!("To connect:");
-    info!("- Automated tools: Read token from {}/auth_token", app_state.data_dir.display());
-    info!("- Manual: Use the token above");
-    info!("");
-    info!("Note: Token rotates on each server restart for security");
+    info!("🔐 Auth token: {} (saved to {}/auth_token)", new_token, app_state.data_dir.display());
     
     Ok(new_token)
 }

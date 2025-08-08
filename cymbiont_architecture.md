@@ -325,4 +325,4 @@ The shutdown sequence runs `cleanup_and_save()` to close WebSocket connections, 
 
 ### autodebugger/
 **Purpose**: Git submodule providing LLM-oriented developer utilities  
-**Vision**: Toolbag for automating development tasks that are challenging for LLMs, such as validating documentation consistency, checking log verbosity levels, and running CI validation checks. Currently provides basic command execution wrappers and includes a planned CI validation framework for automated code quality checks (cargo check/test/clippy, debug macro detection, TODO scanning).
+**Features**: Automated log verbosity detection via tracing Layer, command execution wrappers for structured results, and utilities that address common pain points in LLM-assisted development. The VerbosityCheckLayer automatically monitors log output and warns when applications exceed reasonable thresholds (50/100/200 logs for INFO/DEBUG/TRACE levels).

@@ -48,7 +48,7 @@
 
 use std::error::Error;
 use clap::Parser;
-use tracing::{info, error, warn};
+use tracing::{info, error, warn, debug};
 
 // Internal modules
 mod app_state;
@@ -115,9 +115,8 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
     // Parse command line arguments
     let args = Args::parse();
     
-    // Initialize logging
-    init_logging();
-    
+    // Initialize logging with verbosity checking
+    let verbosity_layer = init_logging(None);
     
     // Track start time for total runtime measurement
     let start_time = std::time::Instant::now();
@@ -293,6 +292,11 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
     
     let total_runtime = start_time.elapsed();
     info!("💫 Total runtime: {:.2}s", total_runtime.as_secs_f64());
+    
+    // Check log verbosity and report if excessive
+    if let Some(report) = verbosity_layer.check_and_report() {
+        warn!("{}", report);
+    }
     
     // Force exit because sled/tokio threads won't terminate
     // This is the recommended workaround for sled issue #1234

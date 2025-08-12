@@ -51,6 +51,7 @@ use clap::Parser;
 use tracing::{info, error, warn, trace};
 
 // Internal modules
+mod agent;
 mod app_state;
 mod config;
 mod graph_manager;

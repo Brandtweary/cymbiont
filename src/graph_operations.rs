@@ -1,4 +1,4 @@
-#![allow(dead_code)] // TODO: Remove when integrated with aichat-agent
+#![allow(dead_code)] // TODO: Remove when integrated with Ollama agent
 
 /**
  * Graph Operations Module - PKM Operations Extension Trait

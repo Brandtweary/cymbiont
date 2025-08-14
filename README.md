@@ -21,6 +21,7 @@ Cymbiont currently provides the core engine that makes this vision possible:
 - **🏗️ Robust Graph Storage**: Petgraph-based engine with typed nodes and edges
 - **🔄 ACID Transactions**: Write-ahead logging ensures data integrity  
 - **🗂️ Multi-Graph Support**: Isolated storage for different knowledge domains
+- **🤝 Multi-Agent Architecture**: Flexible graph-to-agent authorization system
 - **📥 Logseq Import**: Complete import system with reference resolution
 - **🌐 Real-time Updates**: WebSocket protocol for live synchronization
 - **🔌 HTTP API**: RESTful interface for data ingestion and querying
@@ -192,13 +193,30 @@ cargo run -- --server --config instance2.yaml
 ### All CLI Options
 
 ```bash
+# Basic options
 cargo run -- --help                        # View all options
 cargo run -- --data-dir ./custom           # Use custom data directory
 cargo run -- --config custom.yaml          # Use specific configuration file
-cargo run -- --import-logseq ~/Documents/notes  # Import Logseq graph
+
+# Server mode
 cargo run -- --server                      # Start HTTP/WebSocket server
 cargo run -- --server --duration 60        # Run server for 60 seconds
-# Use Ctrl+C to gracefully stop any server instance
+
+# Graph management
+cargo run -- --import-logseq ~/Documents/notes  # Import Logseq graph
+cargo run -- --delete-graph my-notes       # Delete a graph by name
+
+# Agent management
+cargo run -- --create-agent "Research Assistant" --agent-description "Handles research queries"
+cargo run -- --agent-info "Research Assistant"  # View specific agent
+cargo run -- --agent-info                  # Defaults to prime agent if not specified
+cargo run -- --delete-agent "Old Assistant"  # Delete by name
+cargo run -- --activate-agent 550e8400-e29b-41d4-a716-446655440000  # Activate by UUID
+cargo run -- --deactivate-agent "Research Assistant"  # Deactivate by name
+cargo run -- --authorize-agent "Research Assistant" --for-graph "my-notes"
+cargo run -- --deauthorize-agent "Research Assistant" --from-graph "old-notes"
+
+# Use Ctrl+C to gracefully stop any instance
 ```
 
 

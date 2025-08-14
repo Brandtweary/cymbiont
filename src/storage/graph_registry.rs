@@ -74,6 +74,9 @@ use chrono::{DateTime, Utc};
 use tracing::{info, error};
 use thiserror::Error;
 
+// Import shared UUID serialization utilities
+use crate::storage::registry_utils::{uuid_hashmap_serde, uuid_hashset_serde, uuid_vec_serde};
+
 /// Graph registry errors
 #[derive(Error, Debug)]
 pub enum GraphRegistryError {
@@ -105,82 +108,25 @@ pub struct GraphInfo {
     /// Optional description
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    
+    /// Agents authorized to access this graph (bidirectional tracking)
+    /// Managed by AgentRegistry, not GraphRegistry
+    #[serde(default, with = "uuid_vec_serde")]
+    pub authorized_agents: Vec<Uuid>,
 }
 
 /// Registry of all known graphs
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GraphRegistry {
-    /// Map of graph ID to graph info
+    /// Map of graph ID to graph info (public for AgentRegistry bidirectional tracking)
     #[serde(with = "uuid_hashmap_serde")]
-    graphs: HashMap<Uuid, GraphInfo>,
+    pub graphs: HashMap<Uuid, GraphInfo>,
     /// Currently open graph IDs (replaces active_graph_id)
     #[serde(default, with = "uuid_hashset_serde")]
     open_graphs: HashSet<Uuid>,
     /// Base data directory (not serialized)
     #[serde(skip)]
     data_dir: Option<PathBuf>,
-}
-
-/// Custom serialization for HashMap with UUID keys
-mod uuid_hashmap_serde {
-    use super::*;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use std::collections::HashMap;
-    
-    pub fn serialize<S>(map: &HashMap<Uuid, GraphInfo>, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let string_map: HashMap<String, &GraphInfo> = map
-            .iter()
-            .map(|(k, v)| (k.to_string(), v))
-            .collect();
-        string_map.serialize(serializer)
-    }
-    
-    pub fn deserialize<'de, D>(deserializer: D) -> std::result::Result<HashMap<Uuid, GraphInfo>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let string_map = HashMap::<String, GraphInfo>::deserialize(deserializer)?;
-        string_map
-            .into_iter()
-            .map(|(k, v)| {
-                Uuid::parse_str(&k)
-                    .map(|uuid| (uuid, v))
-                    .map_err(serde::de::Error::custom)
-            })
-            .collect()
-    }
-}
-
-/// Custom serialization for HashSet with UUID values
-mod uuid_hashset_serde {
-    use super::*;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use std::collections::HashSet;
-    
-    pub fn serialize<S>(set: &HashSet<Uuid>, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let string_vec: Vec<String> = set
-            .iter()
-            .map(|uuid| uuid.to_string())
-            .collect();
-        string_vec.serialize(serializer)
-    }
-    
-    pub fn deserialize<'de, D>(deserializer: D) -> std::result::Result<HashSet<Uuid>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let string_vec = Vec::<String>::deserialize(deserializer)?;
-        string_vec
-            .into_iter()
-            .map(|s| Uuid::parse_str(&s).map_err(serde::de::Error::custom))
-            .collect()
-    }
 }
 
 impl GraphRegistry {
@@ -234,6 +180,11 @@ impl GraphRegistry {
     
 
     /// Register a new knowledge graph
+    /// 
+    /// TODO: Add name uniqueness validation to prevent duplicate graph names.
+    /// Currently, multiple graphs can have the same name, which could cause
+    /// confusion when using name-based resolution. Consider rejecting duplicate
+    /// names or warning the user.
     pub fn register_graph(
         &mut self, 
         id: Option<Uuid>, 
@@ -265,6 +216,7 @@ impl GraphRegistry {
             created: Utc::now(),
             last_accessed: Utc::now(),
             description,
+            authorized_agents: Vec::new(),  // AgentRegistry will manage this
         };
 
         self.graphs.insert(graph_id, graph_info.clone());

@@ -63,12 +63,16 @@
 //! - Transaction rollback on any operation failure
 //! - Registry corruption recovery through backup restoration
 
-pub mod graph_registry;
-pub mod transaction_log;
-pub mod transaction;
+pub mod registry_utils;
+pub mod agent_persistence;
+pub mod agent_registry;
 pub mod graph_persistence;
+pub mod graph_registry;
+pub mod transaction;
+pub mod transaction_log;
 
 // Re-export commonly used types
 pub use graph_registry::GraphRegistry;
+pub use agent_registry::AgentRegistry;
 pub use transaction_log::{TransactionLog, Operation, Transaction, OperationExecutor};
 pub use transaction::TransactionCoordinator;

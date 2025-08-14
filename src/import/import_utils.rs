@@ -30,8 +30,10 @@
 
 use std::path::Path;
 use std::error::Error;
+use std::sync::Arc;
 use tracing::{info, error};
 use crate::app_state::AppState;
+use crate::graph_operations::GraphOperationsExt;
 use super::logseq;
 
 /// Result of a Logseq import operation
@@ -46,7 +48,7 @@ pub struct ImportResult {
 
 /// Import a Logseq graph into Cymbiont
 pub async fn import_logseq_graph(
-    app_state: &AppState,
+    app_state: &Arc<AppState>,
     logseq_path: &Path,
     custom_name: Option<String>,
 ) -> Result<ImportResult, Box<dyn Error + Send + Sync>> {
@@ -64,37 +66,21 @@ pub async fn import_logseq_graph(
             .to_string()
     });
     
-    // Use the resolved data directory from app state
-    let data_dir = &app_state.data_dir;
+    // Use the centralized create_graph function which handles:
+    // 1. Graph registration
+    // 2. Prime agent authorization
+    // 3. Graph manager creation
+    let graph_info = app_state.create_graph(
+        Some(graph_name.clone()),
+        Some(format!("Imported from: {}", logseq_path.display()))
+    ).await?;
     
-    // Register the graph with the registry and get its ID
-    let graph_id = {
-        // Debug assertion to fail fast if another thread holds the write lock
-        debug_assert!(
-            app_state.graph_registry.try_write().is_ok(),
-            "Registry write lock unavailable - another thread may be holding it"
-        );
-        
-        let mut registry = app_state.graph_registry.write()
-            .map_err(|e| format!("Failed to write graph registry: {}", e))?;
-        
-        let graph_info = registry.register_graph(
-            None,  // Let registry generate ID
-            Some(graph_name.clone()),
-            Some(format!("Imported from: {}", logseq_path.display())),
-            data_dir
-        )?;
-        
-        // Save the registry after creating the graph
-        registry.save()?;
-        
-        graph_info.id
-    };
+    let graph_id = uuid::Uuid::parse_str(
+        graph_info["id"].as_str()
+            .ok_or_else(|| "Graph ID not found in response")?
+    ).map_err(|e| format!("Invalid graph ID: {}", e))?;
     
     info!("📊 Using graph: {} ({})", graph_name, graph_id);
-    
-    // Create the graph manager if it doesn't exist
-    app_state.get_or_create_graph_manager(&graph_id).await?;
     
     // Import the data
     let (page_count, block_count, errors) = {

@@ -13,6 +13,7 @@ mod logseq_import;
 mod websocket_commands;
 mod freeze_mechanism;
 mod crash_recovery;
+mod agent_commands;
 
 // Re-export test functions with #[test] attribute
 #[test]
@@ -68,4 +69,14 @@ fn test_open_graph_recovery() {
 #[test]
 fn test_graceful_shutdown_completes_transactions() {
     crash_recovery::test_graceful_shutdown_completes_transactions();
+}
+
+#[test]
+fn test_agent_chat_commands() {
+    agent_commands::test_agent_chat_commands();
+}
+
+#[test]
+fn test_agent_admin_commands() {
+    agent_commands::test_agent_admin_commands();
 }

@@ -604,13 +604,24 @@ impl GraphOperationsExt for Arc<AppState> {
                 .map_err(|e| GraphOperationError::GraphError(format!("Failed to register graph: {}", e)))?
         };
         
-        // Save registry after creating new graph
+        // Authorize prime agent for the new graph
         {
-            let registry = self.graph_registry.read()
-                .map_err(|_| GraphOperationError::GraphError("Failed to read registry".into()))?;
             
-            registry.save()
-                .map_err(|e| GraphOperationError::GraphError(format!("Failed to save registry: {}", e)))?;
+            let mut agent_registry = self.agent_registry.write()
+                .map_err(|_| GraphOperationError::GraphError("Failed to write agent registry".into()))?;
+            let mut graph_registry = self.graph_registry.write()
+                .map_err(|_| GraphOperationError::GraphError("Failed to write graph registry".into()))?;
+            
+            agent_registry.authorize_prime_for_new_graph(&graph_info.id, &mut graph_registry)
+                .map_err(|e| GraphOperationError::GraphError(format!("Failed to authorize prime agent: {}", e)))?;
+            
+            
+            // Save both registries
+            agent_registry.save()
+                .map_err(|e| GraphOperationError::GraphError(format!("Failed to save agent registry: {}", e)))?;
+            graph_registry.save()
+                .map_err(|e| GraphOperationError::GraphError(format!("Failed to save graph registry: {}", e)))?;
+            
         }
         
         // Create graph manager for the new graph
@@ -861,4 +872,3 @@ mod tests {
         }
     }
 }
-

@@ -1,3 +1,44 @@
+#![allow(dead_code)] // TODO: Remove when agent integration is complete
+
+//! Knowledge Graph Tool Registry
+//!
+//! This module provides a registry of knowledge graph operations that can be
+//! invoked by LLM agents. It acts as a bridge between the agent layer and the
+//! graph operations layer, wrapping graph operations in a tool-friendly interface.
+//!
+//! ## Architecture
+//!
+//! The ToolRegistry maintains a collection of async functions that agents can call.
+//! Each tool is registered with a name and executes operations on the knowledge graph
+//! through the GraphOperationsExt trait. Tools handle parameter validation and error
+//! conversion to provide clean interfaces for agent consumption.
+//!
+//! ## Tool Categories
+//!
+//! ### Block Operations
+//! - `create_block`: Add new blocks with content, parent relationships, and properties
+//! - `update_block`: Modify existing block content
+//! - `delete_block`: Remove blocks from the graph
+//!
+//! ### Page Operations
+//! - `create_page`: Create new pages with optional properties
+//! - `delete_page`: Remove pages and their associated blocks
+//!
+//! ### Query Operations
+//! - `get_node`: Retrieve node information by ID
+//! - `query_bfs`: Breadth-first search traversal from a starting node
+//!
+//! ### Graph Management
+//! - `list_graphs`: Enumerate all available graphs
+//! - `open_graph`: Load a graph into memory
+//! - `close_graph`: Save and unload a graph from memory
+//!
+//! ## Usage
+//!
+//! The registry is initialized with an AppState reference and automatically
+//! registers all available tools. Agents invoke tools by name with JSON parameters,
+//! and the registry handles async execution and result formatting.
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::future::Future;

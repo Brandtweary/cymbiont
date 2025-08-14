@@ -5,11 +5,13 @@
   - **mod.rs**: Test environment setup (`setup_test_env()`, `cleanup_test_env()`)
   - **test_harness.rs**: `TestServer` lifecycle management
   - **graph_validation.rs**: Automated graph state validation for integration tests
+  - **agent_validation.rs**: Agent state and conversation validation for integration tests
 - **integration/**: Integration test suite (single binary for parallelism)
   - **main.rs**: Entry point - imports common utilities and test modules
   - **http_logseq_import.rs**: HTTP API import tests
   - **logseq_import.rs**: CLI import tests
   - **websocket_commands.rs**: WebSocket API tests
+  - **agent_commands.rs**: Agent chat and admin command tests
   - **freeze_mechanism.rs**: Freeze/unfreeze operation tests for deterministic testing
   - **crash_recovery.rs**: Transaction recovery tests for startup and graph switching
 
@@ -54,10 +56,26 @@
 - `expect_edge(source_id, target_id, edge_type)`: Track custom edge expectations (ParentChild, PageToBlock, etc.)
 - `validate_graph(data_dir, graph_id)`: Validate all expectations against persisted graph state
 
+### common/agent_validation.rs
+- `validate_agent_registry_schema(data_dir)`: Validate agent registry structure and return agent map
+- `AgentValidationFixture::new()`: Create fixture to track expected agent state and conversations
+- `expect_agent_created(id, name, is_prime)`: Track agent creation with prime status
+- `expect_agent_deleted/activated/deactivated(id)`: Track agent lifecycle changes
+- `expect_user_message/assistant_message(agent_id, pattern)`: Track conversation messages with pattern matching
+- `expect_chat_reset(agent_id)`: Clear expected conversation for an agent
+- `expect_prime_agent(prime_id)`: Helper to set up prime agent expectations
+- `expect_authorization/deauthorization(agent_id, graph_id)`: Track agent-graph authorization changes
+- `validate_all(data_dir)`: Validate all expectations against persisted agent state
+
+## MockLLM Testing
+MockLLM is the test LLM backend. Pass `echo` in AgentChat commands to control responses.
+Without echo, MockLLM returns a default response. The echo field flows through Message::User to MockLLM::complete().
+
 ## Key Concepts
 - Each test gets unique port (8888+), data directory, and config file via atomic counter
 - Tests run in parallel within the integration binary - ensure no shared state
 - Always use panic handler + cleanup pattern for proper teardown
+- Use tracing macros (debug!, trace!) for logging in tests, never println!/eprintln!
 - See `test_harness.rs` header docs for full usage example
 
 ## Running Tests

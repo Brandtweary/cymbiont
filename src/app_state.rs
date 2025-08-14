@@ -51,9 +51,10 @@ use tracing::{info, error, warn};
 use uuid::Uuid;
 
 use crate::{
+    agent::agent::Agent,
     graph_manager::GraphManager,
     config::{load_config, Config},
-    storage::{GraphRegistry, TransactionLog, TransactionCoordinator},
+    storage::{GraphRegistry, AgentRegistry, TransactionLog, TransactionCoordinator},
 };
 
 // Re-export the real WsConnection from server module
@@ -71,6 +72,11 @@ pub struct AppState {
     // Core graph management - bundled resources ensure consistency
     pub graph_resources: Arc<RwLock<HashMap<Uuid, GraphResources>>>,
     pub graph_registry: Arc<SyncRwLock<GraphRegistry>>,
+    
+    // Agent management - parallel to graph management
+    pub agents: Arc<RwLock<HashMap<Uuid, Agent>>>,  // Active agents
+    pub agent_registry: Arc<SyncRwLock<AgentRegistry>>,  // Agent lifecycle management
+    
     pub config: Config,
     pub data_dir: PathBuf,  // Resolved absolute path
     
@@ -129,8 +135,27 @@ impl AppState {
         
         let graph_registry = Arc::new(SyncRwLock::new(registry));
         
+        // Initialize agent registry
+        let agent_registry_path = data_dir.join("agent_registry.json");
+        let mut agent_registry = AgentRegistry::load_or_create(&agent_registry_path, &data_dir)
+            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Agent registry error: {e:?}")))?;
+        
+        // Ensure prime agent exists (creates it on first run)
+        agent_registry.ensure_default_agent()
+            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to ensure prime agent: {e:?}")))?;
+        
+        
+        // Save agent registry after potential prime agent creation
+        agent_registry.save()
+            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to save agent registry: {e:?}")))?;
+        
+        let agent_registry = Arc::new(SyncRwLock::new(agent_registry));
+        
         // Initialize graph resources map (managers + coordinators bundled)
         let graph_resources = Arc::new(RwLock::new(HashMap::new()));
+        
+        // Initialize agents map
+        let agents = Arc::new(RwLock::new(HashMap::new()));
         
         
         // Create WebSocket connections if server mode
@@ -150,6 +175,8 @@ impl AppState {
         let app_state = Arc::new(AppState {
             graph_resources,
             graph_registry,
+            agents,
+            agent_registry,
             config,
             data_dir: data_dir.clone(),
             ws_ready_tx: Mutex::new(None),
@@ -163,6 +190,36 @@ impl AppState {
         for graph_id in initial_open_graphs {
             app_state.get_or_create_graph_manager(&graph_id).await?;
             info!("Loaded open graph: {}", graph_id);
+        }
+        
+        // Load all active agents (ensure at least prime agent is active)
+        let initial_active_agents = {
+            let mut registry = app_state.agent_registry.write()
+                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to write agent registry: {}", e)))?;
+            
+            // If no agents are active, activate the prime agent
+            let active_agents = registry.get_active_agents();
+            if active_agents.is_empty() {
+                if let Some(prime_id) = registry.get_prime_agent_id() {
+                    info!("No agents active on startup, activating prime agent");
+                    registry.activate_agent(&prime_id)
+                        .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to activate prime agent: {e:?}")))?;
+                    // Save after activation
+                    registry.save()
+                        .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to save agent registry: {e:?}")))?;
+                }
+            }
+            
+            registry.get_active_agents()
+        };
+        
+        for agent_id in initial_active_agents {
+            if let Err(e) = app_state.get_or_load_agent(&agent_id).await {
+                error!("Failed to load agent {}: {}", agent_id, e);
+                // Continue loading other agents even if one fails
+            } else {
+                info!("Loaded active agent: {}", agent_id);
+            }
         }
         
         // Initialize authentication if in server mode
@@ -311,7 +368,112 @@ impl AppState {
         Ok(())
     }
     
+    // ========== Agent Management Methods (Parallel to Graph Methods) ==========
     
+    /// Get or load an agent for the given agent ID
+    /// 
+    /// Loads the agent from disk if not already in memory.
+    pub async fn get_or_load_agent(&self, agent_id: &Uuid) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let agents = self.agents.read().await;
+        
+        // Check if agent already loaded
+        if agents.contains_key(agent_id) {
+            return Ok(());
+        }
+        
+        // Drop read lock before acquiring write lock
+        drop(agents);
+        
+        // Acquire write lock to load agent
+        let mut agents = self.agents.write().await;
+        
+        // Double-check pattern - another thread may have loaded it
+        if agents.contains_key(agent_id) {
+            return Ok(());
+        }
+        
+        // Get agent info from registry
+        let agent_info = {
+            let registry = self.agent_registry.read()
+                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to read agent registry: {}", e)))?;
+            registry.get_agent(agent_id)
+                .ok_or_else(|| format!("Agent {} not found in registry", agent_id))?
+                .clone()
+        };
+        
+        // Load agent from disk
+        let agent = Agent::load(&agent_info.data_path)
+            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to load agent {}: {:?}", agent_id, e)))?;
+        
+        agents.insert(*agent_id, agent);
+        
+        Ok(())
+    }
+    
+    /// Activate an agent (load into memory and update registry)
+    /// 
+    /// This performs the following steps:
+    /// 1. Loads the agent from disk (or creates new if doesn't exist)
+    /// 2. Updates the registry to mark the agent as active
+    pub async fn activate_agent(&self, agent_id: &Uuid) -> Result<(), Box<dyn Error + Send + Sync>> {
+        // First ensure the agent is loaded
+        self.get_or_load_agent(agent_id).await?;
+        
+        // Debug assertion to fail fast if another thread holds the write lock
+        debug_assert!(
+            self.agent_registry.try_write().is_ok(),
+            "Agent registry write lock unavailable - another thread may be holding it"
+        );
+        
+        // Update registry (single source of truth)
+        let mut registry = self.agent_registry.write()
+            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to write agent registry: {}", e)))?;
+        registry.activate_agent(agent_id)
+            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to activate agent: {:?}", e)))?;
+        
+        Ok(())
+    }
+    
+    /// Deactivate an agent (save and unload from memory)
+    /// 
+    /// Mirrors close_graph() - saves before removing from memory
+    pub async fn deactivate_agent(&self, agent_id: &Uuid) -> Result<(), Box<dyn Error + Send + Sync>> {
+        // Get the agent to save
+        let mut agents = self.agents.write().await;
+        
+        if let Some(mut agent) = agents.remove(agent_id) {
+            // Save the agent before removing from memory
+            agent.save()
+                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to save agent before deactivation: {:?}", e)))?;
+            
+            info!("Saved and unloaded agent: {}", agent_id);
+        }
+        
+        drop(agents);
+        
+        // Debug assertion to fail fast if another thread holds the write lock
+        debug_assert!(
+            self.agent_registry.try_write().is_ok(),
+            "Agent registry write lock unavailable - another thread may be holding it"
+        );
+        
+        // Update registry (single source of truth)
+        let mut registry = self.agent_registry.write()
+            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to write agent registry: {}", e)))?;
+        registry.deactivate_agent(agent_id)
+            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to deactivate agent: {:?}", e)))?;
+        
+        Ok(())
+    }
+    
+    /// Check if an agent is active (loaded in memory)
+    pub fn is_agent_active(&self, agent_id: &Uuid) -> bool {
+        if let Ok(registry) = self.agent_registry.read() {
+            registry.is_agent_active(agent_id)
+        } else {
+            false
+        }
+    }
     
     /// Save all graphs and registry on shutdown
     pub async fn cleanup_and_save(&self) {
@@ -362,6 +524,27 @@ impl AppState {
                 error!("Failed to save graph registry: {}", e);
             } else {
                 info!("✅ Graph registry saved");
+            }
+        }
+        
+        // Save all active agents
+        let mut agents = self.agents.write().await;
+        for (agent_id, agent) in agents.iter_mut() {
+            match agent.save() {
+                Ok(_) => {
+                    info!("✅ Saved agent: {}", agent_id);
+                }
+                Err(e) => error!("Failed to save agent {}: {:?}", agent_id, e),
+            }
+        }
+        drop(agents);
+        
+        // Save agent registry
+        if let Ok(registry_guard) = self.agent_registry.read() {
+            if let Err(e) = registry_guard.save() {
+                error!("Failed to save agent registry: {}", e);
+            } else {
+                info!("✅ Agent registry saved");
             }
         }
     }

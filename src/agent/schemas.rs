@@ -1,3 +1,38 @@
+#![allow(dead_code)] // TODO: Remove when agent integration is complete
+
+//! Tool Schema Definitions for LLM Function Calling
+//!
+//! This module defines the schema structures used to describe tools to LLM providers.
+//! These schemas follow the format used by Ollama and other function-calling capable
+//! models, enabling agents to understand what tools are available and how to use them.
+//!
+//! ## Schema Structure
+//!
+//! Each tool is described by:
+//! - **Name**: Unique identifier for the tool
+//! - **Description**: Human-readable explanation of what the tool does
+//! - **Parameters**: JSON Schema describing the expected parameters
+//!
+//! The parameter schema includes:
+//! - **Properties**: Map of parameter names to their types and descriptions
+//! - **Required**: List of mandatory parameters
+//! - **Type**: Always "object" for tool parameters
+//!
+//! ## Usage
+//!
+//! These schemas are generated for each tool in the ToolRegistry and sent to the
+//! LLM provider when requesting completions. The LLM uses these schemas to understand
+//! which tools to call and how to format the parameters correctly.
+//!
+//! ## Compatibility
+//!
+//! The schema format is compatible with:
+//! - Ollama's tool calling interface
+//! - OpenAI's function calling format
+//! - Anthropic's tool use specification
+//!
+//! This ensures agents can work with multiple LLM providers without schema translation.
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

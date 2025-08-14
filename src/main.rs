@@ -95,7 +95,46 @@ struct Args {
     #[arg(long)]
     duration: Option<u64>,
     
+    // Agent admin commands
+    /// Create a new agent with the given name
+    #[arg(long, value_name = "NAME")]
+    create_agent: Option<String>,
     
+    /// Optional description for the new agent (used with --create-agent)
+    #[arg(long, value_name = "DESCRIPTION", requires = "create_agent")]
+    agent_description: Option<String>,
+    
+    /// Delete an agent by name or ID
+    #[arg(long, value_name = "NAME_OR_ID")]
+    delete_agent: Option<String>,
+    
+    /// Activate an agent by name or ID
+    #[arg(long, value_name = "NAME_OR_ID")]
+    activate_agent: Option<String>,
+    
+    /// Deactivate an agent by name or ID
+    #[arg(long, value_name = "NAME_OR_ID")]
+    deactivate_agent: Option<String>,
+    
+    /// Show information about an agent by name or ID
+    #[arg(long, value_name = "NAME_OR_ID")]
+    agent_info: Option<String>,
+    
+    /// Authorize an agent for a graph (specify agent and graph by name or ID)
+    #[arg(long, value_name = "AGENT_NAME_OR_ID")]
+    authorize_agent: Option<String>,
+    
+    /// Graph to authorize the agent for (used with --authorize-agent)
+    #[arg(long, value_name = "GRAPH_NAME_OR_ID", requires = "authorize_agent")]
+    for_graph: Option<String>,
+    
+    /// Deauthorize an agent from a graph (specify agent and graph by name or ID)
+    #[arg(long, value_name = "AGENT_NAME_OR_ID")]
+    deauthorize_agent: Option<String>,
+    
+    /// Graph to deauthorize the agent from (used with --deauthorize-agent)
+    #[arg(long, value_name = "GRAPH_NAME_OR_ID", requires = "deauthorize_agent")]
+    from_graph: Option<String>,
 }
 
 fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -229,6 +268,377 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
             
             info!("✅ Graph deleted successfully");
             info!("Continuing to run...");
+        }
+        
+        // Handle agent admin commands
+        
+        // Create agent
+        if let Some(agent_name) = args.create_agent {
+            let agent_info = {
+                let mut registry = app_state.agent_registry.write()
+                    .map_err(|e| format!("Failed to write agent registry: {}", e))?;
+                
+                registry.register_agent(
+                    None,  // Let it generate a new UUID
+                    Some(agent_name.clone()),
+                    args.agent_description.clone(),
+                ).map_err(|e| format!("Failed to create agent: {:?}", e))?
+            };
+            
+            // Create the actual Agent instance
+            {
+                use crate::agent::{agent::Agent, llm::LLMConfig};
+                
+                // Ensure agent directory exists
+                std::fs::create_dir_all(&agent_info.data_path)
+                    .map_err(|e| format!("Failed to create agent directory: {}", e))?;
+                
+                // Create agent with default MockLLM config
+                let mut agent = Agent::new(
+                    agent_info.id,
+                    agent_name.clone(),
+                    LLMConfig::default(),  // MockLLM by default
+                    agent_info.data_path.clone(),
+                    args.agent_description.or(Some("An intelligent assistant".to_string())),
+                );
+                
+                // Save the agent to disk
+                agent.save()
+                    .map_err(|e| format!("Failed to save agent: {:?}", e))?;
+            }
+            
+            // Save the registry after creating agent
+            {
+                let registry = app_state.agent_registry.read()
+                    .map_err(|e| format!("Failed to read agent registry: {}", e))?;
+                registry.save()
+                    .map_err(|e| format!("Failed to save agent registry: {:?}", e))?;
+            }
+            
+            info!("✅ Created agent '{}' with ID: {}", agent_info.name, agent_info.id);
+            return Ok(());  // Exit after creating agent
+        }
+        
+        // Delete agent
+        if let Some(agent_identifier) = args.delete_agent {
+            use uuid::Uuid;
+            
+            let resolved_id = {
+                let registry = app_state.agent_registry.read()
+                    .map_err(|e| format!("Failed to read agent registry: {}", e))?;
+                
+                // Try to parse as UUID first
+                let uuid_opt = Uuid::parse_str(&agent_identifier).ok();
+                
+                registry.resolve_agent_target(
+                    uuid_opt.as_ref(),
+                    if uuid_opt.is_none() { Some(&agent_identifier) } else { None },
+                    false  // No smart default for delete
+                ).map_err(|e| format!("Failed to resolve agent: {:?}", e))?
+            };
+            
+            // Don't allow deleting the prime agent
+            {
+                let registry = app_state.agent_registry.read()
+                    .map_err(|e| format!("Failed to read agent registry: {}", e))?;
+                if Some(resolved_id) == registry.get_prime_agent_id() {
+                    return Err("Cannot delete the prime agent".into());
+                }
+            }
+            
+            // Remove agent from memory if loaded
+            app_state.deactivate_agent(&resolved_id).await
+                .map_err(|e| format!("Failed to deactivate agent: {:?}", e))?;
+            
+            // Remove from registry and archive data
+            {
+                let mut registry = app_state.agent_registry.write()
+                    .map_err(|e| format!("Failed to write agent registry: {}", e))?;
+                registry.remove_agent(&resolved_id)
+                    .map_err(|e| format!("Failed to remove agent: {:?}", e))?;
+            }
+            
+            // Save registry after deletion
+            {
+                let registry = app_state.agent_registry.read()
+                    .map_err(|e| format!("Failed to read agent registry: {}", e))?;
+                registry.save()
+                    .map_err(|e| format!("Failed to save agent registry: {:?}", e))?;
+            }
+            
+            info!("✅ Deleted agent: {}", resolved_id);
+            return Ok(());  // Exit after deleting agent
+        }
+        
+        // Activate agent
+        if let Some(agent_identifier) = args.activate_agent {
+            use uuid::Uuid;
+            
+            let resolved_id = {
+                let registry = app_state.agent_registry.read()
+                    .map_err(|e| format!("Failed to read agent registry: {}", e))?;
+                
+                // Try to parse as UUID first
+                let uuid_opt = Uuid::parse_str(&agent_identifier).ok();
+                
+                registry.resolve_agent_target(
+                    uuid_opt.as_ref(),
+                    if uuid_opt.is_none() { Some(&agent_identifier) } else { None },
+                    false  // No smart default for activate
+                ).map_err(|e| format!("Failed to resolve agent: {:?}", e))?
+            };
+            
+            app_state.activate_agent(&resolved_id).await
+                .map_err(|e| format!("Failed to activate agent: {:?}", e))?;
+            
+            info!("✅ Activated agent: {}", resolved_id);
+            return Ok(());  // Exit after activating agent
+        }
+        
+        // Deactivate agent
+        if let Some(agent_identifier) = args.deactivate_agent {
+            use uuid::Uuid;
+            
+            let resolved_id = {
+                let registry = app_state.agent_registry.read()
+                    .map_err(|e| format!("Failed to read agent registry: {}", e))?;
+                
+                // Try to parse as UUID first
+                let uuid_opt = Uuid::parse_str(&agent_identifier).ok();
+                
+                registry.resolve_agent_target(
+                    uuid_opt.as_ref(),
+                    if uuid_opt.is_none() { Some(&agent_identifier) } else { None },
+                    false  // No smart default for deactivate
+                ).map_err(|e| format!("Failed to resolve agent: {:?}", e))?
+            };
+            
+            // Don't allow deactivating the prime agent if it's the only active agent
+            {
+                let registry = app_state.agent_registry.read()
+                    .map_err(|e| format!("Failed to read agent registry: {}", e))?;
+                if Some(resolved_id) == registry.get_prime_agent_id() {
+                    let active_agents = registry.get_active_agents();
+                    if active_agents.len() == 1 {
+                        return Err("Cannot deactivate the prime agent when it's the only active agent".into());
+                    }
+                }
+            }
+            
+            app_state.deactivate_agent(&resolved_id).await
+                .map_err(|e| format!("Failed to deactivate agent: {:?}", e))?;
+            
+            info!("✅ Deactivated agent: {}", resolved_id);
+            return Ok(());  // Exit after deactivating agent
+        }
+        
+        // Authorize agent for graph
+        if let Some(agent_identifier) = args.authorize_agent {
+            use uuid::Uuid;
+            
+            // Resolve agent (no smart default for authorize)
+            let resolved_agent_id = {
+                let registry = app_state.agent_registry.read()
+                    .map_err(|e| format!("Failed to read agent registry: {}", e))?;
+                
+                // Try to parse as UUID first
+                let uuid_opt = Uuid::parse_str(&agent_identifier).ok();
+                
+                registry.resolve_agent_target(
+                    uuid_opt.as_ref(),
+                    if uuid_opt.is_none() { Some(&agent_identifier) } else { None },
+                    false  // No smart default for authorize
+                ).map_err(|e| format!("Failed to resolve agent: {:?}", e))?
+            };
+            
+            // Resolve graph (requires --for-graph)
+            let graph_identifier = args.for_graph
+                .ok_or_else(|| "Must specify --for-graph with --authorize-agent")?;
+            
+            let resolved_graph_id = {
+                let registry = app_state.graph_registry.read()
+                    .map_err(|e| format!("Failed to read graph registry: {}", e))?;
+                
+                // Try to parse as UUID first
+                let uuid_opt = Uuid::parse_str(&graph_identifier).ok();
+                
+                registry.resolve_graph_target(
+                    uuid_opt.as_ref(),
+                    if uuid_opt.is_none() { Some(&graph_identifier) } else { None },
+                    false  // No smart default for graph
+                ).map_err(|e| format!("Failed to resolve graph: {:?}", e))?
+            };
+            
+            // Authorize agent for graph
+            {
+                let mut agent_registry = app_state.agent_registry.write()
+                    .map_err(|e| format!("Failed to write agent registry: {}", e))?;
+                let mut graph_registry = app_state.graph_registry.write()
+                    .map_err(|e| format!("Failed to write graph registry: {}", e))?;
+                
+                agent_registry.authorize_agent_for_graph(
+                    &resolved_agent_id,
+                    &resolved_graph_id,
+                    &mut graph_registry,
+                ).map_err(|e| format!("Failed to authorize agent: {:?}", e))?;
+            }
+            
+            // Save both registries
+            {
+                let registry = app_state.agent_registry.read()
+                    .map_err(|e| format!("Failed to read agent registry: {}", e))?;
+                registry.save()
+                    .map_err(|e| format!("Failed to save agent registry: {:?}", e))?;
+            }
+            {
+                let registry = app_state.graph_registry.read()
+                    .map_err(|e| format!("Failed to read graph registry: {}", e))?;
+                registry.save()
+                    .map_err(|e| format!("Failed to save graph registry: {:?}", e))?;
+            }
+            
+            info!("✅ Authorized agent {} for graph {}", resolved_agent_id, resolved_graph_id);
+            return Ok(());  // Exit after authorization
+        }
+        
+        // Deauthorize agent from graph
+        if let Some(agent_identifier) = args.deauthorize_agent {
+            use uuid::Uuid;
+            
+            // Resolve agent (no smart default for deauthorize)
+            let resolved_agent_id = {
+                let registry = app_state.agent_registry.read()
+                    .map_err(|e| format!("Failed to read agent registry: {}", e))?;
+                
+                // Try to parse as UUID first
+                let uuid_opt = Uuid::parse_str(&agent_identifier).ok();
+                
+                registry.resolve_agent_target(
+                    uuid_opt.as_ref(),
+                    if uuid_opt.is_none() { Some(&agent_identifier) } else { None },
+                    false  // No smart default for deauthorize
+                ).map_err(|e| format!("Failed to resolve agent: {:?}", e))?
+            };
+            
+            // Resolve graph (requires --from-graph)
+            let graph_identifier = args.from_graph
+                .ok_or_else(|| "Must specify --from-graph with --deauthorize-agent")?;
+            
+            let resolved_graph_id = {
+                let registry = app_state.graph_registry.read()
+                    .map_err(|e| format!("Failed to read graph registry: {}", e))?;
+                
+                // Try to parse as UUID first
+                let uuid_opt = Uuid::parse_str(&graph_identifier).ok();
+                
+                registry.resolve_graph_target(
+                    uuid_opt.as_ref(),
+                    if uuid_opt.is_none() { Some(&graph_identifier) } else { None },
+                    false  // No smart default for graph
+                ).map_err(|e| format!("Failed to resolve graph: {:?}", e))?
+            };
+            
+            // Deauthorize agent from graph
+            {
+                let mut agent_registry = app_state.agent_registry.write()
+                    .map_err(|e| format!("Failed to write agent registry: {}", e))?;
+                let mut graph_registry = app_state.graph_registry.write()
+                    .map_err(|e| format!("Failed to write graph registry: {}", e))?;
+                
+                agent_registry.deauthorize_agent_from_graph(
+                    &resolved_agent_id,
+                    &resolved_graph_id,
+                    &mut graph_registry,
+                ).map_err(|e| format!("Failed to deauthorize agent: {:?}", e))?;
+            }
+            
+            // Save both registries
+            {
+                let registry = app_state.agent_registry.read()
+                    .map_err(|e| format!("Failed to read agent registry: {}", e))?;
+                registry.save()
+                    .map_err(|e| format!("Failed to save agent registry: {:?}", e))?;
+            }
+            {
+                let registry = app_state.graph_registry.read()
+                    .map_err(|e| format!("Failed to read graph registry: {}", e))?;
+                registry.save()
+                    .map_err(|e| format!("Failed to save graph registry: {:?}", e))?;
+            }
+            
+            info!("✅ Deauthorized agent {} from graph {}", resolved_agent_id, resolved_graph_id);
+            return Ok(());  // Exit after deauthorization
+        }
+        
+        // Show agent info
+        if let Some(agent_identifier) = args.agent_info {
+            use uuid::Uuid;
+            
+            // Resolve agent (allows smart default to prime if not specified)
+            let resolved_id = {
+                let registry = app_state.agent_registry.read()
+                    .map_err(|e| format!("Failed to read agent registry: {}", e))?;
+                
+                // Try to parse as UUID first
+                let uuid_opt = Uuid::parse_str(&agent_identifier).ok();
+                
+                registry.resolve_agent_target(
+                    uuid_opt.as_ref(),
+                    if uuid_opt.is_none() { Some(&agent_identifier) } else { None },
+                    true  // Allow smart default (prime agent) for info command
+                ).map_err(|e| format!("Failed to resolve agent: {:?}", e))?
+            };
+            
+            // Get agent info from registry
+            let (agent_info, is_active) = {
+                let registry = app_state.agent_registry.read()
+                    .map_err(|e| format!("Failed to read agent registry: {}", e))?;
+                
+                let info = registry.get_agent(&resolved_id)
+                    .ok_or_else(|| format!("Agent {} not found", resolved_id))?
+                    .clone();
+                let active = registry.is_agent_active(&resolved_id);
+                (info, active)
+            };
+            
+            // Display agent information
+            info!("🤖 Agent Information");
+            info!("  ID: {}", agent_info.id);
+            info!("  Name: {}", agent_info.name);
+            if let Some(desc) = &agent_info.description {
+                info!("  Description: {}", desc);
+            }
+            info!("  Is Prime: {}", agent_info.is_prime);
+            info!("  Is Active: {}", is_active);
+            info!("  Created: {}", agent_info.created);
+            info!("  Last Active: {}", agent_info.last_active);
+            
+            // Show authorized graphs
+            if !agent_info.authorized_graphs.is_empty() {
+                info!("  Authorized Graphs:");
+                let graph_registry = app_state.graph_registry.read()
+                    .map_err(|e| format!("Failed to read graph registry: {}", e))?;
+                
+                for graph_id in &agent_info.authorized_graphs {
+                    if let Some(graph) = graph_registry.get_graph(graph_id) {
+                        info!("    - {} ({})", graph.name, graph_id);
+                    } else {
+                        info!("    - {} (not found)", graph_id);
+                    }
+                }
+            } else {
+                info!("  Authorized Graphs: None");
+            }
+            
+            // Show conversation stats if agent is loaded
+            if is_active {
+                let agents = app_state.agents.read().await;
+                if let Some(agent) = agents.get(&resolved_id) {
+                    info!("  Conversation Messages: {}", agent.conversation_history.len());
+                }
+            }
+            
+            return Ok(());  // Exit after showing info
         }
         
         let graphs = {

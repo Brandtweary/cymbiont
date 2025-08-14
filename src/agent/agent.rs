@@ -2,49 +2,176 @@
 //!
 //! This module provides the main Agent struct that manages conversation state,
 //! LLM configuration, and interaction with the knowledge graph. Each agent
-//! maintains its own conversation history, model configuration, and graph
-//! authorizations.
+//! maintains its own conversation history, model configuration, and serves as
+//! an autonomous knowledge worker within the multi-agent framework.
 //!
-//! ## Architecture
+//! ## Multi-Agent Framework Role
 //!
-//! The Agent struct owns its full state and handles persistence through the
-//! agent_persistence module. It acts as a context manager, bundling:
-//! - Conversation history with tool results
-//! - LLM configuration (model, parameters)
-//! - System prompts and instructions
-//! - Context window management
+//! Agents are the primary interface between users and the knowledge graph.
+//! They provide personalized, stateful interaction while enforcing security
+//! through the authorization system. Each agent can be granted specific
+//! permissions to access and modify different graphs, enabling collaborative
+//! knowledge management with proper access control.
+//!
+//! ## Architecture Overview
+//!
+//! The Agent struct owns its complete state and handles persistence through the
+//! agent_persistence module. It acts as a stateful context manager, bundling:
+//! - **Conversation History**: Full chat context with sliding window management
+//! - **LLM Configuration**: Model selection, parameters, and backend settings
+//! - **System Prompts**: Custom instructions and behavioral guidelines
+//! - **Context Management**: Automatic history trimming and continuity preservation
+//! - **Auto-save Logic**: Time and message-based persistence triggers
 //!
 //! Agents do not directly track graph authorizations - this is managed by the
-//! AgentRegistry as the single source of truth to prevent synchronization issues.
+//! AgentRegistry as the single source of truth to prevent synchronization issues
+//! and ensure consistent authorization state across the system.
 //!
-//! ## Lifecycle
+//! ## Agent Lifecycle States
 //!
-//! Agents follow a clear lifecycle pattern:
-//! 1. **Creation**: AgentRegistry creates metadata, Agent struct instantiated
-//! 2. **Activation**: Agent loaded into memory from disk
-//! 3. **Interaction**: Chat messages processed, history maintained
-//! 4. **Auto-save**: Triggered by time (5min) or message count (10)
-//! 5. **Deactivation**: Agent saved to disk and removed from memory
-//! 6. **Deletion**: Agent archived to `archived_agents/` directory
+//! Agents progress through a well-defined lifecycle with clear state transitions:
 //!
-//! The prime agent is auto-created on first run and cannot be deleted,
-//! ensuring a seamless user experience with always-available assistance.
+//! ### Creation Phase
+//! - AgentRegistry creates metadata entry with UUID and paths
+//! - Agent struct instantiated with default LLM configuration
+//! - Data directory structure created: `{data_dir}/agents/{agent-id}/`
+//! - Initial agent.json written with empty conversation history
+//!
+//! ### Activation Phase  
+//! - Agent loaded into AppState's active agents HashMap
+//! - Full state restored from agent.json on disk
+//! - AgentRegistry updated to mark agent as "active"
+//! - Agent becomes available for chat interactions
+//!
+//! ### Interaction Phase
+//! - Chat messages processed through `process_message()`
+//! - LLM backend called for response generation
+//! - Conversation history maintained with automatic trimming
+//! - Auto-save triggers monitor time (5min) and message count (10)
+//!
+//! ### Deactivation Phase
+//! - Agent saved to disk with complete state preservation
+//! - Removed from AppState's active agents HashMap
+//! - AgentRegistry updated to mark agent as "inactive" 
+//! - Memory freed, but agent data remains on disk
+//!
+//! ### Deletion/Archival Phase
+//! - Agent moved to `{data_dir}/archived_agents/` with timestamp
+//! - Removed from AgentRegistry permanently
+//! - All graph authorizations revoked automatically
+//! - Prime agent protected from deletion
+//!
+//! ## Prime Agent System
+//!
+//! The prime agent is a special system agent that ensures seamless user experience:
+//! - **Auto-creation**: Created automatically on first system startup
+//! - **Always Available**: Cannot be deleted, ensuring at least one agent exists
+//! - **Default Authorization**: Automatically authorized for all new graphs
+//! - **WebSocket Default**: Used as current agent when no specific agent selected
+//! - **Fallback Role**: Provides system stability and prevents authentication deadlocks
 //!
 //! ## Conversation Management
 //!
-//! The agent maintains a sliding context window of conversation history.
-//! When the context limit is reached, older messages are trimmed while
-//! preserving conversation continuity. Each message in the history includes:
-//! - Role (User, Assistant, Tool)
-//! - Content (text or structured data)
-//! - Timestamp
-//! - Optional metadata
+//! Agents maintain sophisticated conversation state with multiple features:
 //!
-//! ## Persistence
+//! ### Message Types
+//! - **User Messages**: Human input with optional echo field for testing
+//! - **Assistant Messages**: LLM-generated responses with timestamps
+//! - **Tool Messages**: Function call results (future phase)
 //!
-//! Agent state is persisted to `{data_dir}/agents/{agent-id}/agent.json`.
-//! This includes the full conversation history, LLM configuration, and
-//! system prompts. Auto-save ensures data durability without manual intervention.
+//! ### Context Window Management
+//! - Configurable limit (default: 100 messages) per agent
+//! - Automatic trimming when limit exceeded
+//! - FIFO removal strategy (oldest messages removed first)
+//! - Context continuity preserved through intelligent trimming
+//!
+//! ### Message Processing Pipeline
+//! 1. **Input Validation**: User message validated and timestamped
+//! 2. **History Update**: Message added to conversation history
+//! 3. **LLM Invocation**: Backend called with full conversation context
+//! 4. **Response Processing**: Assistant response validated and timestamped
+//! 5. **History Recording**: Response added to conversation history
+//! 6. **Auto-save Check**: Persistence thresholds evaluated
+//! 7. **Context Trimming**: Window size enforced if necessary
+//!
+//! ## LLM Backend Integration
+//!
+//! Agents support pluggable LLM backends through the LLMConfig system:
+//! - **MockLLM**: Test backend with echo support for deterministic testing
+//! - **Ollama**: Future integration with local Ollama instances
+//! - **OpenAI**: Future integration with OpenAI API
+//! - **Custom**: Extensible for additional backend implementations
+//!
+//! Per-agent configuration allows different models for different agents.
+//! Runtime switching supported via `set_llm_config()` with graceful fallback
+//! handling for backend failures.
+//!
+//! ## Persistence and Durability
+//!
+//! Agent state is comprehensively persisted to `{data_dir}/agents/{agent-id}/agent.json`:
+//!
+//! ### Persistence Triggers
+//! - **Time-based**: Every 5 minutes of activity
+//! - **Message-based**: Every 10 messages processed
+//! - **Configuration changes**: Immediate save on system prompt/LLM config updates
+//! - **Manual**: Explicit save() calls
+//! - **Shutdown**: Guaranteed save during graceful shutdown
+//! - **Deactivation**: Save before removing from memory
+//!
+//! ### State Serialization
+//! - Full conversation history with timestamps
+//! - Complete LLM configuration and parameters
+//! - System prompts and custom instructions
+//! - Context window settings and metadata
+//! - Creation and last activity timestamps
+//! - Agent name and display preferences
+//!
+//! ## Authorization and Security
+//!
+//! Agents operate within the multi-agent authorization framework:
+//! - Graph authorizations managed by AgentRegistry (single source of truth)
+//! - Authorization checked via phantom types in graph operations
+//! - Unauthorized operations fail at compile time when possible
+//! - Runtime authorization errors provide clear messaging
+//! - Agent state isolated per agent (no cross-agent data access)
+//! - Prime agent cannot be deleted (system stability)
+//! - All graph modifications audited through transaction log
+//!
+//! ## Error Handling and Recovery
+//!
+//! Comprehensive error handling ensures system resilience:
+//! - **Persistence Errors**: Disk I/O failures during save/load
+//! - **LLM Errors**: Backend communication failures with auto-retry
+//! - **Authorization Errors**: Graph access denied
+//! - **Configuration Errors**: Invalid LLM settings
+//!
+//! Recovery strategies include graceful degradation when backends unavailable,
+//! conversation history preservation during errors, and atomic save operations
+//! to prevent partial state corruption.
+//!
+//! ## Future Extensibility
+//!
+//! The agent system is designed for future expansion:
+//! - **Tool Integration**: Knowledge graph tool execution (Phase 2)
+//! - **Function Calling**: LLM-driven tool selection and execution
+//! - **Advanced Context**: Semantic search in conversation history
+//! - **Multi-modal**: Support for image and document processing
+//! - **Collaborative**: Multi-agent coordination and handoffs
+//!
+//! Extension points include pluggable LLM backends via LLMBackend trait,
+//! custom message types, configurable persistence strategies, and custom
+//! context window management algorithms.
+//!
+//! ## Performance Considerations
+//!
+//! The agent system is optimized for responsive interaction:
+//! - Active agents loaded in memory for fast access
+//! - Inactive agents persist on disk only
+//! - Context window limits prevent unbounded memory growth
+//! - Auto-save prevents excessive disk writes
+//! - Atomic file operations ensure consistency
+//! - Agent state protected by async RwLock in AppState
+//! - Thread-safe message processing and persistence
 
 use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};

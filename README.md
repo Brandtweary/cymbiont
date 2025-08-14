@@ -21,7 +21,7 @@ Cymbiont currently provides the core engine that makes this vision possible:
 - **🏗️ Robust Graph Storage**: Petgraph-based engine with typed nodes and edges
 - **🔄 ACID Transactions**: Write-ahead logging ensures data integrity  
 - **🗂️ Multi-Graph Support**: Isolated storage for different knowledge domains
-- **🤝 Multi-Agent Architecture**: Flexible graph-to-agent authorization system
+- **🤝 Multi-Agent Framework**: Flexible graph-to-agent authorization system
 - **📥 Logseq Import**: Complete import system with reference resolution
 - **🌐 Real-time Updates**: WebSocket protocol for live synchronization
 - **🔌 HTTP API**: RESTful interface for data ingestion and querying

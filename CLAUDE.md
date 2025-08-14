@@ -58,7 +58,7 @@ env RUST_LOG=debug cargo test -- --nocapture 2>&1 | tee test_output.log  # Captu
   - **utils.rs**: Process management, datetime parsing, general utilities
   - **logging.rs**: Custom formatter (file:line only for ERROR/WARN)
   - **app_state.rs**: Centralized application state management with agent integration
-  - **graph_operations.rs**: PKM-oriented public API for knowledge graph operations
+  - **graph_operations.rs**: Multi-agent graph operations with phantom type authorization
   - **agent/**: Agent abstraction layer
     - **mod.rs**: Agent module exports
     - **agent.rs**: Core Agent struct with conversation management
@@ -77,6 +77,7 @@ env RUST_LOG=debug cargo test -- --nocapture 2>&1 | tee test_output.log  # Captu
     - **agent_registry.rs**: Agent lifecycle and authorization management
     - **agent_persistence.rs**: Agent save/load with auto-save thresholds
     - **registry_utils.rs**: Shared UUID serialization utilities
+    - **registry_ref.rs**: Registry reference pattern for authorization checks
     - **transaction_log.rs**: Write-ahead logging with sled database
     - **transaction.rs**: Transaction coordinator and state management
   - **server/**: Server-specific functionality

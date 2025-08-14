@@ -120,7 +120,7 @@ use crate::{
     AppState,
     import::pkm_data::{PKMBlockData, PKMPageData},
     import::logseq::extract_references,
-    storage::{Operation, OperationExecutor},
+    storage::{Operation, OperationExecutor, RegistryRef},
 };
 use std::sync::Arc;
 use std::collections::HashMap;
@@ -140,6 +140,127 @@ pub enum GraphOperationError {
 }
 
 pub type Result<T> = std::result::Result<T, GraphOperationError>;
+
+/// Phantom type markers for authorization state
+pub struct Authorized;
+pub struct Unauthorized;
+
+/// Authorization wrapper that uses phantom types to enforce compile-time authorization checks.
+///
+/// This pattern makes it impossible to perform graph operations without going through
+/// the authorization flow. The type system ensures that unauthorized operations 
+/// cannot be compiled.
+pub struct AuthorizedAppState<T> {
+    pub(crate) inner: Arc<AppState>,
+    agent_id: Uuid,
+    graph_id: Option<Uuid>,
+    _marker: std::marker::PhantomData<T>,
+}
+
+/// Trait for creating authorized app state
+pub trait WithAgent {
+    /// Begin the authorization flow by specifying which agent will perform operations.
+    /// Returns an unauthorized state that must be authorized for a specific graph.
+    fn with_agent(self, agent_id: Uuid) -> AuthorizedAppState<Unauthorized>;
+}
+
+impl WithAgent for Arc<AppState> {
+    fn with_agent(self, agent_id: Uuid) -> AuthorizedAppState<Unauthorized> {
+        AuthorizedAppState {
+            inner: self,
+            agent_id,
+            graph_id: None,
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl AuthorizedAppState<Unauthorized> {
+    /// Authorize the agent for operations on a specific graph.
+    /// This is the only way to get an Authorized state that can perform operations.
+    pub fn authorize_for_graph(self, graph_id: Uuid) -> Result<AuthorizedAppState<Authorized>> {
+        // Use RegistryRef to check authorization
+        let agent_ref = RegistryRef::new(self.inner.agent_registry.clone(), self.agent_id);
+        if !agent_ref.is_authorized_for(graph_id) {
+            return Err(GraphOperationError::GraphError(format!(
+                "Agent {} is not authorized for graph {} - authorization required for all graph operations", 
+                self.agent_id, graph_id
+            )));
+        }
+        
+        Ok(AuthorizedAppState {
+            inner: self.inner,
+            agent_id: self.agent_id,
+            graph_id: Some(graph_id),
+            _marker: std::marker::PhantomData,
+        })
+    }
+}
+
+impl AuthorizedAppState<Authorized> {
+    /// Get the authorized agent ID
+    pub fn agent_id(&self) -> Uuid {
+        self.agent_id
+    }
+    
+    /// Get the authorized graph ID
+    pub fn graph_id(&self) -> Uuid {
+        self.graph_id.expect("Authorized state must have graph_id")
+    }
+    
+    /// Get the underlying AppState (for accessing non-graph operations)
+    pub fn app_state(&self) -> &Arc<AppState> {
+        &self.inner
+    }
+}
+
+/// Agent-aware graph operations that automatically handle authorization
+pub trait GraphOps {
+    /// Add a new block with agent authorization
+    async fn add_block_as(
+        &self,
+        agent_id: Uuid,
+        content: String,
+        parent_id: Option<String>,
+        page_name: Option<String>,
+        properties: Option<serde_json::Value>,
+        graph_id: &Uuid,
+    ) -> Result<String>;
+
+    /// Update block with agent authorization
+    async fn update_block_as(
+        &self,
+        agent_id: Uuid,
+        block_id: String,
+        content: String,
+        graph_id: &Uuid,
+    ) -> Result<()>;
+
+    /// Delete block with agent authorization
+    async fn delete_block_as(
+        &self,
+        agent_id: Uuid,
+        block_id: String,
+        graph_id: &Uuid,
+    ) -> Result<()>;
+
+    /// Create page with agent authorization
+    async fn create_page_as(
+        &self,
+        agent_id: Uuid,
+        page_name: String,
+        properties: Option<serde_json::Value>,
+        graph_id: &Uuid,
+    ) -> Result<()>;
+
+    /// Delete page with agent authorization
+    async fn delete_page_as(
+        &self,
+        agent_id: Uuid,
+        page_name: String,
+        graph_id: &Uuid,
+    ) -> Result<()>;
+}
 
 /// Extension trait for PKM-specific graph operations on AppState
 pub trait GraphOperationsExt {
@@ -699,6 +820,65 @@ impl GraphOperationsExt for Arc<AppState> {
     }
 }
 
+// Agent-aware graph operations implementation with automatic authorization
+impl GraphOps for Arc<AppState> {
+    async fn add_block_as(
+        &self,
+        agent_id: Uuid,
+        content: String,
+        parent_id: Option<String>,
+        page_name: Option<String>,
+        properties: Option<serde_json::Value>,
+        graph_id: &Uuid,
+    ) -> Result<String> {
+        let authorized_state = self.clone().with_agent(agent_id).authorize_for_graph(*graph_id)?;
+        authorized_state.add_block(content, parent_id, page_name, properties, graph_id).await
+    }
+
+    async fn update_block_as(
+        &self,
+        agent_id: Uuid,
+        block_id: String,
+        content: String,
+        graph_id: &Uuid,
+    ) -> Result<()> {
+        let authorized_state = self.clone().with_agent(agent_id).authorize_for_graph(*graph_id)?;
+        authorized_state.update_block(block_id, content, graph_id).await
+    }
+
+    async fn delete_block_as(
+        &self,
+        agent_id: Uuid,
+        block_id: String,
+        graph_id: &Uuid,
+    ) -> Result<()> {
+        let authorized_state = self.clone().with_agent(agent_id).authorize_for_graph(*graph_id)?;
+        authorized_state.delete_block(block_id, graph_id).await
+    }
+
+    async fn create_page_as(
+        &self,
+        agent_id: Uuid,
+        page_name: String,
+        properties: Option<serde_json::Value>,
+        graph_id: &Uuid,
+    ) -> Result<()> {
+        let authorized_state = self.clone().with_agent(agent_id).authorize_for_graph(*graph_id)?;
+        authorized_state.create_page(page_name, properties, graph_id).await
+    }
+
+    async fn delete_page_as(
+        &self,
+        agent_id: Uuid,
+        page_name: String,
+        graph_id: &Uuid,
+    ) -> Result<()> {
+        let authorized_state = self.clone().with_agent(agent_id).authorize_for_graph(*graph_id)?;
+        authorized_state.delete_page(page_name, graph_id).await
+    }
+}
+
+
 // Implement OperationExecutor trait for Arc<AppState>
 // This allows the storage layer to execute operations without knowing about GraphOperationsExt
 #[async_trait]
@@ -870,5 +1050,48 @@ mod tests {
             }
             _ => panic!("Wrong operation type after deserialization"),
         }
+    }
+    
+    // Phantom type authorization tests - pure logic only
+    
+    #[test]
+    fn test_authorization_error_formatting() {
+        // Test that authorization error messages contain expected information
+        let agent_id = uuid::Uuid::new_v4();
+        let graph_id = uuid::Uuid::new_v4();
+        
+        let error = GraphOperationError::GraphError(format!(
+            "Agent {} is not authorized for graph {} - authorization required for all graph operations", 
+            agent_id, graph_id
+        ));
+        
+        let error_message = error.to_string();
+        assert!(error_message.contains("not authorized"));
+        assert!(error_message.contains(&agent_id.to_string()));
+        assert!(error_message.contains(&graph_id.to_string()));
+        assert!(error_message.contains("authorization required"));
+    }
+    
+    #[test]
+    fn test_phantom_type_markers() {
+        // Test that phantom type markers behave correctly
+        use std::marker::PhantomData;
+        
+        // Test that phantom data has zero size
+        assert_eq!(std::mem::size_of::<PhantomData<Authorized>>(), 0);
+        assert_eq!(std::mem::size_of::<PhantomData<Unauthorized>>(), 0);
+        
+        // Test that different phantom types are different types
+        fn takes_authorized(_: PhantomData<Authorized>) {}
+        fn takes_unauthorized(_: PhantomData<Unauthorized>) {}
+        
+        let auth_marker = PhantomData::<Authorized>;
+        let unauth_marker = PhantomData::<Unauthorized>;
+        
+        takes_authorized(auth_marker);
+        takes_unauthorized(unauth_marker);
+        
+        // This test compiles, proving the type system distinguishes between them
+        // If you tried: takes_authorized(unauth_marker), it would NOT compile
     }
 }

@@ -68,11 +68,13 @@ pub mod agent_persistence;
 pub mod agent_registry;
 pub mod graph_persistence;
 pub mod graph_registry;
+pub mod registry_ref;
 pub mod transaction;
 pub mod transaction_log;
 
 // Re-export commonly used types
 pub use graph_registry::GraphRegistry;
 pub use agent_registry::AgentRegistry;
+pub use registry_ref::RegistryRef;
 pub use transaction_log::{TransactionLog, Operation, Transaction, OperationExecutor};
 pub use transaction::TransactionCoordinator;

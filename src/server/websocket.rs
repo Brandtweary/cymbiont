@@ -1,18 +1,27 @@
 /**
  * @module websocket
- * @description WebSocket server for real-time client communication
+ * @description WebSocket server for real-time client communication with multi-agent authorization
  * 
  * This module implements a WebSocket server that enables bidirectional communication
  * between the knowledge graph engine and external clients, supporting real-time
- * graph operations with high-throughput async execution.
+ * graph operations with high-throughput async execution and compile-time authorization.
  * 
  * ## Connection Management
  * 
  * Connection-based architecture with authentication:
  * - Unique UUID tracking for each connection
- * - Authentication required before command processing
+ * - Authentication required before command processing  
+ * - Current agent tracking per connection (defaults to prime agent)
  * - Heartbeat mechanism for connection health
  * - Automatic cleanup on disconnect
+ * 
+ * ## Multi-Agent Authorization
+ * 
+ * All graph operations enforce agent authorization through the GraphOps trait:
+ * - Each connection maintains a current_agent_id (set via Auth command)
+ * - Graph operations automatically check agent permissions via phantom types
+ * - Unauthorized operations return clear error messages
+ * - Agent selection commands allow switching between authorized agents
  * 
  * ## Async Command Processing
  * 
@@ -22,28 +31,113 @@
  * - Critical state commands (freeze/unfreeze) execute immediately
  * - Supports high-throughput scenarios with multiple concurrent operations
  * 
- * ## Command Protocol
+ * ## Command Handlers
  * 
- * JSON-based request/response system:
- * - **Client→Server**: 
- *   - `Auth`, `Heartbeat` - Connection management
- *   - `OpenGraph`, `CloseGraph` - Graph lifecycle (replaces SwitchGraph)
- *   - `CreateBlock`, `UpdateBlock`, `DeleteBlock` - Block operations (accept optional graph_id/graph_name)
- *   - `CreatePage`, `DeletePage` - Page operations (accept optional graph_id/graph_name)
- *   - `CreateGraph`, `DeleteGraph` - Graph management
- *   - `FreezeOperations`, `UnfreezeOperations` - Test infrastructure
- * - **Server→Client**: `Success`, `Error`, `Heartbeat`
- * - Commands execute asynchronously with transaction wrapping
- * - Graph targeting via optional `graph_id` (UUID string) or `graph_name` fields
- * - Centralized graph resolution with smart defaults for CRUD operations
+ * ### Authentication & Connection
+ * - **Auth**: Authenticate with token, sets prime agent as current agent
+ * - **Heartbeat**: Keep-alive mechanism, returns immediate response
+ * 
+ * ### Graph Lifecycle
+ * - **OpenGraph**: Load graph into memory, trigger crash recovery
+ * - **CloseGraph**: Save graph and unload from memory
+ * - **CreateGraph**: Create new graph with automatic prime agent authorization
+ * - **DeleteGraph**: Archive graph (moves to archived_graphs/ with timestamp)
+ * 
+ * ### Block Operations (Require Agent Authorization)
+ * - **CreateBlock**: Create new block with content, parent, page, properties
+ *   - Uses GraphOps::add_block_as() with current agent authorization
+ *   - Accepts optional graph_id/graph_name (defaults to open graph)
+ *   - Returns generated block UUID
+ * - **UpdateBlock**: Modify existing block content with reference resolution
+ *   - Uses GraphOps::update_block_as() with current agent authorization
+ *   - Preserves all properties except content and updated timestamp
+ * - **DeleteBlock**: Archive block node while preserving graph integrity
+ *   - Uses GraphOps::delete_block_as() with current agent authorization
+ *   - Moves to archived state rather than hard deletion
+ * 
+ * ### Page Operations (Require Agent Authorization)
+ * - **CreatePage**: Create new page with normalized name handling
+ *   - Uses GraphOps::create_page_as() with current agent authorization
+ *   - Handles duplicate pages by updating properties if provided
+ * - **DeletePage**: Archive page node using normalized name lookup
+ *   - Uses GraphOps::delete_page_as() with current agent authorization
+ *   - Searches by both original and normalized names
+ * 
+ * ### Agent Chat Commands
+ * - **AgentChat**: Send message to agent, get LLM response
+ *   - Optional echo field for deterministic testing (MockLLM)
+ *   - Supports agent_id/agent_name targeting (defaults to current agent)
+ *   - Auto-saves conversation history with configurable thresholds
+ * - **AgentSelect**: Switch current agent for this connection
+ *   - Updates connection's current_agent_id for subsequent operations
+ *   - Resolves agent by ID or name with validation
+ * - **AgentHistory**: Retrieve conversation history with optional limit
+ *   - Returns Message objects with User/Assistant/Tool types
+ *   - Supports agent targeting (defaults to current agent)
+ * - **AgentReset**: Clear agent's conversation history
+ *   - Preserves agent configuration and system prompt
+ *   - Requires explicit agent targeting for safety
+ * - **AgentList**: List all agents with active/inactive status
+ * - **AgentInfo**: Get detailed agent information (config, stats, authorizations)
+ * 
+ * ### Agent Administration Commands  
+ * - **CreateAgent**: Register new agent with optional description
+ *   - Auto-generates UUID, saves to agent registry
+ *   - Creates agent data directory structure
+ * - **DeleteAgent**: Archive agent (moves to archived_agents/)
+ *   - Prime agent cannot be deleted (protection mechanism)
+ *   - Deactivates agent first if currently active
+ * - **ActivateAgent**: Load agent into memory for chat operations
+ *   - Updates agent registry active status
+ *   - Triggers agent data loading from disk
+ * - **DeactivateAgent**: Save agent and unload from memory
+ *   - Updates agent registry active status
+ *   - Preserves agent data on disk
+ * - **AuthorizeAgent**: Grant agent access to specific graph
+ *   - Updates both agent and graph registries bidirectionally
+ *   - Enables agent to perform graph operations
+ * - **DeauthorizeAgent**: Remove agent access from specific graph
+ *   - Updates both registries, blocks future operations
+ * 
+ * ### Test Infrastructure
+ * - **FreezeOperations**: Pause transaction execution after WAL write
+ *   - Creates deterministic testing scenarios
+ *   - Operations create transactions but wait for unfreeze
+ * - **UnfreezeOperations**: Resume transaction execution
+ *   - Allows pending operations to complete
+ * - **GetFreezeState**: Query current freeze status
+ * 
+ * ## Graph Targeting
+ * 
+ * Most operations accept optional graph targeting:
+ * - `graph_id`: Direct UUID string targeting
+ * - `graph_name`: Human-readable name resolution
+ * - Smart defaults: Falls back to single open graph when unspecified
+ * - Centralized resolution via `resolve_graph_for_command()`
+ * 
+ * ## Error Handling
+ * 
+ * Comprehensive error responses with specific error types:
+ * - Authorization errors: Agent not authorized for graph
+ * - Validation errors: Invalid parameters or missing fields
+ * - State errors: Graph not open, agent not found, etc.
+ * - Transaction errors: Operation failures with rollback
+ * 
+ * ## Response Format
+ * 
+ * All commands return structured JSON responses:
+ * - **Success**: `{"type": "success", "data": {...}}` 
+ * - **Error**: `{"type": "error", "message": "..."}`
+ * - **Heartbeat**: `{"type": "heartbeat"}`
  * 
  * ## Transaction Integration
  * 
  * WebSocket commands integrate with the transaction system for ACID guarantees:
- * - Commands execute within transactions
+ * - Graph operations execute within transactions via GraphOps trait
  * - Automatic rollback on operation failures
  * - Content deduplication via hash checking
  * - Freeze mechanism supports deterministic testing scenarios
+ * - WAL logging ensures crash recovery for all operations
  */
 
 use axum::{
@@ -65,6 +159,7 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::AppState;
+use crate::graph_operations::GraphOps;
 
 /// WebSocket connection state
 pub struct WsConnection {
@@ -325,7 +420,15 @@ async fn handle_message(
         Message::Text(text) => {
             match serde_json::from_str::<Command>(&text) {
                 Ok(command) => {
-                    handle_command(command, connection_id, state).await?;
+                    // Get current agent for authorization checks
+                    let current_agent_id = if let Some(ref connections) = state.ws_connections {
+                        let conns = connections.read().await;
+                        conns.get(connection_id).and_then(|conn| conn.current_agent_id)
+                    } else {
+                        None
+                    };
+                    
+                    handle_command(command, connection_id, state, current_agent_id).await?;
                 }
                 Err(e) => {
                     return Err(Box::new(e));
@@ -373,6 +476,7 @@ async fn handle_command(
     command: Command,
     connection_id: &str,
     state: &Arc<AppState>,
+    current_agent_id: Option<Uuid>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     
     // Check authentication for non-auth commands
@@ -447,8 +551,6 @@ async fn handle_command(
             // Call kg_api to create the block
             info!("📝 CreateBlock command received via WebSocket");
             
-            use crate::graph_operations::GraphOperationsExt;
-            
             let resolved_graph_id = resolve_graph_for_command(
                 state,
                 graph_id.as_deref(),
@@ -456,7 +558,16 @@ async fn handle_command(
                 true  // allow smart default
             ).await?;
             
-            match state.add_block(content, parent_id, page_name, None, &resolved_graph_id).await {
+            // Get current agent ID
+            let agent_id = match current_agent_id {
+                Some(id) => id,
+                None => {
+                    send_error_response(connection_id, state, "No agent selected for this operation").await?;
+                    return Ok(());
+                }
+            };
+            
+            match state.add_block_as(agent_id, content, parent_id, page_name, None, &resolved_graph_id).await {
                 Ok(block_id) => {
                     let data = serde_json::json!({ "block_id": block_id });
                     send_success_response(connection_id, state, Some(data)).await?;
@@ -470,8 +581,6 @@ async fn handle_command(
             // Call kg_api to update the block
             info!("✏️ UpdateBlock command received via WebSocket: {}", block_id);
             
-            use crate::graph_operations::GraphOperationsExt;
-            
             let resolved_graph_id = resolve_graph_for_command(
                 state,
                 graph_id.as_deref(),
@@ -479,7 +588,16 @@ async fn handle_command(
                 true  // allow smart default
             ).await?;
             
-            match state.update_block(block_id.clone(), content, &resolved_graph_id).await {
+            // Get current agent ID
+            let agent_id = match current_agent_id {
+                Some(id) => id,
+                None => {
+                    send_error_response(connection_id, state, "No agent selected for this operation").await?;
+                    return Ok(());
+                }
+            };
+            
+            match state.update_block_as(agent_id, block_id.clone(), content, &resolved_graph_id).await {
                 Ok(()) => {
                     let data = serde_json::json!({ "block_id": block_id });
                     send_success_response(connection_id, state, Some(data)).await?;
@@ -493,8 +611,6 @@ async fn handle_command(
             // Call kg_api to delete the block
             info!("🗑️ DeleteBlock command received via WebSocket: {}", block_id);
             
-            use crate::graph_operations::GraphOperationsExt;
-            
             let resolved_graph_id = resolve_graph_for_command(
                 state,
                 graph_id.as_deref(),
@@ -502,7 +618,16 @@ async fn handle_command(
                 true  // allow smart default
             ).await?;
             
-            match state.delete_block(block_id.clone(), &resolved_graph_id).await {
+            // Get current agent ID
+            let agent_id = match current_agent_id {
+                Some(id) => id,
+                None => {
+                    send_error_response(connection_id, state, "No agent selected for this operation").await?;
+                    return Ok(());
+                }
+            };
+            
+            match state.delete_block_as(agent_id, block_id.clone(), &resolved_graph_id).await {
                 Ok(()) => {
                     let data = serde_json::json!({ "block_id": block_id });
                     send_success_response(connection_id, state, Some(data)).await?;
@@ -516,14 +641,21 @@ async fn handle_command(
             // Call kg_api to create the page
             info!("📄 CreatePage command received via WebSocket: {}", name);
             
-            use crate::graph_operations::GraphOperationsExt;
-            
             let resolved_graph_id = resolve_graph_for_command(
                 state,
                 graph_id.as_deref(),
                 graph_name.as_deref(),
                 true  // allow smart default
             ).await?;
+            
+            // Get current agent ID
+            let agent_id = match current_agent_id {
+                Some(id) => id,
+                None => {
+                    send_error_response(connection_id, state, "No agent selected for this operation").await?;
+                    return Ok(());
+                }
+            };
             
             // Convert HashMap<String, String> to serde_json::Value
             let properties_json = properties.map(|props| {
@@ -534,7 +666,7 @@ async fn handle_command(
                 )
             });
             
-            match state.create_page(name.clone(), properties_json, &resolved_graph_id).await {
+            match state.create_page_as(agent_id, name.clone(), properties_json, &resolved_graph_id).await {
                 Ok(()) => {
                     let data = serde_json::json!({ "page_name": name });
                     send_success_response(connection_id, state, Some(data)).await?;
@@ -644,8 +776,6 @@ async fn handle_command(
             // Delete a page
             info!("🗑️ DeletePage command received via WebSocket: {}", page_name);
             
-            use crate::graph_operations::GraphOperationsExt;
-            
             let resolved_graph_id = resolve_graph_for_command(
                 state,
                 graph_id.as_deref(),
@@ -653,7 +783,16 @@ async fn handle_command(
                 true  // allow smart default
             ).await?;
             
-            match state.delete_page(page_name.clone(), &resolved_graph_id).await {
+            // Get current agent ID
+            let agent_id = match current_agent_id {
+                Some(id) => id,
+                None => {
+                    send_error_response(connection_id, state, "No agent selected for this operation").await?;
+                    return Ok(());
+                }
+            };
+            
+            match state.delete_page_as(agent_id, page_name.clone(), &resolved_graph_id).await {
                 Ok(()) => {
                     let data = serde_json::json!({ "page_name": page_name });
                     send_success_response(connection_id, state, Some(data)).await?;

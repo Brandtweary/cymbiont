@@ -10,7 +10,7 @@ cymbiont/
 │   ├── logging.rs                 # Custom tracing formatter
 │   ├── utils.rs                   # Process management and utilities
 │   ├── graph_manager.rs           # Petgraph-based knowledge graph engine
-│   ├── graph_operations.rs        # Public interface for graph operations
+│   ├── graph_operations.rs        # Multi-agent graph operations with phantom type authorization
 │   ├── agent/                     # Agent abstraction layer
 │   │   ├── mod.rs                 # Agent module exports
 │   │   ├── agent.rs               # Core Agent struct with conversation management
@@ -36,6 +36,7 @@ cymbiont/
 │       ├── agent_registry.rs      # Agent lifecycle and authorization management
 │       ├── agent_persistence.rs   # Agent save/load with auto-save thresholds
 │       ├── registry_utils.rs      # Shared UUID serialization utilities
+│       ├── registry_ref.rs        # Registry reference pattern for authorization checks
 │       ├── transaction_log.rs     # Write-ahead logging with sled
 │       └── transaction.rs         # Transaction coordination
 ├── data/                          # Graph and agent persistence (configurable path)
@@ -115,18 +116,24 @@ cymbiont/
 **Node/Edge types**: Defined by domain layer (e.g., PKM defines Page/Block nodes, PageRef/BlockRef edges)
 
 ### graph_operations.rs
-**Purpose**: PKM-specific operations as an extension trait on Arc<AppState>  
-**Design**: Extension trait pattern (`GraphOperationsExt`) provides PKM operations directly on AppState
-**Key role**: Adds domain-specific graph operations with full transaction support and crash recovery
-**Operations**: All operations now require explicit `graph_id: &Uuid` parameter:
-- `add_block()`, `update_block()`, `delete_block()` - block CRUD operations
-- `create_page()`, `delete_page()` - page management
-- `create_graph()`, `delete_graph()` - graph lifecycle
-- `open_graph()`, `close_graph()` - replaces switch_graph() with explicit resource management
-- `list_graphs()`, `list_open_graphs()` - graph enumeration
-- `get_node()`, `replay_transaction()` - query and recovery
+**Purpose**: Multi-agent graph operations with compile-time authorization enforcement
+**Architecture**: Four trait layers for security and clean API design:
+- `GraphOps` - agent-aware operations with automatic authorization (public chokepoint API)
+- `GraphOperationsExt` - raw operations without authorization (internal implementation)
+- `WithAgent` / phantom types - compile-time authorization flow using `Authorized`/`Unauthorized` markers
+- `OperationExecutor` - transaction replay interface (bypasses auth during recovery)
+**Authorization pattern**: Phantom types make unauthorized operations impossible to compile:
+```rust
+state.with_agent(agent_id).authorize_for_graph(graph_id)?.add_block(...)  // Authorized
+state.add_block_as(agent_id, ...)  // GraphOps chokepoint (recommended)
+```
+**Operations**: All operations require explicit `graph_id: &Uuid` parameter:
+- Block operations: `add_block()`, `update_block()`, `delete_block()`
+- Page operations: `create_page()`, `delete_page()`
+- Graph lifecycle: `create_graph()`, `delete_graph()`, `open_graph()`, `close_graph()`
+- Query operations: `get_node()`, `list_graphs()`, `list_open_graphs()`
+- Recovery: `replay_transaction()` for crash recovery
 **Transaction integration**: Each operation stores full API parameters in WAL for perfect recovery
-**Note**: Not a separate service - these are extension methods on Arc<AppState>
 
 ### storage/mod.rs
 **Purpose**: Persistence layer module with registry, transactions, and WAL logging  
@@ -174,6 +181,13 @@ cymbiont/
 **Purpose**: Shared UUID serialization utilities for both registries
 **Key modules**: `uuid_hashmap_serde`, `uuid_hashset_serde`, `uuid_vec_serde`
 **Design**: Prevents code duplication between GraphRegistry and AgentRegistry
+
+### storage/registry_ref.rs
+**Purpose**: Registry reference pattern that prevents cache coherency issues
+**Key type**: `RegistryRef<T>` - newtype wrapper that forces all state queries through authoritative registry
+**Authorization**: Contains `is_authorized_for()` method for agent-graph authorization checks
+**Phantom type delegation**: Provides `GraphOperationsExt` implementation for `AuthorizedAppState<Authorized>`
+**Pattern benefit**: Makes it impossible to cache stale registry state locally
 
 ### agent/agent.rs
 **Purpose**: Core Agent struct with conversation management and LLM interaction
@@ -224,11 +238,12 @@ cymbiont/
 **Purpose**: Real-time WebSocket communication with agent integration and high-throughput async processing
 **Architecture**: Each command spawns as independent async task for concurrent execution
 **Protocol**: Request/response with token auth, heartbeat, async command execution
+**Authorization**: All graph operations use `GraphOps` trait for automatic agent authorization
 **Graph commands**: 
 - `Auth { token }` - authentication (sets prime agent as current)
 - `OpenGraph`, `CloseGraph` - explicit graph lifecycle
-- `CreateBlock`, `UpdateBlock`, `DeleteBlock` - block operations (accept optional graph_id/graph_name)
-- `CreatePage`, `DeletePage` - page operations (accept optional graph_id/graph_name)
+- `CreateBlock`, `UpdateBlock`, `DeleteBlock` - block operations (require current agent, accept optional graph_id/graph_name)
+- `CreatePage`, `DeletePage` - page operations (require current agent, accept optional graph_id/graph_name)
 - `CreateGraph`, `DeleteGraph` - graph management
 **Agent chat commands**:
 - `AgentChat { message, echo?, agent_id?, agent_name? }` - chat with agent (echo for testing)
@@ -420,7 +435,7 @@ The shutdown sequence runs `cleanup_and_save()` to close WebSocket connections, 
 
 **Transaction**: Operation → Content hash → WAL log → Graph update → Commit/rollback
 
-**WebSocket**: Client auth → Prime agent selection → Async command execution (spawned tasks) → Transaction-wrapped operation → Success/Error response
+**WebSocket**: Client auth → Prime agent selection → Async command execution (spawned tasks) → Agent authorization via `GraphOps` → Transaction-wrapped operation → Success/Error response
 
 **Agent Chat**: WebSocket command → Resolve agent target → Load agent if needed → LLM completion → Save conversation → Return response
 

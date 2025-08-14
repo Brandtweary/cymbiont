@@ -1,43 +1,198 @@
-//! Application State Management
+//! Application State Management - Central Coordination Hub
 //! 
 //! This module provides the central AppState struct that acts as the coordination
-//! layer for all components of the Cymbiont knowledge graph engine. 
+//! layer for all components of the Cymbiont multi-agent knowledge graph engine.
+//! AppState orchestrates the interaction between graphs, agents, transactions, and
+//! real-time communication systems.
 //! 
-//! ## Architecture Role
+//! ## Central Nervous System Architecture
 //! 
-//! AppState serves as the "central nervous system" that connects:
-//! - Graph resources (bundled managers + coordinators via GraphResources)
-//! - Graph registry (multi-graph metadata and open/closed state tracking)
-//! - WebSocket connections (real-time communication)
-//! - Configuration (runtime settings)
+//! AppState coordinates all major subsystems:
+//! - **Graph Resources**: Bundled managers + coordinators for atomic lifecycle management
+//! - **Graph Registry**: Multi-graph metadata, open/closed state, and agent associations
+//! - **Agent Management**: Active agent instances and lifecycle coordination
+//! - **Agent Registry**: Agent metadata, authorization mappings, and persistence
+//! - **WebSocket Connections**: Real-time communication with current agent tracking
+//! - **Transaction Coordination**: ACID guarantees across all graphs
+//! - **Authentication**: Token-based security for server mode
+//! - **Configuration**: Runtime settings and environment management
+//! - **Graceful Shutdown**: Coordinated cleanup across all subsystems
 //! 
-//! ## Design Philosophy
+//! ## Design Philosophy: Coordination, Not Implementation
 //! 
-//! AppState is intentionally a coordination layer, not a business logic layer.
-//! It provides the wiring between components but delegates actual work:
-//! - PKM operations → Handled by GraphOperationsExt trait
-//! - Graph storage → Handled by GraphManager
-//! - Transactions → Handled by TransactionCoordinator
-//! - Open/closed state → Handled by GraphRegistry (single source of truth)
+//! AppState provides essential wiring between components while delegating actual work:
+//! - **PKM Operations** → GraphOperationsExt trait with phantom type authorization
+//! - **Graph Storage** → GraphManager with petgraph engine
+//! - **Transactions** → TransactionCoordinator with WAL logging
+//! - **Agent Interactions** → Agent structs with LLM backends
+//! - **Open/Closed State** → GraphRegistry (single source of truth)
+//! - **Authorization** → AgentRegistry with bidirectional mappings
+//! - **Real-time Communication** → WebSocket handlers with async execution
 //! 
-//! ## Resource Management
+//! This separation ensures clean architecture, testability, and maintainability.
 //! 
-//! The GraphResources struct bundles graph managers with their transaction
-//! coordinators to ensure atomic lifecycle management. This prevents
-//! inconsistent states where one resource exists without the other.
+//! ## Resource Bundling Pattern
 //! 
-//! ## Key Methods
+//! AppState implements resource bundling to ensure atomic lifecycle management:
 //! 
-//! - `with_graph_transaction(graph_id)` - Wraps operations in transactions for specific graph
-//! - `get_or_create_graph_manager()` - Lazy initialization of bundled graph resources
-//! - `open_graph()` / `close_graph()` - Explicit graph lifecycle management
-//! - `get_transaction_coordinator()` - Access to per-graph WAL
-//! - `cleanup_and_save()` - Graceful shutdown coordination
+//! ### GraphResources Bundle
+//! Each graph bundles GraphManager (petgraph storage) with TransactionCoordinator
+//! (WAL management). This prevents inconsistent states where one resource exists
+//! without its counterpart.
 //! 
-//! ## Extension Pattern
+//! ### Agent Resource Management
+//! - **Active Agents**: HashMap of loaded Agent instances in memory
+//! - **Agent Registry**: Persistent metadata and authorization mappings
+//! - **Atomic Operations**: Lifecycle changes update both memory and registry
 //! 
-//! Domain-specific operations are added via extension traits rather than
-//! methods on AppState itself. See GraphOperationsExt for PKM operations.
+//! ## Multi-Graph Architecture
+//! 
+//! AppState coordinates multiple isolated knowledge graphs simultaneously:
+//! 
+//! ### Graph Lifecycle States
+//! - **Closed**: Metadata exists but no manager/coordinator in memory
+//! - **Open**: Manager and coordinator loaded, ready for operations
+//! - **Archived**: Moved to archived_graphs/ directory (soft deletion)
+//! 
+//! ### Graph Resource Management
+//! - **Lazy Loading**: Resources created on first access
+//! - **Explicit Control**: Open/close operations provide deterministic management
+//! - **Atomic Transitions**: State changes coordinated across registry and memory
+//! - **Recovery**: Open graphs automatically loaded on system startup
+//! 
+//! ### Per-Graph Isolation
+//! - **Storage**: Isolated data directory and transaction log per graph
+//! - **Transactions**: Independent WAL and coordinator per graph
+//! - **Authorization**: Agent permissions managed per graph
+//! - **Concurrency**: Graph operations don't interfere with each other
+//! 
+//! ## Multi-Agent Coordination
+//! 
+//! AppState manages the complete agent ecosystem:
+//! 
+//! ### Agent Lifecycle Management
+//! - **Registration**: Create metadata and data directories
+//! - **Activation**: Load agent into memory for interaction
+//! - **Deactivation**: Save state and unload from memory
+//! - **Authorization**: Grant/revoke access to specific graphs
+//! - **Archival**: Move agents to archived_agents/ directory
+//! 
+//! ### Prime Agent System
+//! - **Auto-creation**: Created automatically on first startup
+//! - **Deletion Protection**: Cannot be deleted for system stability
+//! - **Default Authorization**: Auto-authorized for all new graphs
+//! - **WebSocket Default**: Used as fallback when no specific agent selected
+//! 
+//! ### Authorization Framework
+//! - **Bidirectional Mapping**: Agents ↔ graphs authorization tracking
+//! - **Phantom Type Enforcement**: Compile-time authorization checking
+//! - **Runtime Validation**: Authorization verified for all graph operations
+//! - **Single Source of Truth**: AgentRegistry maintains authoritative state
+//! 
+//! ## Transaction Architecture
+//! 
+//! AppState coordinates ACID transactions across the entire system:
+//! 
+//! ### Per-Graph Transaction Isolation
+//! - **Independent WAL**: Each graph has its own write-ahead log
+//! - **Separate Coordinators**: Independent transaction management per graph
+//! - **Atomic Operations**: Single-graph operations maintain ACID properties
+//! - **Recovery**: Graph-specific transaction replay during startup/open
+//! 
+//! ### System-Wide Transaction Coordination
+//! - **Graceful Shutdown**: Wait for all active transactions across all graphs
+//! - **Freeze Mechanism**: Test infrastructure to pause transaction execution
+//! - **Forced Termination**: Emergency shutdown with transaction log flush
+//! - **Startup Recovery**: All graphs processed for pending transaction recovery
+//! 
+//! ### Transaction Processing Pipeline
+//! 1. **Operation Request**: Graph operation initiated via GraphOps trait
+//! 2. **Authorization Check**: Agent permissions verified via phantom types
+//! 3. **Transaction Creation**: Operation logged to WAL with content deduplication
+//! 4. **Freeze Check**: Wait if operations frozen for testing
+//! 5. **Execution**: Operation applied to graph with error handling
+//! 6. **Completion**: Transaction marked committed/aborted based on result
+//! 7. **Persistence**: Graph state saved and transaction log updated
+//! 
+//! ## Server Mode Architecture
+//! 
+//! When running in server mode, AppState manages additional real-time components:
+//! - **Connection Tracking**: HashMap of active WebSocket connections by UUID
+//! - **Agent Association**: Each connection tracks current agent for operations
+//! - **Authentication**: Token-based auth with automatic token rotation
+//! - **Async Command Execution**: Commands spawn independent async tasks
+//! - **High Throughput**: Concurrent operation processing without blocking
+//! - **Agent Authorization**: All operations enforce agent permissions
+//! 
+//! ## Graceful Shutdown Architecture
+//! 
+//! AppState implements comprehensive graceful shutdown:
+//! 
+//! ### Shutdown Coordination Sequence
+//! 1. **Signal Handling**: SIGINT triggers graceful shutdown initiation
+//! 2. **Transaction Halt**: No new transactions accepted across all graphs
+//! 3. **Connection Closure**: WebSocket connections notified and closed
+//! 4. **Transaction Completion**: Wait for active transactions (up to 30 seconds)
+//! 5. **Resource Persistence**: All graphs and agents saved to disk
+//! 6. **Registry Persistence**: Graph and agent registries saved
+//! 7. **Transaction Log Flush**: WAL logs flushed and closed
+//! 8. **Process Termination**: Clean exit with std::process::exit(0)
+//! 
+//! ### Force Shutdown Path
+//! Second SIGINT forces immediate termination with transaction flush.
+//! 
+//! ## Initialization and Startup
+//! 
+//! AppState initialization is carefully orchestrated:
+//! 
+//! ### Factory Methods
+//! - **new_cli()**: CLI usage without server components
+//! - **new_server()**: Full server capabilities
+//! - **new_internal()**: Shared initialization logic
+//! 
+//! ### Startup Sequence
+//! 1. **Configuration Loading**: YAML config loaded with CLI overrides
+//! 2. **Data Directory Setup**: Directory structure created/validated
+//! 3. **Registry Initialization**: Graph and agent registries loaded from disk
+//! 4. **Prime Agent Creation**: Ensure prime agent exists for system stability
+//! 5. **Graph Recovery**: Open graphs loaded and transaction recovery performed
+//! 6. **Agent Activation**: Active agents loaded into memory
+//! 7. **Authentication Setup**: Server mode authentication token generation
+//! 8. **Component Wiring**: All subsystems connected and ready
+//! 
+//! ### Startup Validation
+//! - At least one open graph ensures system has a default graph available
+//! - Prime agent available guarantees authentication cannot deadlock
+//! - Data directory integrity validates storage directory structure
+//! - Registry consistency validates graph/agent metadata consistency
+//! 
+//! ## Concurrency and Thread Safety
+//! 
+//! AppState is designed for high-concurrency environments:
+//! - **Async RwLocks**: For frequently accessed resources (graphs, agents, connections)
+//! - **Sync RwLocks**: For registries requiring immediate consistency
+//! - **Lock Ordering**: Consistent acquisition order prevents deadlocks
+//! - **Double-check Pattern**: Prevents race conditions in resource creation
+//! - **Lock Dropping**: Early release to minimize contention windows
+//! - **Atomic Operations**: AtomicBool for shutdown coordination
+//! - **Debug Assertions**: Development-time lock contention detection
+//! 
+//! ## Error Handling and Resilience
+//! 
+//! AppState implements comprehensive error handling with recovery strategies:
+//! - **Configuration/Persistence/Authorization/Resource/Network Errors**: Categorized handling
+//! - **Graceful Degradation**: Continue when non-critical components fail
+//! - **Partial Success**: Agent loading continues even if individual agents fail
+//! - **Clear Error Propagation**: Context provided for debugging
+//! - **Atomic Operations**: Prevent partial state corruption
+//! 
+//! ## Extension Patterns
+//! 
+//! AppState supports clean extension:
+//! - **Extension Trait Pattern**: Domain-specific operations via traits (GraphOperationsExt)
+//! - **Factory Pattern**: Resource creation through factory methods
+//! - **Registry Pattern**: Centralized metadata with single source of truth
+//! - **Bidirectional Consistency**: Registry updates maintain referential integrity
 
 use std::collections::HashMap;
 use std::path::PathBuf;

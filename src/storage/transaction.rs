@@ -280,6 +280,7 @@ mod tests {
         let (coordinator, _temp_dir) = create_test_coordinator().await;
         
         let operation = Operation::CreateBlock {
+            agent_id: uuid::Uuid::new_v4(),
             content: "Test content".to_string(),
             parent_id: None,
             page_name: Some("test-page".to_string()),
@@ -305,6 +306,7 @@ mod tests {
         let (coordinator, _temp_dir) = create_test_coordinator().await;
         
         let operation = Operation::UpdateBlock {
+            agent_id: uuid::Uuid::new_v4(),
             block_id: "block-123".to_string(),
             content: "Updated content".to_string(),
         };
@@ -327,6 +329,7 @@ mod tests {
             
             for i in 0..3 {
                 let operation = Operation::CreateBlock {
+                    agent_id: uuid::Uuid::new_v4(),
                     content: format!("Content {}", i),
                     parent_id: None,
                     page_name: Some("test-page".to_string()),

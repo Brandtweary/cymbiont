@@ -45,22 +45,22 @@
  * 
  * ### Block Operations (Require Agent Authorization)
  * - **CreateBlock**: Create new block with content, parent, page, properties
- *   - Uses GraphOps::add_block_as() with current agent authorization
+ *   - Uses GraphOps::add_block() with current agent authorization
  *   - Accepts optional graph_id/graph_name (defaults to open graph)
  *   - Returns generated block UUID
  * - **UpdateBlock**: Modify existing block content with reference resolution
- *   - Uses GraphOps::update_block_as() with current agent authorization
+ *   - Uses GraphOps::update_block() with current agent authorization
  *   - Preserves all properties except content and updated timestamp
  * - **DeleteBlock**: Archive block node while preserving graph integrity
- *   - Uses GraphOps::delete_block_as() with current agent authorization
+ *   - Uses GraphOps::delete_block() with current agent authorization
  *   - Moves to archived state rather than hard deletion
  * 
  * ### Page Operations (Require Agent Authorization)
  * - **CreatePage**: Create new page with normalized name handling
- *   - Uses GraphOps::create_page_as() with current agent authorization
+ *   - Uses GraphOps::create_page() with current agent authorization
  *   - Handles duplicate pages by updating properties if provided
  * - **DeletePage**: Archive page node using normalized name lookup
- *   - Uses GraphOps::delete_page_as() with current agent authorization
+ *   - Uses GraphOps::delete_page() with current agent authorization
  *   - Searches by both original and normalized names
  * 
  * ### Agent Chat Commands
@@ -567,7 +567,7 @@ async fn handle_command(
                 }
             };
             
-            match state.add_block_as(agent_id, content, parent_id, page_name, None, &resolved_graph_id).await {
+            match state.add_block(agent_id, content, parent_id, page_name, None, &resolved_graph_id).await {
                 Ok(block_id) => {
                     let data = serde_json::json!({ "block_id": block_id });
                     send_success_response(connection_id, state, Some(data)).await?;
@@ -597,7 +597,7 @@ async fn handle_command(
                 }
             };
             
-            match state.update_block_as(agent_id, block_id.clone(), content, &resolved_graph_id).await {
+            match state.update_block(agent_id, block_id.clone(), content, &resolved_graph_id).await {
                 Ok(()) => {
                     let data = serde_json::json!({ "block_id": block_id });
                     send_success_response(connection_id, state, Some(data)).await?;
@@ -627,7 +627,7 @@ async fn handle_command(
                 }
             };
             
-            match state.delete_block_as(agent_id, block_id.clone(), &resolved_graph_id).await {
+            match state.delete_block(agent_id, block_id.clone(), &resolved_graph_id).await {
                 Ok(()) => {
                     let data = serde_json::json!({ "block_id": block_id });
                     send_success_response(connection_id, state, Some(data)).await?;
@@ -666,7 +666,7 @@ async fn handle_command(
                 )
             });
             
-            match state.create_page_as(agent_id, name.clone(), properties_json, &resolved_graph_id).await {
+            match state.create_page(agent_id, name.clone(), properties_json, &resolved_graph_id).await {
                 Ok(()) => {
                     let data = serde_json::json!({ "page_name": name });
                     send_success_response(connection_id, state, Some(data)).await?;
@@ -694,7 +694,7 @@ async fn handle_command(
             // Open a graph
             info!("📂 OpenGraph command received via WebSocket");
             
-            use crate::graph_operations::GraphOperationsExt;
+            use crate::graph_operations::GraphOps;
             
             let resolved_graph_id = resolve_graph_for_command(
                 state,
@@ -716,7 +716,7 @@ async fn handle_command(
             // Close a graph
             info!("📁 CloseGraph command received via WebSocket");
             
-            use crate::graph_operations::GraphOperationsExt;
+            use crate::graph_operations::GraphOps;
             
             let resolved_graph_id = resolve_graph_for_command(
                 state,
@@ -738,7 +738,7 @@ async fn handle_command(
             // Create a new graph
             info!("📊 CreateGraph command received via WebSocket");
             
-            use crate::graph_operations::GraphOperationsExt;
+            use crate::graph_operations::GraphOps;
             
             match state.create_graph(name, description).await {
                 Ok(graph_info) => {
@@ -753,7 +753,7 @@ async fn handle_command(
             // Delete a graph
             info!("🗑️ DeleteGraph command received via WebSocket");
             
-            use crate::graph_operations::GraphOperationsExt;
+            use crate::graph_operations::GraphOps;
             
             let resolved_graph_id = resolve_graph_for_command(
                 state,
@@ -792,7 +792,7 @@ async fn handle_command(
                 }
             };
             
-            match state.delete_page_as(agent_id, page_name.clone(), &resolved_graph_id).await {
+            match state.delete_page(agent_id, page_name.clone(), &resolved_graph_id).await {
                 Ok(()) => {
                     let data = serde_json::json!({ "page_name": page_name });
                     send_success_response(connection_id, state, Some(data)).await?;

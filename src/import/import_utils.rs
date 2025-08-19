@@ -33,7 +33,7 @@ use std::error::Error;
 use std::sync::Arc;
 use tracing::{info, error};
 use crate::app_state::AppState;
-use crate::graph_operations::GraphOperationsExt;
+use crate::graph_operations::GraphOps;
 use super::logseq;
 
 /// Result of a Logseq import operation

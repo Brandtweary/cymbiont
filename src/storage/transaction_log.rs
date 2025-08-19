@@ -97,24 +97,29 @@ pub enum TransactionState {
 pub enum Operation {
     // Block operations with full API parameters
     CreateBlock {
+        agent_id: uuid::Uuid,
         content: String,
         parent_id: Option<String>,
         page_name: Option<String>,
         properties: Option<serde_json::Value>,
     },
     UpdateBlock {
+        agent_id: uuid::Uuid,
         block_id: String,
         content: String,
     },
     DeleteBlock {
+        agent_id: uuid::Uuid,
         block_id: String,
     },
     // Page operations with full API parameters
     CreatePage {
+        agent_id: uuid::Uuid,
         page_name: String,
         properties: Option<serde_json::Value>,
     },
     DeletePage {
+        agent_id: uuid::Uuid,
         page_name: String,
     },
 }
@@ -318,6 +323,7 @@ mod tests {
         let (log, _temp_dir) = create_test_log();
         
         let operation = Operation::CreateBlock {
+            agent_id: uuid::Uuid::new_v4(),
             content: "Test content".to_string(),
             parent_id: None,
             page_name: Some("test-page".to_string()),
@@ -338,6 +344,7 @@ mod tests {
         let (log, _temp_dir) = create_test_log();
         
         let operation = Operation::CreateBlock {
+            agent_id: uuid::Uuid::new_v4(),
             content: "Test content".to_string(),
             parent_id: None,
             page_name: Some("test-page".to_string()),
@@ -360,6 +367,7 @@ mod tests {
         // Create multiple transactions
         for i in 0..3 {
             let operation = Operation::CreateBlock {
+                agent_id: uuid::Uuid::new_v4(),
                 content: format!("Content {}", i),
                 parent_id: None,
                 page_name: Some("test-page".to_string()),

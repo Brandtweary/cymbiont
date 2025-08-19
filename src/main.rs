@@ -64,7 +64,7 @@ mod utils;
 
 use app_state::AppState;
 use logging::init_logging;
-use graph_operations::GraphOperationsExt;
+use graph_operations::GraphOps;
 
 // CLI arguments  
 #[derive(Parser, Debug)]
@@ -241,7 +241,7 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
         
         // Handle graph deletion if requested
         if let Some(graph_identifier) = args.delete_graph {
-            use crate::graph_operations::GraphOperationsExt;
+            use crate::graph_operations::GraphOps;
             use uuid::Uuid;
             
             // Resolve the graph using centralized logic

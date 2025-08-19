@@ -10,7 +10,7 @@
 //!
 //! The ToolRegistry maintains a collection of async functions that agents can call.
 //! Each tool is registered with a name and executes operations on the knowledge graph
-//! through the GraphOperationsExt trait. Tools handle parameter validation and error
+//! through the GraphOps trait. Tools handle parameter validation and error
 //! conversion to provide clean interfaces for agent consumption.
 //!
 //! ## Tool Categories
@@ -46,7 +46,7 @@ use std::pin::Pin;
 use serde_json::{json, Value};
 use uuid::Uuid;
 use crate::app_state::AppState;
-use crate::graph_operations::GraphOperationsExt;
+use crate::graph_operations::GraphOps;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -64,7 +64,8 @@ pub enum ToolError {
 type Result<T> = std::result::Result<T, ToolError>;
 
 /// Type alias for async tool functions
-pub type ToolFunction = Box<dyn Fn(Value, Arc<AppState>) -> Pin<Box<dyn Future<Output = Result<Value>> + Send>> + Send + Sync>;
+/// Takes agent_id as first parameter (system-provided), then args from LLM, then AppState
+pub type ToolFunction = Box<dyn Fn(Uuid, Value, Arc<AppState>) -> Pin<Box<dyn Future<Output = Result<Value>> + Send>> + Send + Sync>;
 
 /// Registry for knowledge graph tools that can be called by LLMs
 pub struct ToolRegistry {
@@ -88,12 +89,12 @@ impl ToolRegistry {
         registry
     }
     
-    /// Execute a tool by name with the given arguments
-    pub async fn execute(&self, tool_name: &str, args: Value) -> Result<Value> {
+    /// Execute a tool by name with the given agent_id and arguments
+    pub async fn execute(&self, agent_id: Uuid, tool_name: &str, args: Value) -> Result<Value> {
         let tool = self.tools.get(tool_name)
             .ok_or_else(|| ToolError::ToolNotFound(tool_name.to_string()))?;
         
-        tool(args, self.app_state.clone()).await
+        tool(agent_id, args, self.app_state.clone()).await
     }
     
     /// Get list of available tool names
@@ -108,7 +109,7 @@ impl ToolRegistry {
     
     fn register_block_operations(&mut self) {
         // add_block
-        self.register("add_block", Box::new(|args, state| {
+        self.register("add_block", Box::new(|agent_id, args, state| {
             Box::pin(async move {
                 let content = args.get("content")
                     .and_then(|v| v.as_str())
@@ -127,7 +128,7 @@ impl ToolRegistry {
                 
                 let graph_id = parse_graph_id(&args)?;
                 
-                match state.add_block(content, parent_id, page_name, properties, &graph_id).await {
+                match state.add_block(agent_id, content, parent_id, page_name, properties, &graph_id).await {
                     Ok(block_id) => Ok(json!({
                         "success": true,
                         "block_id": block_id
@@ -141,7 +142,7 @@ impl ToolRegistry {
         }));
         
         // update_block
-        self.register("update_block", Box::new(|args, state| {
+        self.register("update_block", Box::new(|agent_id, args, state| {
             Box::pin(async move {
                 let block_id = args.get("block_id")
                     .and_then(|v| v.as_str())
@@ -155,7 +156,7 @@ impl ToolRegistry {
                 
                 let graph_id = parse_graph_id(&args)?;
                 
-                match state.update_block(block_id, content, &graph_id).await {
+                match state.update_block(agent_id, block_id, content, &graph_id).await {
                     Ok(()) => Ok(json!({
                         "success": true
                     })),
@@ -168,7 +169,7 @@ impl ToolRegistry {
         }));
         
         // delete_block
-        self.register("delete_block", Box::new(|args, state| {
+        self.register("delete_block", Box::new(|agent_id, args, state| {
             Box::pin(async move {
                 let block_id = args.get("block_id")
                     .and_then(|v| v.as_str())
@@ -177,7 +178,7 @@ impl ToolRegistry {
                 
                 let graph_id = parse_graph_id(&args)?;
                 
-                match state.delete_block(block_id, &graph_id).await {
+                match state.delete_block(agent_id, block_id, &graph_id).await {
                     Ok(()) => Ok(json!({
                         "success": true
                     })),
@@ -192,7 +193,7 @@ impl ToolRegistry {
     
     fn register_page_operations(&mut self) {
         // create_page
-        self.register("create_page", Box::new(|args, state| {
+        self.register("create_page", Box::new(|agent_id, args, state| {
             Box::pin(async move {
                 let page_name = args.get("page_name")
                     .and_then(|v| v.as_str())
@@ -203,7 +204,7 @@ impl ToolRegistry {
                 
                 let graph_id = parse_graph_id(&args)?;
                 
-                match state.create_page(page_name, properties, &graph_id).await {
+                match state.create_page(agent_id, page_name, properties, &graph_id).await {
                     Ok(()) => Ok(json!({
                         "success": true
                     })),
@@ -216,7 +217,7 @@ impl ToolRegistry {
         }));
         
         // delete_page
-        self.register("delete_page", Box::new(|args, state| {
+        self.register("delete_page", Box::new(|agent_id, args, state| {
             Box::pin(async move {
                 let page_name = args.get("page_name")
                     .and_then(|v| v.as_str())
@@ -225,7 +226,7 @@ impl ToolRegistry {
                 
                 let graph_id = parse_graph_id(&args)?;
                 
-                match state.delete_page(page_name, &graph_id).await {
+                match state.delete_page(agent_id, page_name, &graph_id).await {
                     Ok(()) => Ok(json!({
                         "success": true
                     })),
@@ -240,7 +241,7 @@ impl ToolRegistry {
     
     fn register_query_operations(&mut self) {
         // get_node
-        self.register("get_node", Box::new(|args, state| {
+        self.register("get_node", Box::new(|agent_id, args, state| {
             Box::pin(async move {
                 let node_id = args.get("node_id")
                     .and_then(|v| v.as_str())
@@ -248,7 +249,7 @@ impl ToolRegistry {
                 
                 let graph_id = parse_graph_id(&args)?;
                 
-                match state.get_node(node_id, &graph_id).await {
+                match state.get_node(agent_id, node_id, &graph_id).await {
                     Ok(node_data) => Ok(node_data),
                     Err(e) => Ok(json!({
                         "success": false,
@@ -259,7 +260,7 @@ impl ToolRegistry {
         }));
         
         // query_graph_bfs
-        self.register("query_graph_bfs", Box::new(|args, state| {
+        self.register("query_graph_bfs", Box::new(|agent_id, args, state| {
             Box::pin(async move {
                 let start_id = args.get("start_id")
                     .and_then(|v| v.as_str())
@@ -272,7 +273,7 @@ impl ToolRegistry {
                 let graph_id = parse_graph_id(&args)?;
                 
                 // This is actually a sync operation
-                match state.query_graph_bfs(start_id, max_depth, &graph_id) {
+                match state.query_graph_bfs(agent_id, start_id, max_depth, &graph_id) {
                     Ok(nodes) => Ok(json!({
                         "success": true,
                         "nodes": nodes
@@ -288,7 +289,7 @@ impl ToolRegistry {
     
     fn register_graph_management(&mut self) {
         // list_graphs
-        self.register("list_graphs", Box::new(|_args, state| {
+        self.register("list_graphs", Box::new(|_agent_id, _args, state| {
             Box::pin(async move {
                 match state.list_graphs().await {
                     Ok(graphs) => Ok(json!({
@@ -304,7 +305,7 @@ impl ToolRegistry {
         }));
         
         // list_open_graphs
-        self.register("list_open_graphs", Box::new(|_args, state| {
+        self.register("list_open_graphs", Box::new(|_agent_id, _args, state| {
             Box::pin(async move {
                 match state.list_open_graphs().await {
                     Ok(graph_ids) => Ok(json!({
@@ -320,7 +321,7 @@ impl ToolRegistry {
         }));
         
         // open_graph
-        self.register("open_graph", Box::new(|args, state| {
+        self.register("open_graph", Box::new(|_agent_id, args, state| {
             Box::pin(async move {
                 let graph_id = parse_graph_id(&args)?;
                 
@@ -335,7 +336,7 @@ impl ToolRegistry {
         }));
         
         // close_graph
-        self.register("close_graph", Box::new(|args, state| {
+        self.register("close_graph", Box::new(|_agent_id, args, state| {
             Box::pin(async move {
                 let graph_id = parse_graph_id(&args)?;
                 
@@ -352,7 +353,7 @@ impl ToolRegistry {
         }));
         
         // create_graph
-        self.register("create_graph", Box::new(|args, state| {
+        self.register("create_graph", Box::new(|_agent_id, args, state| {
             Box::pin(async move {
                 let name = args.get("name")
                     .and_then(|v| v.as_str())
@@ -373,7 +374,7 @@ impl ToolRegistry {
         }));
         
         // delete_graph
-        self.register("delete_graph", Box::new(|args, state| {
+        self.register("delete_graph", Box::new(|_agent_id, args, state| {
             Box::pin(async move {
                 let graph_id = parse_graph_id(&args)?;
                 

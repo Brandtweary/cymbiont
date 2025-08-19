@@ -10,7 +10,7 @@ cymbiont/
 │   ├── logging.rs                 # Custom tracing formatter
 │   ├── utils.rs                   # Process management and utilities
 │   ├── graph_manager.rs           # Petgraph-based knowledge graph engine
-│   ├── graph_operations.rs        # Multi-agent graph operations with phantom type authorization
+│   ├── graph_operations.rs        # Multi-agent graph operations with runtime authorization
 │   ├── agent/                     # Agent abstraction layer
 │   │   ├── mod.rs                 # Agent module exports
 │   │   ├── agent.rs               # Core Agent struct with conversation management
@@ -36,7 +36,6 @@ cymbiont/
 │       ├── agent_registry.rs      # Agent lifecycle and authorization management
 │       ├── agent_persistence.rs   # Agent save/load with auto-save thresholds
 │       ├── registry_utils.rs      # Shared UUID serialization utilities
-│       ├── registry_ref.rs        # Registry reference pattern for authorization checks
 │       ├── transaction_log.rs     # Write-ahead logging with sled
 │       └── transaction.rs         # Transaction coordination
 ├── data/                          # Graph and agent persistence (configurable path)
@@ -116,24 +115,28 @@ cymbiont/
 **Node/Edge types**: Defined by domain layer (e.g., PKM defines Page/Block nodes, PageRef/BlockRef edges)
 
 ### graph_operations.rs
-**Purpose**: Multi-agent graph operations with compile-time authorization enforcement
-**Architecture**: Four trait layers for security and clean API design:
-- `GraphOps` - agent-aware operations with automatic authorization (public chokepoint API)
-- `GraphOperationsExt` - raw operations without authorization (internal implementation)
-- `WithAgent` / phantom types - compile-time authorization flow using `Authorized`/`Unauthorized` markers
-- `OperationExecutor` - transaction replay interface (bypasses auth during recovery)
-**Authorization pattern**: Phantom types make unauthorized operations impossible to compile:
-```rust
-state.with_agent(agent_id).authorize_for_graph(graph_id)?.add_block(...)  // Authorized
-state.add_block_as(agent_id, ...)  // GraphOps chokepoint (recommended)
-```
-**Operations**: All operations require explicit `graph_id: &Uuid` parameter:
+**Purpose**: Multi-agent graph operations with runtime authorization enforcement
+**Key trait**: `GraphOps` - single public API for all graph operations with agent authorization
+**Authorization**: Runtime checks at operation entry verify agent permissions via AgentRegistry
+**Operations**: All operations require `agent_id: Uuid` and `graph_id: &Uuid` parameters:
 - Block operations: `add_block()`, `update_block()`, `delete_block()`
 - Page operations: `create_page()`, `delete_page()`
 - Graph lifecycle: `create_graph()`, `delete_graph()`, `open_graph()`, `close_graph()`
-- Query operations: `get_node()`, `list_graphs()`, `list_open_graphs()`
+- Query operations: `get_node()`, `query_graph_bfs()`, `list_graphs()`, `list_open_graphs()`
 - Recovery: `replay_transaction()` for crash recovery
-**Transaction integration**: Each operation stores full API parameters in WAL for perfect recovery
+**Transaction integration**: Each operation stores full API parameters including agent_id in WAL for perfect recovery
+**OperationExecutor**: Trait for transaction replay that bypasses authorization during recovery
+
+**Adding New Graph Operations**:
+1. Define Operation variant in `storage/transaction_log.rs` `Operation` enum
+2. Add trait method to `GraphOps` trait with `agent_id: Uuid` as first parameter
+3. Implement the operation in `impl GraphOps for AppState`:
+   - Add runtime authorization check at start
+   - Wrap core logic in transaction if modifying data
+   - Store operation with full parameters for recovery
+4. Implement `OperationExecutor` for the new `Operation` variant
+5. (Optional) Register in tool registry at `agent/kg_tools.rs` for LLM access
+6. (Optional) Add WebSocket command in `server/websocket.rs` for real-time access
 
 ### storage/mod.rs
 **Purpose**: Persistence layer module with registry, transactions, and WAL logging  
@@ -181,13 +184,6 @@ state.add_block_as(agent_id, ...)  // GraphOps chokepoint (recommended)
 **Purpose**: Shared UUID serialization utilities for both registries
 **Key modules**: `uuid_hashmap_serde`, `uuid_hashset_serde`, `uuid_vec_serde`
 **Design**: Prevents code duplication between GraphRegistry and AgentRegistry
-
-### storage/registry_ref.rs
-**Purpose**: Registry reference pattern that prevents cache coherency issues
-**Key type**: `RegistryRef<T>` - newtype wrapper that forces all state queries through authoritative registry
-**Authorization**: Contains `is_authorized_for()` method for agent-graph authorization checks
-**Phantom type delegation**: Provides `GraphOperationsExt` implementation for `AuthorizedAppState<Authorized>`
-**Pattern benefit**: Makes it impossible to cache stale registry state locally
 
 ### agent/agent.rs
 **Purpose**: Core Agent struct with conversation management and LLM interaction
@@ -238,7 +234,7 @@ state.add_block_as(agent_id, ...)  // GraphOps chokepoint (recommended)
 **Purpose**: Real-time WebSocket communication with agent integration and high-throughput async processing
 **Architecture**: Each command spawns as independent async task for concurrent execution
 **Protocol**: Request/response with token auth, heartbeat, async command execution
-**Authorization**: All graph operations use `GraphOps` trait for automatic agent authorization
+**Authorization**: All graph operations use `GraphOps` trait with runtime agent authorization
 **Graph commands**: 
 - `Auth { token }` - authentication (sets prime agent as current)
 - `OpenGraph`, `CloseGraph` - explicit graph lifecycle
@@ -435,7 +431,7 @@ The shutdown sequence runs `cleanup_and_save()` to close WebSocket connections, 
 
 **Transaction**: Operation → Content hash → WAL log → Graph update → Commit/rollback
 
-**WebSocket**: Client auth → Prime agent selection → Async command execution (spawned tasks) → Agent authorization via `GraphOps` → Transaction-wrapped operation → Success/Error response
+**WebSocket**: Client auth → Prime agent selection → Async command execution (spawned tasks) → Runtime authorization check → Transaction-wrapped operation → Success/Error response
 
 **Agent Chat**: WebSocket command → Resolve agent target → Load agent if needed → LLM completion → Save conversation → Return response
 

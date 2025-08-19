@@ -657,4 +657,219 @@ mod tests {
         assert_eq!(loaded_agent.name, "PersistentAgent");
         assert!(loaded_registry.is_agent_active(&agent_id));
     }
+
+    #[test]
+    fn test_agent_authorization_basics() {
+        let temp_dir = tempdir().unwrap();
+        let data_dir = temp_dir.path();
+        let mut agent_registry = AgentRegistry::new();
+        agent_registry.data_dir = Some(data_dir.to_path_buf());
+        
+        // Create a graph registry for bidirectional updates
+        let mut graph_registry = crate::storage::GraphRegistry::new();
+        
+        // Create two agents
+        let agent1 = agent_registry.register_agent(
+            None,
+            Some("Agent1".to_string()),
+            None,
+        ).unwrap();
+        
+        let agent2 = agent_registry.register_agent(
+            None,
+            Some("Agent2".to_string()),
+            None,
+        ).unwrap();
+        
+        // Create a graph ID
+        let graph_id = Uuid::new_v4();
+        
+        // Initially, neither agent should be authorized
+        assert!(!agent_registry.is_agent_authorized(&agent1.id, &graph_id),
+            "Agent1 should not be authorized initially");
+        assert!(!agent_registry.is_agent_authorized(&agent2.id, &graph_id),
+            "Agent2 should not be authorized initially");
+        
+        // Authorize agent1 for the graph
+        agent_registry.authorize_agent_for_graph(&agent1.id, &graph_id, &mut graph_registry).unwrap();
+        
+        // Verify agent1 is now authorized but agent2 is not
+        assert!(agent_registry.is_agent_authorized(&agent1.id, &graph_id),
+            "Agent1 should be authorized after authorization");
+        assert!(!agent_registry.is_agent_authorized(&agent2.id, &graph_id),
+            "Agent2 should still not be authorized");
+    }
+
+    #[test]
+    fn test_authorization_revocation() {
+        let temp_dir = tempdir().unwrap();
+        let data_dir = temp_dir.path();
+        let mut agent_registry = AgentRegistry::new();
+        agent_registry.data_dir = Some(data_dir.to_path_buf());
+        
+        // Create a graph registry for bidirectional updates
+        let mut graph_registry = crate::storage::GraphRegistry::new();
+        
+        // Create an agent
+        let agent = agent_registry.register_agent(
+            None,
+            Some("TestAgent".to_string()),
+            None,
+        ).unwrap();
+        
+        let graph_id = Uuid::new_v4();
+        
+        // Authorize the agent
+        agent_registry.authorize_agent_for_graph(&agent.id, &graph_id, &mut graph_registry).unwrap();
+        assert!(agent_registry.is_agent_authorized(&agent.id, &graph_id),
+            "Agent should be authorized");
+        
+        // Revoke authorization
+        agent_registry.deauthorize_agent_from_graph(&agent.id, &graph_id, &mut graph_registry).unwrap();
+        assert!(!agent_registry.is_agent_authorized(&agent.id, &graph_id),
+            "Agent should not be authorized after revocation");
+        
+        // Verify agent still exists
+        assert!(agent_registry.get_agent(&agent.id).is_some(),
+            "Agent should still exist after deauthorization");
+    }
+
+    #[test]
+    fn test_multiple_graph_authorization() {
+        let temp_dir = tempdir().unwrap();
+        let data_dir = temp_dir.path();
+        let mut agent_registry = AgentRegistry::new();
+        agent_registry.data_dir = Some(data_dir.to_path_buf());
+        
+        // Create a graph registry for bidirectional updates
+        let mut graph_registry = crate::storage::GraphRegistry::new();
+        
+        // Create one agent
+        let agent = agent_registry.register_agent(
+            None,
+            Some("MultiGraphAgent".to_string()),
+            None,
+        ).unwrap();
+        
+        // Create two graphs
+        let graph1 = Uuid::new_v4();
+        let graph2 = Uuid::new_v4();
+        
+        // Authorize for first graph only
+        agent_registry.authorize_agent_for_graph(&agent.id, &graph1, &mut graph_registry).unwrap();
+        
+        // Verify authorization state
+        assert!(agent_registry.is_agent_authorized(&agent.id, &graph1),
+            "Agent should be authorized for graph1");
+        assert!(!agent_registry.is_agent_authorized(&agent.id, &graph2),
+            "Agent should not be authorized for graph2");
+        
+        // Add authorization for second graph
+        agent_registry.authorize_agent_for_graph(&agent.id, &graph2, &mut graph_registry).unwrap();
+        
+        // Verify agent is now authorized for both
+        assert!(agent_registry.is_agent_authorized(&agent.id, &graph1),
+            "Agent should still be authorized for graph1");
+        assert!(agent_registry.is_agent_authorized(&agent.id, &graph2),
+            "Agent should now be authorized for graph2");
+        
+        // Verify the agent's authorized_graphs list
+        let agent_info = agent_registry.get_agent(&agent.id).unwrap();
+        assert_eq!(agent_info.authorized_graphs.len(), 2,
+            "Agent should have 2 authorized graphs");
+        assert!(agent_info.authorized_graphs.contains(&graph1));
+        assert!(agent_info.authorized_graphs.contains(&graph2));
+    }
+
+    #[test]
+    fn test_prime_agent_authorization() {
+        let temp_dir = tempdir().unwrap();
+        let data_dir = temp_dir.path();
+        let mut agent_registry = AgentRegistry::new();
+        agent_registry.data_dir = Some(data_dir.to_path_buf());
+        
+        // Create a graph registry for bidirectional updates
+        let mut graph_registry = crate::storage::GraphRegistry::new();
+        
+        // Create prime agent
+        let prime_agent = agent_registry.ensure_default_agent().unwrap();
+        assert!(prime_agent.is_prime);
+        
+        // Create regular agent
+        let regular_agent = agent_registry.register_agent(
+            None,
+            Some("RegularAgent".to_string()),
+            None,
+        ).unwrap();
+        assert!(!regular_agent.is_prime);
+        
+        // Create a graph
+        let graph_id = Uuid::new_v4();
+        
+        // Neither should be authorized initially (even prime agent)
+        assert!(!agent_registry.is_agent_authorized(&prime_agent.id, &graph_id),
+            "Prime agent should not be auto-authorized");
+        assert!(!agent_registry.is_agent_authorized(&regular_agent.id, &graph_id),
+            "Regular agent should not be authorized");
+        
+        // Authorize prime agent
+        agent_registry.authorize_agent_for_graph(&prime_agent.id, &graph_id, &mut graph_registry).unwrap();
+        
+        // Verify only prime agent is authorized
+        assert!(agent_registry.is_agent_authorized(&prime_agent.id, &graph_id),
+            "Prime agent should be authorized after explicit authorization");
+        assert!(!agent_registry.is_agent_authorized(&regular_agent.id, &graph_id),
+            "Regular agent should still not be authorized");
+    }
+
+    #[test]
+    fn test_authorization_for_nonexistent_agent() {
+        let temp_dir = tempdir().unwrap();
+        let _data_dir = temp_dir.path();
+        let registry = AgentRegistry::new();
+        
+        let fake_agent_id = Uuid::new_v4();
+        let graph_id = Uuid::new_v4();
+        
+        // Should return false for non-existent agent
+        assert!(!registry.is_agent_authorized(&fake_agent_id, &graph_id),
+            "Non-existent agent should not be authorized");
+    }
+
+    #[test]
+    fn test_authorization_persistence() {
+        let dir = tempdir().unwrap();
+        let registry_path = dir.path().join("agent_registry.json");
+        let data_dir = dir.path();
+
+        let agent_id = Uuid::new_v4();
+        let graph_id = Uuid::new_v4();
+        
+        // Create registry and authorize agent
+        {
+            let mut registry = AgentRegistry::load_or_create(&registry_path, data_dir).unwrap();
+            
+            registry.register_agent(
+                Some(agent_id),
+                Some("AuthorizedAgent".to_string()),
+                None,
+            ).unwrap();
+            
+            let mut graph_registry = crate::storage::GraphRegistry::new();
+            registry.authorize_agent_for_graph(&agent_id, &graph_id, &mut graph_registry).unwrap();
+            registry.save().unwrap();
+        }
+        
+        // Load registry from disk and verify authorization persisted
+        {
+            let loaded_registry = AgentRegistry::load_or_create(&registry_path, data_dir).unwrap();
+            
+            assert!(loaded_registry.is_agent_authorized(&agent_id, &graph_id),
+                "Authorization should persist across save/load");
+            
+            let agent = loaded_registry.get_agent(&agent_id).unwrap();
+            assert!(agent.authorized_graphs.contains(&graph_id),
+                "Authorized graphs list should persist");
+        }
+    }
 }

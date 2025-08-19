@@ -1,27 +1,26 @@
 #![allow(dead_code)] // TODO: Remove when integrated with Ollama agent
 
 /**
- * Graph Operations Module - PKM Operations Extension Trait
+ * Graph Operations Module - Agent-Aware PKM Operations
  * 
- * Provides PKM-specific graph operations as extension methods on Arc<AppState>.
- * This design eliminates the confusion of a separate service object while keeping
- * domain-specific logic cleanly separated from core state management.
+ * Provides PKM-specific graph operations with runtime agent authorization.
+ * All operations require an agent ID and verify authorization before execution.
  * 
- * ## Design Pattern: Extension Trait
+ * ## Design Pattern: Single Trait API
  * 
- * The `GraphOperationsExt` trait extends Arc<AppState> with PKM operations:
+ * The `GraphOps` trait provides all graph operations with agent awareness:
  * ```rust
- * use graph_operations::GraphOperationsExt;
+ * use graph_operations::GraphOps;
  * 
- * // Operations appear directly on AppState
- * app_state.add_block(content, parent_id, page_name, properties).await?;
+ * // Operations require agent_id for authorization
+ * app_state.add_block(agent_id, content, parent_id, page_name, properties, &graph_id).await?;
  * ```
  * 
  * This pattern provides several benefits:
- * - No artificial service object creation
- * - Clear that these are PKM-specific extensions
- * - Natural integration with AppState's coordination role
- * - Stateless operations with no overhead
+ * - Runtime authorization checks for security
+ * - Single source of truth for all graph operations
+ * - Clear agent accountability for all changes
+ * - Clean integration with transaction system
  * 
  * ## Core Operations
  * 
@@ -104,10 +103,39 @@
  * }
  * ```
  * 
- * When adding new operations:
- * 1. Add variant to `Operation` enum in storage/transaction_log.rs
- * 2. Add case to `OperationExecutor` implementation below
- * 3. Implement the actual operation in `GraphOperationsExt`
+ * ## Adding New Graph Operations
+ * 
+ * When adding new operations, follow these steps:
+ * 
+ * 1. **Define the Operation variant** in `storage/transaction_log.rs`:
+ *    - Add new variant to `Operation` enum with agent_id and all parameters
+ *    - Include all data needed to replay the operation during recovery
+ * 
+ * 2. **Add the trait method** to `GraphOps` trait in this file:
+ *    - Include agent_id: Uuid as first parameter
+ *    - Add graph_id: &Uuid parameter for graph targeting
+ *    - Return appropriate Result<T> type
+ * 
+ * 3. **Implement the operation** in `impl GraphOps for Arc<AppState>`:
+ *    - Start with authorization check using agent_registry
+ *    - Create Operation enum with parameters for transaction log
+ *    - Execute within with_graph_transaction() for ACID guarantees
+ *    - Handle errors appropriately (GraphError vs NodeNotFound)
+ * 
+ * 4. **Add to OperationExecutor** implementation at bottom of this file:
+ *    - Add match arm that calls the GraphOps method
+ *    - Map operation parameters to method parameters
+ *    - Convert errors to String for transaction system
+ * 
+ * 5. **Register in tool registry** (optional) in `agent/kg_tools.rs`:
+ *    - Add tool registration in appropriate category
+ *    - Parse parameters from JSON args
+ *    - Call GraphOps method with agent_id and parsed params
+ * 
+ * 6. **Add WebSocket command** (optional) in `server/websocket.rs`:
+ *    - Define command variant in Command enum
+ *    - Add handler that extracts current_agent_id
+ *    - Call GraphOps method and return success/error response
  * 
  * ## Error Handling
  * 
@@ -120,7 +148,7 @@ use crate::{
     AppState,
     import::pkm_data::{PKMBlockData, PKMPageData},
     import::logseq::extract_references,
-    storage::{Operation, OperationExecutor, RegistryRef},
+    storage::{Operation, OperationExecutor},
 };
 use std::sync::Arc;
 use std::collections::HashMap;
@@ -141,83 +169,13 @@ pub enum GraphOperationError {
 
 pub type Result<T> = std::result::Result<T, GraphOperationError>;
 
-/// Phantom type markers for authorization state
-pub struct Authorized;
-pub struct Unauthorized;
 
-/// Authorization wrapper that uses phantom types to enforce compile-time authorization checks.
-///
-/// This pattern makes it impossible to perform graph operations without going through
-/// the authorization flow. The type system ensures that unauthorized operations 
-/// cannot be compiled.
-pub struct AuthorizedAppState<T> {
-    pub(crate) inner: Arc<AppState>,
-    agent_id: Uuid,
-    graph_id: Option<Uuid>,
-    _marker: std::marker::PhantomData<T>,
-}
-
-/// Trait for creating authorized app state
-pub trait WithAgent {
-    /// Begin the authorization flow by specifying which agent will perform operations.
-    /// Returns an unauthorized state that must be authorized for a specific graph.
-    fn with_agent(self, agent_id: Uuid) -> AuthorizedAppState<Unauthorized>;
-}
-
-impl WithAgent for Arc<AppState> {
-    fn with_agent(self, agent_id: Uuid) -> AuthorizedAppState<Unauthorized> {
-        AuthorizedAppState {
-            inner: self,
-            agent_id,
-            graph_id: None,
-            _marker: std::marker::PhantomData,
-        }
-    }
-}
-
-impl AuthorizedAppState<Unauthorized> {
-    /// Authorize the agent for operations on a specific graph.
-    /// This is the only way to get an Authorized state that can perform operations.
-    pub fn authorize_for_graph(self, graph_id: Uuid) -> Result<AuthorizedAppState<Authorized>> {
-        // Use RegistryRef to check authorization
-        let agent_ref = RegistryRef::new(self.inner.agent_registry.clone(), self.agent_id);
-        if !agent_ref.is_authorized_for(graph_id) {
-            return Err(GraphOperationError::GraphError(format!(
-                "Agent {} is not authorized for graph {} - authorization required for all graph operations", 
-                self.agent_id, graph_id
-            )));
-        }
-        
-        Ok(AuthorizedAppState {
-            inner: self.inner,
-            agent_id: self.agent_id,
-            graph_id: Some(graph_id),
-            _marker: std::marker::PhantomData,
-        })
-    }
-}
-
-impl AuthorizedAppState<Authorized> {
-    /// Get the authorized agent ID
-    pub fn agent_id(&self) -> Uuid {
-        self.agent_id
-    }
-    
-    /// Get the authorized graph ID
-    pub fn graph_id(&self) -> Uuid {
-        self.graph_id.expect("Authorized state must have graph_id")
-    }
-    
-    /// Get the underlying AppState (for accessing non-graph operations)
-    pub fn app_state(&self) -> &Arc<AppState> {
-        &self.inner
-    }
-}
-
-/// Agent-aware graph operations that automatically handle authorization
+/// Agent-aware graph operations that automatically handle authorization.
+/// These methods verify agent authorization at runtime before performing operations.
+/// This is the single source of truth for all graph operations.
 pub trait GraphOps {
     /// Add a new block with agent authorization
-    async fn add_block_as(
+    async fn add_block(
         &self,
         agent_id: Uuid,
         content: String,
@@ -228,7 +186,7 @@ pub trait GraphOps {
     ) -> Result<String>;
 
     /// Update block with agent authorization
-    async fn update_block_as(
+    async fn update_block(
         &self,
         agent_id: Uuid,
         block_id: String,
@@ -237,7 +195,7 @@ pub trait GraphOps {
     ) -> Result<()>;
 
     /// Delete block with agent authorization
-    async fn delete_block_as(
+    async fn delete_block(
         &self,
         agent_id: Uuid,
         block_id: String,
@@ -245,7 +203,7 @@ pub trait GraphOps {
     ) -> Result<()>;
 
     /// Create page with agent authorization
-    async fn create_page_as(
+    async fn create_page(
         &self,
         agent_id: Uuid,
         page_name: String,
@@ -254,43 +212,18 @@ pub trait GraphOps {
     ) -> Result<()>;
 
     /// Delete page with agent authorization
-    async fn delete_page_as(
+    async fn delete_page(
         &self,
         agent_id: Uuid,
         page_name: String,
         graph_id: &Uuid,
     ) -> Result<()>;
-}
-
-/// Extension trait for PKM-specific graph operations on AppState
-pub trait GraphOperationsExt {
-    /// Add a new block to the knowledge graph
-    async fn add_block(
-        &self,
-        content: String,
-        parent_id: Option<String>,
-        page_name: Option<String>,
-        properties: Option<serde_json::Value>,
-        graph_id: &Uuid,
-    ) -> Result<String>;
     
-    /// Update an existing block
-    async fn update_block(&self, block_id: String, content: String, graph_id: &Uuid) -> Result<()>;
+    /// Get a node by ID with agent authorization
+    async fn get_node(&self, agent_id: Uuid, node_id: &str, graph_id: &Uuid) -> Result<serde_json::Value>;
     
-    /// Delete a block
-    async fn delete_block(&self, block_id: String, graph_id: &Uuid) -> Result<()>;
-    
-    /// Create a new page
-    async fn create_page(&self, page_name: String, properties: Option<serde_json::Value>, graph_id: &Uuid) -> Result<()>;
-    
-    /// Delete a page
-    async fn delete_page(&self, page_name: String, graph_id: &Uuid) -> Result<()>;
-    
-    /// Get a node by ID
-    async fn get_node(&self, node_id: &str, graph_id: &Uuid) -> Result<serde_json::Value>;
-    
-    /// Query graph with BFS traversal
-    fn query_graph_bfs(&self, start_id: &str, max_depth: usize, graph_id: &Uuid) -> Result<Vec<serde_json::Value>>;
+    /// Query graph with BFS traversal with agent authorization
+    fn query_graph_bfs(&self, agent_id: Uuid, start_id: &str, max_depth: usize, graph_id: &Uuid) -> Result<Vec<serde_json::Value>>;
     
     /// Open a graph (load into RAM and trigger recovery)
     async fn open_graph(&self, graph_id: Uuid) -> Result<serde_json::Value>;
@@ -314,21 +247,35 @@ pub trait GraphOperationsExt {
     async fn replay_transaction(&self, graph_id: &Uuid, transaction: crate::storage::Transaction, coordinator: Arc<crate::storage::TransactionCoordinator>) -> Result<()>;
 }
 
-impl GraphOperationsExt for Arc<AppState> {
+// Agent-aware graph operations implementation with runtime authorization
+impl GraphOps for Arc<AppState> {
     async fn add_block(
         &self,
+        agent_id: Uuid,
         content: String,
         parent_id: Option<String>,
         page_name: Option<String>,
         properties: Option<serde_json::Value>,
         graph_id: &Uuid,
     ) -> Result<String> {
+        // Check authorization at runtime
+        {
+            let agent_registry = self.agent_registry.read()
+                .map_err(|_| GraphOperationError::GraphError("Failed to read agent registry".into()))?;
+            if !agent_registry.is_agent_authorized(&agent_id, graph_id) {
+                return Err(GraphOperationError::GraphError(format!(
+                    "Agent {} is not authorized for graph {} - authorization required for all graph operations", 
+                    agent_id, graph_id
+                )));
+            }
+        } // agent_registry lock drops here
         
         // Generate a proper UUID for this block
         let block_id = uuid::Uuid::new_v4().to_string();
         
         // Create the operation with full API parameters
         let operation = Operation::CreateBlock {
+            agent_id,
             content: content.clone(),
             parent_id: parent_id.clone(),
             page_name: page_name.clone(),
@@ -359,16 +306,28 @@ impl GraphOperationsExt for Arc<AppState> {
         .map_err(|e| GraphOperationError::GraphError(e.to_string()))
     }
     
-    /// Update an existing block in both graph and via WebSocket
     async fn update_block(
         &self,
+        agent_id: Uuid,
         block_id: String,
         content: String,
         graph_id: &Uuid,
     ) -> Result<()> {
+        // Check authorization at runtime
+        {
+            let agent_registry = self.agent_registry.read()
+                .map_err(|_| GraphOperationError::GraphError("Failed to read agent registry".into()))?;
+            if !agent_registry.is_agent_authorized(&agent_id, graph_id) {
+                return Err(GraphOperationError::GraphError(format!(
+                    "Agent {} is not authorized for graph {} - authorization required for all graph operations", 
+                    agent_id, graph_id
+                )));
+            }
+        } // agent_registry lock drops here
         
         // Create transaction with full API parameters
         let operation = Operation::UpdateBlock {
+            agent_id,
             block_id: block_id.clone(),
             content: content.clone(),
         };
@@ -439,11 +398,22 @@ impl GraphOperationsExt for Arc<AppState> {
         })
     }
     
-    /// Delete a block from both graph and via WebSocket
-    async fn delete_block(&self, block_id: String, graph_id: &Uuid) -> Result<()> {
+    async fn delete_block(&self, agent_id: Uuid, block_id: String, graph_id: &Uuid) -> Result<()> {
+        // Check authorization at runtime
+        {
+            let agent_registry = self.agent_registry.read()
+                .map_err(|_| GraphOperationError::GraphError("Failed to read agent registry".into()))?;
+            if !agent_registry.is_agent_authorized(&agent_id, graph_id) {
+                return Err(GraphOperationError::GraphError(format!(
+                    "Agent {} is not authorized for graph {} - authorization required for all graph operations", 
+                    agent_id, graph_id
+                )));
+            }
+        } // agent_registry lock drops here
         
         // Create transaction with full API parameters
         let operation = Operation::DeleteBlock {
+            agent_id,
             block_id: block_id.clone(),
         };
         
@@ -467,16 +437,28 @@ impl GraphOperationsExt for Arc<AppState> {
         })
     }
     
-    /// Create a new page in both graph and via WebSocket
     async fn create_page(
         &self,
+        agent_id: Uuid,
         page_name: String,
         properties: Option<serde_json::Value>,
         graph_id: &Uuid,
     ) -> Result<()> {
+        // Check authorization at runtime
+        {
+            let agent_registry = self.agent_registry.read()
+                .map_err(|_| GraphOperationError::GraphError("Failed to read agent registry".into()))?;
+            if !agent_registry.is_agent_authorized(&agent_id, graph_id) {
+                return Err(GraphOperationError::GraphError(format!(
+                    "Agent {} is not authorized for graph {} - authorization required for all graph operations", 
+                    agent_id, graph_id
+                )));
+            }
+        } // agent_registry lock drops here
         
         // Create transaction with full API parameters
         let operation = Operation::CreatePage {
+            agent_id,
             page_name: page_name.clone(),
             properties: properties.clone(),
         };
@@ -538,11 +520,22 @@ impl GraphOperationsExt for Arc<AppState> {
         result.map_err(|e| GraphOperationError::GraphError(e.to_string()))
     }
     
-    /// Delete a page from both graph and via WebSocket
-    async fn delete_page(&self, page_name: String, graph_id: &Uuid) -> Result<()> {
+    async fn delete_page(&self, agent_id: Uuid, page_name: String, graph_id: &Uuid) -> Result<()> {
+        // Check authorization at runtime
+        {
+            let agent_registry = self.agent_registry.read()
+                .map_err(|_| GraphOperationError::GraphError("Failed to read agent registry".into()))?;
+            if !agent_registry.is_agent_authorized(&agent_id, graph_id) {
+                return Err(GraphOperationError::GraphError(format!(
+                    "Agent {} is not authorized for graph {} - authorization required for all graph operations", 
+                    agent_id, graph_id
+                )));
+            }
+        } // agent_registry lock drops here
         
         // Create transaction with full API parameters
         let operation = Operation::DeletePage {
+            agent_id,
             page_name: page_name.clone(),
         };
         
@@ -573,7 +566,18 @@ impl GraphOperationsExt for Arc<AppState> {
         })
     }
     
-    async fn get_node(&self, node_id: &str, graph_id: &Uuid) -> Result<serde_json::Value> {
+    async fn get_node(&self, agent_id: Uuid, node_id: &str, graph_id: &Uuid) -> Result<serde_json::Value> {
+        // Check authorization at runtime
+        {
+            let agent_registry = self.agent_registry.read()
+                .map_err(|_| GraphOperationError::GraphError("Failed to read agent registry".into()))?;
+            if !agent_registry.is_agent_authorized(&agent_id, graph_id) {
+                return Err(GraphOperationError::GraphError(format!(
+                    "Agent {} is not authorized for graph {} - authorization required for all graph operations", 
+                    agent_id, graph_id
+                )));
+            }
+        } // agent_registry lock drops here
         
         let resources = self.graph_resources.read().await;
         let graph_resources = resources.get(graph_id)
@@ -601,10 +605,23 @@ impl GraphOperationsExt for Arc<AppState> {
     /// Query graph with BFS traversal
     fn query_graph_bfs(
         &self,
+        agent_id: Uuid,
         _start_id: &str,
         _max_depth: usize,
-        _graph_id: &Uuid,
+        graph_id: &Uuid,
     ) -> Result<Vec<serde_json::Value>> {
+        // Check authorization at runtime
+        {
+            let agent_registry = self.agent_registry.read()
+                .map_err(|_| GraphOperationError::GraphError("Failed to read agent registry".into()))?;
+            if !agent_registry.is_agent_authorized(&agent_id, graph_id) {
+                return Err(GraphOperationError::GraphError(format!(
+                    "Agent {} is not authorized for graph {} - authorization required for all graph operations", 
+                    agent_id, graph_id
+                )));
+            }
+        } // agent_registry lock drops here
+        
         // TODO: Implement BFS traversal in graph_manager
         // For now, return empty result
         warn!("BFS traversal not yet implemented");
@@ -820,94 +837,36 @@ impl GraphOperationsExt for Arc<AppState> {
     }
 }
 
-// Agent-aware graph operations implementation with automatic authorization
-impl GraphOps for Arc<AppState> {
-    async fn add_block_as(
-        &self,
-        agent_id: Uuid,
-        content: String,
-        parent_id: Option<String>,
-        page_name: Option<String>,
-        properties: Option<serde_json::Value>,
-        graph_id: &Uuid,
-    ) -> Result<String> {
-        let authorized_state = self.clone().with_agent(agent_id).authorize_for_graph(*graph_id)?;
-        authorized_state.add_block(content, parent_id, page_name, properties, graph_id).await
-    }
-
-    async fn update_block_as(
-        &self,
-        agent_id: Uuid,
-        block_id: String,
-        content: String,
-        graph_id: &Uuid,
-    ) -> Result<()> {
-        let authorized_state = self.clone().with_agent(agent_id).authorize_for_graph(*graph_id)?;
-        authorized_state.update_block(block_id, content, graph_id).await
-    }
-
-    async fn delete_block_as(
-        &self,
-        agent_id: Uuid,
-        block_id: String,
-        graph_id: &Uuid,
-    ) -> Result<()> {
-        let authorized_state = self.clone().with_agent(agent_id).authorize_for_graph(*graph_id)?;
-        authorized_state.delete_block(block_id, graph_id).await
-    }
-
-    async fn create_page_as(
-        &self,
-        agent_id: Uuid,
-        page_name: String,
-        properties: Option<serde_json::Value>,
-        graph_id: &Uuid,
-    ) -> Result<()> {
-        let authorized_state = self.clone().with_agent(agent_id).authorize_for_graph(*graph_id)?;
-        authorized_state.create_page(page_name, properties, graph_id).await
-    }
-
-    async fn delete_page_as(
-        &self,
-        agent_id: Uuid,
-        page_name: String,
-        graph_id: &Uuid,
-    ) -> Result<()> {
-        let authorized_state = self.clone().with_agent(agent_id).authorize_for_graph(*graph_id)?;
-        authorized_state.delete_page(page_name, graph_id).await
-    }
-}
-
 
 // Implement OperationExecutor trait for Arc<AppState>
-// This allows the storage layer to execute operations without knowing about GraphOperationsExt
+// This allows the storage layer to execute operations during recovery
 #[async_trait]
 impl OperationExecutor for Arc<AppState> {
     async fn execute_operation(&self, graph_id: &Uuid, operation: Operation) -> std::result::Result<(), String> {
         match operation {
-            Operation::CreateBlock { content, parent_id, page_name, properties } => {
-                GraphOperationsExt::add_block(self, content, parent_id, page_name, properties, graph_id)
+            Operation::CreateBlock { agent_id, content, parent_id, page_name, properties } => {
+                GraphOps::add_block(self, agent_id, content, parent_id, page_name, properties, graph_id)
                     .await
                     .map(|_| ())
                     .map_err(|e| e.to_string())
             },
-            Operation::UpdateBlock { block_id, content } => {
-                GraphOperationsExt::update_block(self, block_id, content, graph_id)
+            Operation::UpdateBlock { agent_id, block_id, content } => {
+                GraphOps::update_block(self, agent_id, block_id, content, graph_id)
                     .await
                     .map_err(|e| e.to_string())
             },
-            Operation::DeleteBlock { block_id } => {
-                GraphOperationsExt::delete_block(self, block_id, graph_id)
+            Operation::DeleteBlock { agent_id, block_id } => {
+                GraphOps::delete_block(self, agent_id, block_id, graph_id)
                     .await
                     .map_err(|e| e.to_string())
             },
-            Operation::CreatePage { page_name, properties } => {
-                GraphOperationsExt::create_page(self, page_name, properties, graph_id)
+            Operation::CreatePage { agent_id, page_name, properties } => {
+                GraphOps::create_page(self, agent_id, page_name, properties, graph_id)
                     .await
                     .map_err(|e| e.to_string())
             },
-            Operation::DeletePage { page_name } => {
-                GraphOperationsExt::delete_page(self, page_name, graph_id)
+            Operation::DeletePage { agent_id, page_name } => {
+                GraphOps::delete_page(self, agent_id, page_name, graph_id)
                     .await
                     .map_err(|e| e.to_string())
             },
@@ -935,7 +894,9 @@ mod tests {
     #[test]
     fn test_operation_variants() {
         // Test that all Operation variants can be created
+        let agent_id = uuid::Uuid::new_v4();
         let create_block = Operation::CreateBlock {
+            agent_id,
             content: "Test content".to_string(),
             parent_id: Some("parent-123".to_string()),
             page_name: Some("TestPage".to_string()),
@@ -944,23 +905,27 @@ mod tests {
         assert!(matches!(create_block, Operation::CreateBlock { .. }));
         
         let update_block = Operation::UpdateBlock {
+            agent_id,
             block_id: "block-123".to_string(),
             content: "Updated content".to_string(),
         };
         assert!(matches!(update_block, Operation::UpdateBlock { .. }));
         
         let delete_block = Operation::DeleteBlock {
+            agent_id,
             block_id: "block-123".to_string(),
         };
         assert!(matches!(delete_block, Operation::DeleteBlock { .. }));
         
         let create_page = Operation::CreatePage {
+            agent_id,
             page_name: "NewPage".to_string(),
             properties: Some(json!({"type": "journal"})),
         };
         assert!(matches!(create_page, Operation::CreatePage { .. }));
         
         let delete_page = Operation::DeletePage {
+            agent_id,
             page_name: "OldPage".to_string(),
         };
         assert!(matches!(delete_page, Operation::DeletePage { .. }));
@@ -969,7 +934,9 @@ mod tests {
     #[test]
     fn test_transaction_creation() {
         // Test that transactions are created properly for operations
+        let agent_id = uuid::Uuid::new_v4();
         let operation = Operation::CreateBlock {
+            agent_id,
             content: "Test block".to_string(),
             parent_id: None,
             page_name: Some("TestPage".to_string()),
@@ -987,6 +954,7 @@ mod tests {
         
         // Test operation without content hash
         let delete_op = Operation::DeleteBlock {
+            agent_id,
             block_id: "block-456".to_string(),
         };
         let delete_tx = Transaction::new(delete_op);
@@ -1024,7 +992,9 @@ mod tests {
     #[test]
     fn test_json_serialization_for_operations() {
         // Test that operations can be serialized/deserialized for transaction log
+        let agent_id = uuid::Uuid::new_v4();
         let op = Operation::CreateBlock {
+            agent_id,
             content: "Test content with «reference»".to_string(),
             parent_id: Some("parent-id".to_string()),
             page_name: Some("Daily Note".to_string()),
@@ -1042,7 +1012,7 @@ mod tests {
         // Deserialize
         let deserialized: Operation = serde_json::from_str(&json).unwrap();
         match deserialized {
-            Operation::CreateBlock { content, parent_id, page_name, properties } => {
+            Operation::CreateBlock { agent_id: _, content, parent_id, page_name, properties } => {
                 assert_eq!(content, "Test content with «reference»");
                 assert_eq!(parent_id, Some("parent-id".to_string()));
                 assert_eq!(page_name, Some("Daily Note".to_string()));
@@ -1051,8 +1021,6 @@ mod tests {
             _ => panic!("Wrong operation type after deserialization"),
         }
     }
-    
-    // Phantom type authorization tests - pure logic only
     
     #[test]
     fn test_authorization_error_formatting() {
@@ -1070,28 +1038,5 @@ mod tests {
         assert!(error_message.contains(&agent_id.to_string()));
         assert!(error_message.contains(&graph_id.to_string()));
         assert!(error_message.contains("authorization required"));
-    }
-    
-    #[test]
-    fn test_phantom_type_markers() {
-        // Test that phantom type markers behave correctly
-        use std::marker::PhantomData;
-        
-        // Test that phantom data has zero size
-        assert_eq!(std::mem::size_of::<PhantomData<Authorized>>(), 0);
-        assert_eq!(std::mem::size_of::<PhantomData<Unauthorized>>(), 0);
-        
-        // Test that different phantom types are different types
-        fn takes_authorized(_: PhantomData<Authorized>) {}
-        fn takes_unauthorized(_: PhantomData<Unauthorized>) {}
-        
-        let auth_marker = PhantomData::<Authorized>;
-        let unauth_marker = PhantomData::<Unauthorized>;
-        
-        takes_authorized(auth_marker);
-        takes_unauthorized(unauth_marker);
-        
-        // This test compiles, proving the type system distinguishes between them
-        // If you tried: takes_authorized(unauth_marker), it would NOT compile
     }
 }

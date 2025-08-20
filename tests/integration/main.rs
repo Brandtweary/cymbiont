@@ -9,11 +9,11 @@ mod common;
 
 // Import all integration test modules
 mod http_logseq_import;
-mod logseq_import;
 mod websocket_commands;
 mod freeze_mechanism;
 mod crash_recovery;
 mod agent_commands;
+mod cli_commands;
 
 // Re-export test functions with #[test] attribute
 #[test]
@@ -24,11 +24,6 @@ fn test_http_logseq_import() {
 #[test]
 fn test_http_import_error_cases() {
     http_logseq_import::test_http_import_error_cases();
-}
-
-#[test]
-fn test_logseq_import_cyberorganism_test_1() {
-    logseq_import::test_logseq_import_cyberorganism_test_1();
 }
 
 #[test]
@@ -79,4 +74,9 @@ fn test_agent_chat_commands() {
 #[test]
 fn test_agent_admin_commands() {
     agent_commands::test_agent_admin_commands();
+}
+
+#[test]
+fn test_all_cli_commands() {
+    cli_commands::test_all_cli_commands();
 }

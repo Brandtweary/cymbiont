@@ -238,6 +238,7 @@ pub enum Command {
         graph_id: Option<String>,
         graph_name: Option<String>,
     },
+    ListGraphs,
     FreezeOperations,
     UnfreezeOperations,
     GetFreezeState,
@@ -297,6 +298,13 @@ pub enum Command {
     AgentInfo {
         agent_id: Option<String>,
         agent_name: Option<String>,
+    },
+    
+    // Command for CLI integration testing (only available in debug builds)
+    #[cfg(debug_assertions)]
+    TestCliCommand {
+        command: String,
+        params: serde_json::Value,
     },
 }
 
@@ -387,6 +395,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
         tokio::spawn(async move {
             if let Err(e) = handle_message(msg, &conn_id, &app_state).await {
                 error!("Error handling message from {}: {:?}", conn_id, e);
+                // Send error response back to client so they're not left hanging
+                if let Err(send_err) = send_error_response(&conn_id, &app_state, &format!("Command processing failed: {}", e)).await {
+                    error!("Failed to send error response: {:?}", send_err);
+                }
             }
         });
     }
@@ -480,11 +492,16 @@ async fn handle_command(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     
     // Check authentication for non-auth commands
+    #[cfg(debug_assertions)]
+    let is_test_cli_command = matches!(command, Command::TestCliCommand { .. });
+    #[cfg(not(debug_assertions))]
+    let is_test_cli_command = false;
+    
     if !matches!(command, 
         Command::Auth { .. } | 
         Command::Heartbeat | 
         Command::Test { .. }
-    ) {
+    ) && !is_test_cli_command {
         if !is_authenticated(connection_id, state).await {
             warn!("Rejecting command from unauthenticated connection {}: {:?}", connection_id, command);
             send_error_response(connection_id, state, "Not authenticated").await?;
@@ -769,6 +786,22 @@ async fn handle_command(
                 }
                 Err(e) => {
                     send_error_response(connection_id, state, &format!("Failed to delete graph: {}", e)).await?;
+                }
+            }
+        }
+        Command::ListGraphs => {
+            // List all graphs
+            info!("📋 ListGraphs command received via WebSocket");
+            
+            use crate::graph_operations::GraphOps;
+            
+            match state.list_graphs().await {
+                Ok(graphs) => {
+                    let data = serde_json::json!({ "graphs": graphs });
+                    send_success_response(connection_id, state, Some(data)).await?;
+                }
+                Err(e) => {
+                    send_error_response(connection_id, state, &format!("Failed to list graphs: {}", e)).await?;
                 }
             }
         }
@@ -1511,6 +1544,34 @@ async fn handle_command(
             
             send_success_response(connection_id, state, Some(data)).await?;
         }
+        
+        // Command for CLI integration testing (only available in debug builds)
+        #[cfg(debug_assertions)]
+        Command::TestCliCommand { command, params } => {
+            
+            // Dispatch to CLI module
+            let exit_after = match crate::cli::dispatch_cli_command(
+                state,
+                &command,
+                &params
+            ).await {
+                Ok(exit) => {
+                    exit
+                }
+                Err(e) => {
+                    error!("CLI command failed: {}", e);
+                    return Err(format!("CLI command failed: {}", e).into());
+                }
+            };
+            
+            // Return result
+            let data = serde_json::json!({
+                "exit_after": exit_after,
+                "command": command
+            });
+            
+            send_success_response(connection_id, state, Some(data)).await?;
+        }
     }
     
     Ok(())
@@ -1722,6 +1783,11 @@ mod tests {
             }
             _ => panic!("Wrong command type"),
         }
+        
+        // Test ListGraphs command
+        let json = r#"{"type": "list_graphs"}"#;
+        let cmd: Command = serde_json::from_str(json).unwrap();
+        assert!(matches!(cmd, Command::ListGraphs));
     }
 
 }

@@ -69,6 +69,7 @@ use tracing::{info, error, warn, trace};
 mod agent;
 mod app_state;
 mod cli;
+mod cli_registry;
 mod config;
 mod graph_manager;
 mod graph_operations;
@@ -316,4 +317,3 @@ async fn handle_graceful_shutdown(app_state: &std::sync::Arc<AppState>) -> bool 
         false // No active transactions, continue with normal cleanup
     }
 }
-

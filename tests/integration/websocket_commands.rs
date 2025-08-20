@@ -173,10 +173,22 @@ fn test_multiple_block_updates(ws: &mut WsConnection, fixture: &mut GraphValidat
     child_id
 }
 
-/// Test graph operations (create and delete)
+/// Test graph operations (create, list, and delete)
 fn test_graph_operations(ws: &mut WsConnection, data_dir: &std::path::Path) -> String {
     // Get the current open graph ID (should be the imported one)
     let original_graph_id = get_single_open_graph_id(data_dir);
+    
+    // Test list_graphs with one graph
+    let list_cmd = json!({"type": "list_graphs"});
+    let response = send_command(ws, list_cmd.clone());
+    let data = expect_success(response).expect("No data in list_graphs response");
+    let graphs = data["graphs"].as_array().expect("Should have graphs array");
+    assert_eq!(graphs.len(), 1, "Should have exactly one graph initially");
+    assert_eq!(
+        graphs[0]["id"].as_str().unwrap(),
+        &original_graph_id,
+        "Graph ID from list_graphs should match original"
+    );
     
     // Create a new graph
     let create_cmd = json!({
@@ -192,6 +204,26 @@ fn test_graph_operations(ws: &mut WsConnection, data_dir: &std::path::Path) -> S
         .expect("No graph ID in response")
         .to_string();
     
+    // Test list_graphs with two graphs
+    let response = send_command(ws, list_cmd.clone());
+    let data = expect_success(response).expect("No data in list_graphs response");
+    let graphs = data["graphs"].as_array().expect("Should have graphs array");
+    assert_eq!(graphs.len(), 2, "Should have two graphs after creation");
+    
+    // Verify both graphs are present
+    let graph_ids: Vec<String> = graphs.iter()
+        .map(|g| g["id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(graph_ids.contains(&original_graph_id), "Original graph should be in list");
+    assert!(graph_ids.contains(&new_graph_id), "New graph should be in list");
+    
+    // Verify the new graph has correct metadata
+    let new_graph = graphs.iter()
+        .find(|g| g["id"].as_str() == Some(&new_graph_id))
+        .expect("New graph should be in list");
+    assert_eq!(new_graph["name"].as_str(), Some("test-websocket-graph"));
+    assert_eq!(new_graph["description"].as_str(), Some("Created via WebSocket test"));
+    
     // Delete the test graph (it was auto-opened on creation)
     let delete_cmd = json!({
         "type": "delete_graph",
@@ -205,6 +237,17 @@ fn test_graph_operations(ws: &mut WsConnection, data_dir: &std::path::Path) -> S
         data["deleted_graph_id"].as_str(),
         Some(new_graph_id.as_str()),
         "Deleted graph ID mismatch"
+    );
+    
+    // Test list_graphs after deletion - should be back to one graph
+    let response = send_command(ws, list_cmd);
+    let data = expect_success(response).expect("No data in list_graphs response");
+    let graphs = data["graphs"].as_array().expect("Should have graphs array");
+    assert_eq!(graphs.len(), 1, "Should have one graph after deletion");
+    assert_eq!(
+        graphs[0]["id"].as_str().unwrap(),
+        &original_graph_id,
+        "Only original graph should remain"
     );
     
     original_graph_id

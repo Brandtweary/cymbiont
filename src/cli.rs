@@ -115,6 +115,82 @@ pub struct Args {
     pub from_graph: Option<String>,
 }
 
+// Re-export CliCommand for convenience
+pub use crate::cli_registry::CliCommand;
+
+// Extension trait to convert CliCommand to Args
+impl CliCommand {
+    /// Convert to Args struct for execution
+    pub fn to_args(&self) -> Args {
+        let mut args = Args::default();
+        match self {
+            Self::ImportLogseq { path } => args.import_logseq = Some(path.clone()),
+            Self::DeleteGraph { identifier } => args.delete_graph = Some(identifier.clone()),
+            Self::CreateAgent { name, description } => {
+                args.create_agent = Some(name.clone());
+                args.agent_description = description.clone();
+            }
+            Self::DeleteAgent { identifier } => args.delete_agent = Some(identifier.clone()),
+            Self::ActivateAgent { identifier } => args.activate_agent = Some(identifier.clone()),
+            Self::DeactivateAgent { identifier } => args.deactivate_agent = Some(identifier.clone()),
+            Self::AgentInfo { identifier } => args.agent_info = Some(identifier.clone()),
+            Self::AuthorizeAgent { agent, graph } => {
+                args.authorize_agent = Some(agent.clone());
+                args.for_graph = Some(graph.clone());
+            }
+            Self::DeauthorizeAgent { agent, graph } => {
+                args.deauthorize_agent = Some(agent.clone());
+                args.from_graph = Some(graph.clone());
+            }
+        }
+        args
+    }
+}
+
+// Dispatcher for WebSocket bridge (only in debug builds for testing)
+#[cfg(debug_assertions)]
+pub async fn dispatch_cli_command(
+    app_state: &std::sync::Arc<AppState>,
+    command_name: &str,
+    params: &serde_json::Value,
+) -> Result<bool, Box<dyn Error + Send + Sync>> {
+    let command = match CliCommand::from_json(command_name, params) {
+        Ok(cmd) => cmd,
+        Err(e) => {
+            tracing::error!("Failed to parse CLI command: {}", e);
+            return Err(Box::<dyn Error + Send + Sync>::from(e));
+        }
+    };
+    
+    let args = command.to_args();
+    let result = handle_cli_commands(app_state, &args).await;
+    result
+}
+
+// Add Default impl for Args to support the builder pattern
+impl Default for Args {
+    fn default() -> Self {
+        Self {
+            server: false,
+            data_dir: None,
+            config: None,
+            import_logseq: None,
+            delete_graph: None,
+            duration: None,
+            create_agent: None,
+            agent_description: None,
+            delete_agent: None,
+            activate_agent: None,
+            deactivate_agent: None,
+            agent_info: None,
+            authorize_agent: None,
+            for_graph: None,
+            deauthorize_agent: None,
+            from_graph: None,
+        }
+    }
+}
+
 /// Handle all CLI-specific commands
 /// Returns true if should exit after command completion
 pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Result<bool, Box<dyn Error + Send + Sync>> {
@@ -562,4 +638,57 @@ pub async fn show_cli_status(app_state: &Arc<AppState>) -> Result<(), Box<dyn Er
     }
     
     Ok(())
+}
+
+// Compile-time test to ensure enum stays in sync with Args
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+    
+    #[test]
+    fn test_all_commands_round_trip() {
+        // This test ensures every CliCommand variant can round-trip through Args
+        let test_cases = vec![
+            CliCommand::ImportLogseq { path: "test".to_string() },
+            CliCommand::DeleteGraph { identifier: "id".to_string() },
+            CliCommand::CreateAgent { name: "test".to_string(), description: Some("desc".to_string()) },
+            CliCommand::DeleteAgent { identifier: "id".to_string() },
+            CliCommand::ActivateAgent { identifier: "id".to_string() },
+            CliCommand::DeactivateAgent { identifier: "id".to_string() },
+            CliCommand::AgentInfo { identifier: "id".to_string() },
+            CliCommand::AuthorizeAgent { agent: "a".to_string(), graph: "g".to_string() },
+            CliCommand::DeauthorizeAgent { agent: "a".to_string(), graph: "g".to_string() },
+        ];
+        
+        for cmd in test_cases {
+            let args = cmd.to_args();
+            // Verify at least one field is set in Args
+            let has_command = args.import_logseq.is_some()
+                || args.delete_graph.is_some()
+                || args.create_agent.is_some()
+                || args.delete_agent.is_some()
+                || args.activate_agent.is_some()
+                || args.deactivate_agent.is_some()
+                || args.agent_info.is_some()
+                || args.authorize_agent.is_some()
+                || args.deauthorize_agent.is_some();
+            assert!(has_command, "Command {:?} didn't set any Args fields", cmd);
+        }
+        
+        // Ensure all commands are listed
+        assert_eq!(CliCommand::all_commands().len(), 9, 
+                   "Update all_commands() when adding new commands");
+    }
+    
+    #[test]
+    fn test_all_commands_have_integration_tests() {
+        // This test ensures developers mark commands as tested after writing integration tests
+        for command_name in CliCommand::all_commands() {
+            assert!(
+                CliCommand::is_tested(command_name),
+                "Command '{}' is not marked as tested! Write an integration test in cli_commands.rs, then set it to true in CliCommand::is_tested()",
+                command_name
+            );
+        }
+    }
 }

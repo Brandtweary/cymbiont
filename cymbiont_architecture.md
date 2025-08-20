@@ -60,9 +60,9 @@ cymbiont/
 │       ├── main.rs                # Test entry point
 │       ├── crash_recovery.rs      # Transaction recovery tests
 │       ├── http_logseq_import.rs  # HTTP API tests
-│       ├── logseq_import.rs       # CLI import tests
 │       ├── websocket_commands.rs  # WebSocket tests
 │       ├── agent_commands.rs      # Agent chat and admin command tests
+│       ├── cli_commands.rs        # CLI command tests via WebSocket bridge
 │       └── freeze_mechanism.rs    # Operation freeze/unfreeze tests
 ├── autodebugger/                  # Git submodule: LLM developer utilities toolbag
 └── build.rs                       # Build script: enforces tracing macro usage
@@ -267,7 +267,7 @@ The build.rs script enforces consistent use of tracing macros throughout the cod
 - `OpenGraph`, `CloseGraph` - explicit graph lifecycle
 - `CreateBlock`, `UpdateBlock`, `DeleteBlock` - block operations (require current agent, accept optional graph_id/graph_name)
 - `CreatePage`, `DeletePage` - page operations (require current agent, accept optional graph_id/graph_name)
-- `CreateGraph`, `DeleteGraph` - graph management
+- `CreateGraph`, `DeleteGraph`, `ListGraphs` - graph management
 **Agent chat commands**:
 - `AgentChat { message, echo?, agent_id?, agent_name? }` - chat with agent (echo for testing)
 - `AgentSelect { agent_id?, agent_name? }` - switch current agent for connection
@@ -379,7 +379,7 @@ The build.rs script enforces consistent use of tracing macros throughout the cod
 ### WebSocket Message Types
 - **Client→Server**: 
   - **Authentication**: `Auth { token }`
-  - **Graph operations**: `OpenGraph`, `CloseGraph`, `CreateBlock`, `UpdateBlock`, `DeleteBlock`, `CreatePage`, `DeletePage`, `CreateGraph`, `DeleteGraph` (all support optional graph_id/graph_name)
+  - **Graph operations**: `OpenGraph`, `CloseGraph`, `CreateBlock`, `UpdateBlock`, `DeleteBlock`, `CreatePage`, `DeletePage`, `CreateGraph`, `DeleteGraph`, `ListGraphs` (all support optional graph_id/graph_name except ListGraphs)
   - **Agent chat**: `AgentChat`, `AgentSelect`, `AgentList`, `AgentHistory`, `AgentReset`, `AgentInfo` (all support optional agent_id/agent_name)
   - **Agent admin**: `CreateAgent`, `DeleteAgent`, `ActivateAgent`, `DeactivateAgent`, `AuthorizeAgent`, `DeauthorizeAgent`
   - **Testing**: `FreezeOperations`, `UnfreezeOperations`, `GetFreezeState`

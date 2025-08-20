@@ -392,7 +392,7 @@ impl GraphValidationFixture {
         // A regular content block
         self.expect_create_block(
             "67fbd626-8e4a-485f-ad03-fd1ce5539ebb", // This one gets deleted in tests
-            "Knowledge graphs represent information as a network of entities, relationships, and attributes.",
+            "Test blocks",
             None // Child blocks may not have direct page connections
         );
         

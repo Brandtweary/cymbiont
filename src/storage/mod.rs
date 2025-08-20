@@ -74,5 +74,5 @@ pub mod transaction_log;
 // Re-export commonly used types
 pub use graph_registry::GraphRegistry;
 pub use agent_registry::AgentRegistry;
-pub use transaction_log::{TransactionLog, Operation, Transaction, OperationExecutor};
+pub use transaction_log::{TransactionLog, Operation, OperationExecutor};
 pub use transaction::TransactionCoordinator;

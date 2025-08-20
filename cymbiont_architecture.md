@@ -73,7 +73,7 @@ cymbiont/
 **Key functionality**: 
 - Parse command line arguments including agent management commands
 - Create AppState (both CLI and server modes) with agent registry initialization
-- Run `run_all_graphs_recovery()` on startup for all open graphs
+- Run `app_state.run_all_graphs_recovery()` on startup for all graphs
 - Execute agent CLI commands (create, delete, activate, authorize, etc.)
 - Handle duration limits and shutdown signals uniformly for both modes
 - Execute cleanup_and_save() on exit (saves agents and graphs)
@@ -93,6 +93,8 @@ cymbiont/
 - `get_or_create_graph_manager()` - lazy graph manager creation
 - `get_or_load_agent()`, `activate_agent()`, `deactivate_agent()` - agent lifecycle parallel to graphs
 - `with_graph_transaction(graph_id)` - wraps operations in transactions for specific graph
+- `run_graph_recovery(graph_id)` - replay pending transactions for specific graph
+- `run_all_graphs_recovery()` - startup recovery for all graphs (both open and closed)
 - `initiate_graceful_shutdown()`, `wait_for_transactions()` - shutdown coordination
 - `get_transaction_coordinator()` - access to per-graph WAL
 - `cleanup_and_save()` - saves all agents and graphs on shutdown
@@ -123,14 +125,14 @@ cymbiont/
 - Page operations: `create_page()`, `delete_page()`
 - Graph lifecycle: `create_graph()`, `delete_graph()`, `open_graph()`, `close_graph()`
 - Query operations: `get_node()`, `query_graph_bfs()`, `list_graphs()`, `list_open_graphs()`
-- Recovery: `replay_transaction()` for crash recovery
+- Recovery: Operations replayed via `OperationExecutor::execute_operation()` for crash recovery
 **Transaction integration**: Each operation stores full API parameters including agent_id in WAL for perfect recovery
 **OperationExecutor**: Trait for transaction replay that bypasses authorization during recovery
 
 **Adding New Graph Operations**:
 1. Define Operation variant in `storage/transaction_log.rs` `Operation` enum
 2. Add trait method to `GraphOps` trait with `agent_id: Uuid` as first parameter
-3. Implement the operation in `impl GraphOps for AppState`:
+3. Implement the operation in `impl GraphOps for Arc<AppState>`:
    - Add runtime authorization check at start
    - Wrap core logic in transaction if modifying data
    - Store operation with full parameters for recovery
@@ -267,7 +269,10 @@ cymbiont/
 ### import/pkm_data.rs
 **Purpose**: PKM data structures and graph application logic  
 **Key types**: `PKMBlockData`, `PKMPageData`, `PKMReference`
-**Key methods**: `apply_to_graph()` - Transforms PKM data into graph nodes/edges with reference resolution
+**Key methods**: 
+- `apply_to_graph()` - Transforms PKM data into graph nodes/edges with reference resolution
+- `new_block()`, `new_page()` - Factory methods for creating PKM data structures
+- `create_or_update_page()`, `update_block_content()` - Complex operation helpers
 
 ### import/import_utils.rs
 **Purpose**: High-level import coordination with agent authorization
@@ -277,6 +282,7 @@ cymbiont/
 ### import/reference_resolver.rs
 **Purpose**: Block reference resolution during import  
 **Key features**: Resolves `((block-id))` references, prevents circular references
+**Helper functions**: `build_block_map_from_graph()`, `resolve_references_in_graph()` - simplified resolution patterns
 
 ### server/auth.rs
 **Purpose**: Token-based authentication system with auto-generation and rotation  

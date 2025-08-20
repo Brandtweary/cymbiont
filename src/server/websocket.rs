@@ -19,7 +19,7 @@
  * 
  * All graph operations enforce agent authorization through the GraphOps trait:
  * - Each connection maintains a current_agent_id (set via Auth command)
- * - Graph operations automatically check agent permissions via phantom types
+ * - Graph operations automatically check agent permissions via runtime authorization
  * - Unauthorized operations return clear error messages
  * - Agent selection commands allow switching between authorized agents
  * 

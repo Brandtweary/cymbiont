@@ -1,5 +1,3 @@
-#![allow(dead_code)] // TODO: Remove when integrated with Ollama agent
-
 /**
  * Graph Operations Module - Agent-Aware PKM Operations
  * 
@@ -75,7 +73,7 @@
  * The recovery process:
  * - Startup: Iterates all graphs, temporarily opens closed ones for recovery
  * - Finds all Active transactions in each graph's WAL
- * - Calls `replay_transaction()` for each pending transaction
+ * - Calls `OperationExecutor::execute_operation()` for each pending transaction
  * - Updates transaction state based on result
  * - No PKM reconstruction needed - exact API replay
  * - Closed graphs are closed again after recovery
@@ -147,11 +145,9 @@
 use crate::{
     AppState,
     import::pkm_data::{PKMBlockData, PKMPageData},
-    import::logseq::extract_references,
-    storage::{Operation, OperationExecutor},
+    storage::{Operation, OperationExecutor, AgentRegistry},
 };
 use std::sync::Arc;
-use std::collections::HashMap;
 use tracing::{warn, error, info};
 use thiserror::Error;
 use serde_json::json;
@@ -169,6 +165,35 @@ pub enum GraphOperationError {
 
 pub type Result<T> = std::result::Result<T, GraphOperationError>;
 
+/// Helper to verify agent authorization for a graph operation.
+/// Returns an error if the agent is not authorized.
+fn verify_authorization(
+    agent_registry: &AgentRegistry,
+    agent_id: &Uuid,
+    graph_id: &Uuid,
+) -> Result<()> {
+    if !agent_registry.is_agent_authorized(agent_id, graph_id) {
+        Err(GraphOperationError::GraphError(format!(
+            "Agent {} is not authorized for graph {} - authorization required for all graph operations",
+            agent_id, graph_id
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+/// Helper to check authorization for a graph operation.
+/// Encapsulates the full registry read/verify/drop pattern.
+fn check_authorization(
+    agent_registry: &Arc<std::sync::RwLock<AgentRegistry>>,
+    agent_id: &Uuid,
+    graph_id: &Uuid,
+) -> Result<()> {
+    let registry = agent_registry.read()
+        .map_err(|_| GraphOperationError::GraphError("Failed to read agent registry".into()))?;
+    verify_authorization(&registry, agent_id, graph_id)?;
+    Ok(())
+}
 
 /// Agent-aware graph operations that automatically handle authorization.
 /// These methods verify agent authorization at runtime before performing operations.
@@ -242,9 +267,6 @@ pub trait GraphOps {
     
     /// Delete a knowledge graph
     async fn delete_graph(&self, graph_id: &Uuid) -> Result<()>;
-    
-    /// Replay a transaction during recovery with proper state management
-    async fn replay_transaction(&self, graph_id: &Uuid, transaction: crate::storage::Transaction, coordinator: Arc<crate::storage::TransactionCoordinator>) -> Result<()>;
 }
 
 // Agent-aware graph operations implementation with runtime authorization
@@ -258,20 +280,7 @@ impl GraphOps for Arc<AppState> {
         properties: Option<serde_json::Value>,
         graph_id: &Uuid,
     ) -> Result<String> {
-        // Check authorization at runtime
-        {
-            let agent_registry = self.agent_registry.read()
-                .map_err(|_| GraphOperationError::GraphError("Failed to read agent registry".into()))?;
-            if !agent_registry.is_agent_authorized(&agent_id, graph_id) {
-                return Err(GraphOperationError::GraphError(format!(
-                    "Agent {} is not authorized for graph {} - authorization required for all graph operations", 
-                    agent_id, graph_id
-                )));
-            }
-        } // agent_registry lock drops here
-        
-        // Generate a proper UUID for this block
-        let block_id = uuid::Uuid::new_v4().to_string();
+        check_authorization(&self.agent_registry, &agent_id, graph_id)?;
         
         // Create the operation with full API parameters
         let operation = Operation::CreateBlock {
@@ -284,23 +293,13 @@ impl GraphOps for Arc<AppState> {
         
         // Execute with transaction on specific graph
         self.with_graph_transaction(graph_id, operation, |graph_manager| {
-            // Create the block data
-            let block_data = PKMBlockData {
-                id: block_id.clone(),
-                content: content.clone(),
-                properties: properties.unwrap_or(json!({})),
-                parent: parent_id.clone(),
-                page: page_name.clone(),
-                references: extract_references(&content),
-                children: vec![], // New blocks have no children initially
-                created: chrono::Utc::now().to_rfc3339(),
-                updated: chrono::Utc::now().to_rfc3339(),
-                reference_content: None, // Let apply_to_graph handle resolution
-            };
+            // Create the block data using factory method
+            let block_data = PKMBlockData::new_block(content, parent_id, page_name, properties);
+            let block_id = block_data.id.clone();
             
             // Add to graph
             block_data.apply_to_graph(graph_manager)
-                .map(|_| block_id.clone())
+                .map(|_| block_id)
                 .map_err(|e| e.to_string())
         }).await
         .map_err(|e| GraphOperationError::GraphError(e.to_string()))
@@ -313,17 +312,7 @@ impl GraphOps for Arc<AppState> {
         content: String,
         graph_id: &Uuid,
     ) -> Result<()> {
-        // Check authorization at runtime
-        {
-            let agent_registry = self.agent_registry.read()
-                .map_err(|_| GraphOperationError::GraphError("Failed to read agent registry".into()))?;
-            if !agent_registry.is_agent_authorized(&agent_id, graph_id) {
-                return Err(GraphOperationError::GraphError(format!(
-                    "Agent {} is not authorized for graph {} - authorization required for all graph operations", 
-                    agent_id, graph_id
-                )));
-            }
-        } // agent_registry lock drops here
+        check_authorization(&self.agent_registry, &agent_id, graph_id)?;
         
         // Create transaction with full API parameters
         let operation = Operation::UpdateBlock {
@@ -332,62 +321,11 @@ impl GraphOps for Arc<AppState> {
             content: content.clone(),
         };
         
-        // Execute with transaction on specific graph
+        // Execute with transaction on specific graph  
         self.with_graph_transaction(graph_id, operation, |graph_manager| {
-            // Find the node
-            if let Some(node_idx) = graph_manager.find_node(&block_id) {
-                // Get existing node data to preserve all fields
-                if let Some(existing_node) = graph_manager.get_node(node_idx) {
-                    // Clone existing data and update only what we need
-                    let mut node_data = existing_node.clone();
-                    
-                    // Update content and timestamp
-                    node_data.content = content.clone();
-                    node_data.updated_at = chrono::Utc::now();
-                    
-                    // Resolve references if content changed
-                    if existing_node.content != content {
-                        // Build block map for reference resolution
-                        let mut block_map = HashMap::new();
-                        for idx in graph_manager.graph.node_indices() {
-                            if let Some(node) = graph_manager.graph.node_weight(idx) {
-                                if matches!(node.node_type, crate::graph_manager::NodeType::Block) {
-                                    block_map.insert(node.pkm_id.clone(), node.content.clone());
-                                }
-                            }
-                        }
-                        
-                        // Resolve references in the new content
-                        let mut visited = std::collections::HashSet::new();
-                        node_data.reference_content = Some(
-                            crate::import::reference_resolver::resolve_block_references(
-                                &content, 
-                                &block_map, 
-                                &mut visited, 
-                                Some(&block_id)
-                            )
-                        );
-                    }
-                    
-                    // Use create_or_update_node to update the node directly
-                    graph_manager.create_or_update_node(
-                        node_data.pkm_id,
-                        node_data.id,
-                        node_data.node_type,
-                        node_data.content,
-                        node_data.reference_content,
-                        node_data.properties,
-                        node_data.created_at,
-                        node_data.updated_at,
-                    )
-                    .map(|_| ())
-                    .map_err(|e| e.to_string())
-                } else {
-                    Err(format!("Node not found: {}", block_id))
-                }
-            } else {
-                Err(format!("Node not found: {}", block_id))
-            }
+            // Delegate to PKMBlockData helper for complex block update logic
+            PKMBlockData::update_block_content(&block_id, content, graph_manager)
+                .map_err(|e| e.to_string())
         }).await
         .map_err(|e| {
             if e.to_string().contains("Node not found") {
@@ -399,17 +337,7 @@ impl GraphOps for Arc<AppState> {
     }
     
     async fn delete_block(&self, agent_id: Uuid, block_id: String, graph_id: &Uuid) -> Result<()> {
-        // Check authorization at runtime
-        {
-            let agent_registry = self.agent_registry.read()
-                .map_err(|_| GraphOperationError::GraphError("Failed to read agent registry".into()))?;
-            if !agent_registry.is_agent_authorized(&agent_id, graph_id) {
-                return Err(GraphOperationError::GraphError(format!(
-                    "Agent {} is not authorized for graph {} - authorization required for all graph operations", 
-                    agent_id, graph_id
-                )));
-            }
-        } // agent_registry lock drops here
+        check_authorization(&self.agent_registry, &agent_id, graph_id)?;
         
         // Create transaction with full API parameters
         let operation = Operation::DeleteBlock {
@@ -444,17 +372,7 @@ impl GraphOps for Arc<AppState> {
         properties: Option<serde_json::Value>,
         graph_id: &Uuid,
     ) -> Result<()> {
-        // Check authorization at runtime
-        {
-            let agent_registry = self.agent_registry.read()
-                .map_err(|_| GraphOperationError::GraphError("Failed to read agent registry".into()))?;
-            if !agent_registry.is_agent_authorized(&agent_id, graph_id) {
-                return Err(GraphOperationError::GraphError(format!(
-                    "Agent {} is not authorized for graph {} - authorization required for all graph operations", 
-                    agent_id, graph_id
-                )));
-            }
-        } // agent_registry lock drops here
+        check_authorization(&self.agent_registry, &agent_id, graph_id)?;
         
         // Create transaction with full API parameters
         let operation = Operation::CreatePage {
@@ -465,73 +383,16 @@ impl GraphOps for Arc<AppState> {
         
         // Execute with transaction on specific graph
         let result = self.with_graph_transaction(graph_id, operation, |graph_manager| {
-            
-            let normalized_name = page_name.to_lowercase();
-            
-            // Check if page already exists
-            if let Some(node_idx) = graph_manager.find_node(&page_name)
-                .or_else(|| graph_manager.find_node(&normalized_name)) {
-                
-                // Page exists - just update properties if provided
-                if let Some(existing_node) = graph_manager.get_node(node_idx) {
-                    if properties.is_some() {
-                        // Update only properties and timestamp
-                        let mut node_data = existing_node.clone();
-                        node_data.properties = crate::utils::parse_properties(&properties.unwrap_or(json!({})));
-                        node_data.updated_at = chrono::Utc::now();
-                        
-                        graph_manager.create_or_update_node(
-                            node_data.pkm_id,
-                            node_data.id,
-                            node_data.node_type,
-                            node_data.content,
-                            node_data.reference_content,
-                            node_data.properties,
-                            node_data.created_at,
-                            node_data.updated_at,
-                        )
-                        .map(|_| ())
-                        .map_err(|e| e.to_string())
-                    } else {
-                        // Page exists and no properties to update
-                        Ok(())
-                    }
-                } else {
-                    Err("Failed to get existing page node".to_string())
-                }
-            } else {
-                // Page doesn't exist - create it
-                let page_data = PKMPageData {
-                    name: page_name.clone(),
-                    normalized_name: Some(normalized_name),
-                    properties: properties.clone().unwrap_or(json!({})),
-                    created: chrono::Utc::now().to_rfc3339(),
-                    updated: chrono::Utc::now().to_rfc3339(),
-                    blocks: vec![],
-                };
-                
-                // Add to graph
-                page_data.apply_to_graph(graph_manager)
-                    .map(|_| ())
-                    .map_err(|e| e.to_string())
-            }
+            // Delegate to PKMPageData helper for complex page creation logic
+            PKMPageData::create_or_update_page(page_name, properties, graph_manager)
+                .map_err(|e| e.to_string())
         }).await;
         
         result.map_err(|e| GraphOperationError::GraphError(e.to_string()))
     }
     
     async fn delete_page(&self, agent_id: Uuid, page_name: String, graph_id: &Uuid) -> Result<()> {
-        // Check authorization at runtime
-        {
-            let agent_registry = self.agent_registry.read()
-                .map_err(|_| GraphOperationError::GraphError("Failed to read agent registry".into()))?;
-            if !agent_registry.is_agent_authorized(&agent_id, graph_id) {
-                return Err(GraphOperationError::GraphError(format!(
-                    "Agent {} is not authorized for graph {} - authorization required for all graph operations", 
-                    agent_id, graph_id
-                )));
-            }
-        } // agent_registry lock drops here
+        check_authorization(&self.agent_registry, &agent_id, graph_id)?;
         
         // Create transaction with full API parameters
         let operation = Operation::DeletePage {
@@ -567,17 +428,7 @@ impl GraphOps for Arc<AppState> {
     }
     
     async fn get_node(&self, agent_id: Uuid, node_id: &str, graph_id: &Uuid) -> Result<serde_json::Value> {
-        // Check authorization at runtime
-        {
-            let agent_registry = self.agent_registry.read()
-                .map_err(|_| GraphOperationError::GraphError("Failed to read agent registry".into()))?;
-            if !agent_registry.is_agent_authorized(&agent_id, graph_id) {
-                return Err(GraphOperationError::GraphError(format!(
-                    "Agent {} is not authorized for graph {} - authorization required for all graph operations", 
-                    agent_id, graph_id
-                )));
-            }
-        } // agent_registry lock drops here
+        check_authorization(&self.agent_registry, &agent_id, graph_id)?;
         
         let resources = self.graph_resources.read().await;
         let graph_resources = resources.get(graph_id)
@@ -610,17 +461,7 @@ impl GraphOps for Arc<AppState> {
         _max_depth: usize,
         graph_id: &Uuid,
     ) -> Result<Vec<serde_json::Value>> {
-        // Check authorization at runtime
-        {
-            let agent_registry = self.agent_registry.read()
-                .map_err(|_| GraphOperationError::GraphError("Failed to read agent registry".into()))?;
-            if !agent_registry.is_agent_authorized(&agent_id, graph_id) {
-                return Err(GraphOperationError::GraphError(format!(
-                    "Agent {} is not authorized for graph {} - authorization required for all graph operations", 
-                    agent_id, graph_id
-                )));
-            }
-        } // agent_registry lock drops here
+        check_authorization(&self.agent_registry, &agent_id, graph_id)?;
         
         // TODO: Implement BFS traversal in graph_manager
         // For now, return empty result
@@ -637,36 +478,15 @@ impl GraphOps for Arc<AppState> {
             .map_err(|e| GraphOperationError::GraphError(format!("Failed to open graph: {}", e)))?;
         
         // Run recovery on the newly opened graph
-        if let Some(coordinator) = self.get_transaction_coordinator(&graph_id).await {
-            match coordinator.recover_pending_transactions().await {
-                Ok(pending_transactions) => {
-                    if !pending_transactions.is_empty() {
-                        info!("🔄 Replaying {} pending transactions for graph {}", 
-                              pending_transactions.len(), graph_id);
-                        
-                        // Replay each transaction with proper state updates
-                        for transaction in pending_transactions {
-                            if let Err(e) = self.replay_transaction(&graph_id, transaction, coordinator.clone()).await {
-                                error!("Failed to replay transaction: {}", e);
-                            }
-                        }
-                        
-                        // Save the graph after recovery to ensure replayed changes are persisted
-                        let resources = self.graph_resources.read().await;
-                        if let Some(graph_resources) = resources.get(&graph_id) {
-                            match graph_resources.manager.write().await.save_graph() {
-                                Ok(_) => info!("💾 Saved graph {} after recovery", graph_id),
-                                Err(e) => error!("Failed to save graph {} after recovery: {}", graph_id, e),
-                            }
-                        }
-                        drop(resources);
-                    }
-                }
-                Err(e) => {
-                    error!("❌ Failed to recover transactions for {}: {}", graph_id, e);
-                    return Err(GraphOperationError::GraphError(format!("Transaction recovery failed: {}", e)));
-                }
+        match self.run_graph_recovery(&graph_id).await {
+            Ok(count) if count > 0 => {
+                info!("✅ Successfully replayed {} transactions for graph {}", count, graph_id);
             }
+            Err(e) => {
+                error!("❌ Failed to recover transactions for {}: {}", graph_id, e);
+                return Err(GraphOperationError::GraphError(format!("Transaction recovery failed: {}", e)));
+            }
+            _ => {} // No pending transactions
         }
         
         // Get graph info from registry
@@ -727,46 +547,9 @@ impl GraphOps for Arc<AppState> {
         name: Option<String>, 
         description: Option<String>
     ) -> Result<serde_json::Value> {
-        // Register the graph in the registry
-        let graph_info = {
-            // Debug assertion to fail fast if another thread holds the write lock
-            debug_assert!(
-                self.graph_registry.try_write().is_ok(),
-                "Registry write lock unavailable - another thread may be holding it"
-            );
-            
-            let mut registry = self.graph_registry.write()
-                .map_err(|_| GraphOperationError::GraphError("Failed to write registry".into()))?;
-            
-            registry.register_graph(None, name, description, &self.data_dir)
-                .map_err(|e| GraphOperationError::GraphError(format!("Failed to register graph: {}", e)))?
-        };
-        
-        // Authorize prime agent for the new graph
-        {
-            
-            let mut agent_registry = self.agent_registry.write()
-                .map_err(|_| GraphOperationError::GraphError("Failed to write agent registry".into()))?;
-            let mut graph_registry = self.graph_registry.write()
-                .map_err(|_| GraphOperationError::GraphError("Failed to write graph registry".into()))?;
-            
-            agent_registry.authorize_prime_for_new_graph(&graph_info.id, &mut graph_registry)
-                .map_err(|e| GraphOperationError::GraphError(format!("Failed to authorize prime agent: {}", e)))?;
-            
-            
-            // Save both registries
-            agent_registry.save()
-                .map_err(|e| GraphOperationError::GraphError(format!("Failed to save agent registry: {}", e)))?;
-            graph_registry.save()
-                .map_err(|e| GraphOperationError::GraphError(format!("Failed to save graph registry: {}", e)))?;
-            
-        }
-        
-        // Create graph manager for the new graph
-        self.get_or_create_graph_manager(&graph_info.id).await
-            .map_err(|e| GraphOperationError::GraphError(format!("Failed to create graph manager: {}", e)))?;
-        
-        info!("Created new knowledge graph: {} ({})", graph_info.name, graph_info.id);
+        // Delegate to AppState which handles the complete workflow
+        let graph_info = AppState::create_new_graph(self, name, description).await
+            .map_err(|e| GraphOperationError::GraphError(format!("Failed to create graph: {}", e)))?;
         
         Ok(json!({
             "id": graph_info.id,
@@ -782,56 +565,9 @@ impl GraphOps for Arc<AppState> {
     /// Archives the graph to `{data_dir}/archived_graphs/` with timestamp.
     /// Can delete both open and closed graphs.
     async fn delete_graph(&self, graph_id: &Uuid) -> Result<()> {
-        
-        // Remove from registry (this also archives the data)
-        {
-            // Debug assertion to fail fast if another thread holds the write lock
-            debug_assert!(
-                self.graph_registry.try_write().is_ok(),
-                "Registry write lock unavailable - another thread may be holding it"
-            );
-            
-            let mut registry = self.graph_registry.write()
-                .map_err(|_| GraphOperationError::GraphError("Failed to write registry".into()))?;
-            
-            registry.remove_graph(graph_id)
-                .map_err(|e| GraphOperationError::GraphError(format!("Failed to remove graph: {}", e)))?;
-            
-            // Save registry
-            registry.save()
-                .map_err(|e| GraphOperationError::GraphError(format!("Failed to save registry: {}", e)))?;
-        }
-        
-        // Remove from resources (manager + coordinator bundled together)
-        {
-            let mut resources = self.graph_resources.write().await;
-            resources.remove(graph_id);
-        }
-        
-        Ok(())
-    }
-    
-    /// Replay a transaction during recovery
-    /// This handles the complete transaction lifecycle: execution and state update
-    async fn replay_transaction(&self, graph_id: &Uuid, transaction: crate::storage::Transaction, coordinator: Arc<crate::storage::TransactionCoordinator>) -> Result<()> {
-        let tx_id = transaction.id.clone();
-        let operation = transaction.operation.clone();
-        
-        // Execute the operation using the OperationExecutor trait with graph context
-        let result = OperationExecutor::execute_operation(self, graph_id, operation).await;
-        
-        // Update transaction state based on result
-        match result {
-            Ok(()) => {
-                coordinator.commit_transaction(&tx_id).await
-                    .map_err(|e| GraphOperationError::GraphError(e.to_string()))?;
-            }
-            Err(e) => {
-                coordinator.abort_transaction(&tx_id, &e).await
-                    .map_err(|e| GraphOperationError::GraphError(e.to_string()))?;
-                error!("❌ Failed to replay transaction {}: {}", tx_id, e);
-            }
-        }
+        // Delegate to AppState which handles the complete workflow
+        AppState::delete_graph_completely(self, graph_id).await
+            .map_err(|e| GraphOperationError::GraphError(format!("Failed to delete graph: {}", e)))?;
         
         Ok(())
     }
@@ -877,7 +613,7 @@ impl OperationExecutor for Arc<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{Operation, Transaction};
+    use crate::storage::{Operation, transaction_log::Transaction};
     use crate::storage::transaction_log::TransactionState;
     
     #[test]

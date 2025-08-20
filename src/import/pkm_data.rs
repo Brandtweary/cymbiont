@@ -43,6 +43,8 @@ use petgraph::stable_graph::NodeIndex;
 use crate::graph_manager::{GraphManager, NodeType, EdgeType, GraphError, GraphResult};
 use crate::utils::{parse_datetime, parse_properties};
 use crate::import::reference_resolver::resolve_block_references;
+use crate::import::logseq::extract_references;
+use serde_json::json;
 
 /// PKM block data received from the frontend
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -143,6 +145,80 @@ where
 }
 
 impl PKMBlockData {
+    /// Create a new block with content and optional metadata
+    /// This is used when creating blocks via graph operations
+    pub fn new_block(
+        content: String,
+        parent_id: Option<String>,
+        page_name: Option<String>,
+        properties: Option<serde_json::Value>,
+    ) -> Self {
+        let block_id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        
+        PKMBlockData {
+            id: block_id,
+            content: content.clone(),
+            properties: properties.unwrap_or(json!({})),
+            parent: parent_id,
+            page: page_name,
+            references: extract_references(&content),
+            children: vec![],
+            created: now.clone(),
+            updated: now,
+            reference_content: None, // Let apply_to_graph handle resolution
+        }
+    }
+    
+    /// Update existing block content with reference resolution
+    /// Handles the find->clone->update->resolve->save pattern
+    pub fn update_block_content(
+        block_id: &str,
+        new_content: String,
+        graph_manager: &mut GraphManager,
+    ) -> GraphResult<()> {
+        // Find the node
+        if let Some(node_idx) = graph_manager.find_node(block_id) {
+            // Get existing node data to preserve all fields
+            if let Some(existing_node) = graph_manager.get_node(node_idx) {
+                // Clone existing data and update only what we need
+                let mut node_data = existing_node.clone();
+                
+                // Update content and timestamp
+                node_data.content = new_content.clone();
+                node_data.updated_at = chrono::Utc::now();
+                
+                // Resolve references if content changed
+                if existing_node.content != new_content {
+                    node_data.reference_content = Some(
+                        crate::import::reference_resolver::resolve_references_in_graph(
+                            &new_content,
+                            block_id,
+                            graph_manager
+                        )
+                    );
+                }
+                
+                // Update the node in the graph
+                graph_manager.create_or_update_node(
+                    node_data.pkm_id,
+                    node_data.id,
+                    node_data.node_type,
+                    node_data.content,
+                    node_data.reference_content,
+                    node_data.properties,
+                    node_data.created_at,
+                    node_data.updated_at,
+                )?;
+                
+                Ok(())
+            } else {
+                Err(GraphError::ReferenceResolution(format!("Node not found: {}", block_id)))
+            }
+        } else {
+            Err(GraphError::ReferenceResolution(format!("Node not found: {}", block_id)))
+        }
+    }
     /// Apply this block to the graph, creating/updating the node and edges
     pub fn apply_to_graph(&self, graph: &mut GraphManager) -> GraphResult<NodeIndex> {
         // Generate internal ID
@@ -200,6 +276,71 @@ impl PKMBlockData {
 }
 
 impl PKMPageData {
+    /// Create a new page with name and optional properties
+    /// This is used when creating pages via graph operations
+    pub fn new_page(
+        page_name: String,
+        properties: Option<serde_json::Value>,
+    ) -> Self {
+        let normalized_name = page_name.to_lowercase();
+        let now = chrono::Utc::now().to_rfc3339();
+        
+        PKMPageData {
+            name: page_name,
+            normalized_name: Some(normalized_name),
+            properties: properties.unwrap_or(json!({})),
+            created: now.clone(),
+            updated: now,
+            blocks: vec![],
+        }
+    }
+    
+    /// Create or update a page with smart existence checking and property updates
+    /// Returns the result of the operation - used by graph operations layer
+    pub fn create_or_update_page(
+        page_name: String,
+        properties: Option<serde_json::Value>,
+        graph_manager: &mut GraphManager,
+    ) -> GraphResult<()> {
+        let normalized_name = page_name.to_lowercase();
+        
+        // Check if page already exists
+        if let Some(node_idx) = graph_manager.find_node(&page_name)
+            .or_else(|| graph_manager.find_node(&normalized_name)) {
+            
+            // Page exists - just update properties if provided
+            if let Some(existing_node) = graph_manager.get_node(node_idx) {
+                if properties.is_some() {
+                    // Update only properties and timestamp
+                    let mut node_data = existing_node.clone();
+                    node_data.properties = crate::utils::parse_properties(&properties.unwrap_or(json!({})));
+                    node_data.updated_at = chrono::Utc::now();
+                    
+                    graph_manager.create_or_update_node(
+                        node_data.pkm_id,
+                        node_data.id,
+                        node_data.node_type,
+                        node_data.content,
+                        node_data.reference_content,
+                        node_data.properties,
+                        node_data.created_at,
+                        node_data.updated_at,
+                    )?;
+                }
+                // Page exists and no properties to update
+                Ok(())
+            } else {
+                Err(GraphError::ReferenceResolution("Failed to get existing page node".to_string()))
+            }
+        } else {
+            // Page doesn't exist - create it using factory method
+            let page_data = PKMPageData::new_page(page_name, properties);
+            
+            // Add to graph
+            page_data.apply_to_graph(graph_manager)?;
+            Ok(())
+        }
+    }
     /// Apply this page to the graph, creating/updating the node and edges
     pub fn apply_to_graph(&self, graph: &mut GraphManager) -> GraphResult<NodeIndex> {
         let normalized_name_owned = self.name.to_lowercase();

@@ -33,6 +33,7 @@
 use std::collections::{HashMap, HashSet};
 use regex::Regex;
 use once_cell::sync::Lazy;
+use crate::graph_manager::{GraphManager, NodeType};
 
 static BLOCK_REF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"\(\(([a-zA-Z0-9-]+)\)\)").unwrap()
@@ -90,6 +91,34 @@ pub fn resolve_block_references(
     }
     
     result
+}
+
+/// Build a map of block ID -> content from a graph manager
+/// This is used for reference resolution during graph operations
+pub fn build_block_map_from_graph(graph_manager: &GraphManager) -> HashMap<String, String> {
+    let mut block_map = HashMap::new();
+    
+    for idx in graph_manager.graph.node_indices() {
+        if let Some(node) = graph_manager.graph.node_weight(idx) {
+            if matches!(node.node_type, NodeType::Block) {
+                block_map.insert(node.pkm_id.clone(), node.content.clone());
+            }
+        }
+    }
+    
+    block_map
+}
+
+/// Resolve references in content using blocks from the graph manager
+/// This is a convenience function that builds the block map and resolves references
+pub fn resolve_references_in_graph(
+    content: &str,
+    current_block_id: &str,
+    graph_manager: &GraphManager,
+) -> String {
+    let block_map = build_block_map_from_graph(graph_manager);
+    let mut visited = HashSet::new();
+    resolve_block_references(content, &block_map, &mut visited, Some(current_block_id))
 }
 
 #[cfg(test)]

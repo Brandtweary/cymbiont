@@ -1,198 +1,82 @@
-//! Application State Management - Central Coordination Hub
+//! Application State Management - Multi-Agent Knowledge Graph Coordinator
 //! 
-//! This module provides the central AppState struct that acts as the coordination
-//! layer for all components of the Cymbiont multi-agent knowledge graph engine.
-//! AppState orchestrates the interaction between graphs, agents, transactions, and
-//! real-time communication systems.
+//! AppState is the central coordination hub for Cymbiont's multi-agent knowledge graph engine.
+//! It orchestrates graphs, agents, transactions, WebSocket connections, and authentication
+//! while delegating actual implementation to specialized components.
 //! 
-//! ## Central Nervous System Architecture
+//! ## Core Responsibilities
 //! 
-//! AppState coordinates all major subsystems:
-//! - **Graph Resources**: Bundled managers + coordinators for atomic lifecycle management
-//! - **Graph Registry**: Multi-graph metadata, open/closed state, and agent associations
-//! - **Agent Management**: Active agent instances and lifecycle coordination
-//! - **Agent Registry**: Agent metadata, authorization mappings, and persistence
-//! - **WebSocket Connections**: Real-time communication with current agent tracking
-//! - **Transaction Coordination**: ACID guarantees across all graphs
-//! - **Authentication**: Token-based security for server mode
-//! - **Configuration**: Runtime settings and environment management
-//! - **Graceful Shutdown**: Coordinated cleanup across all subsystems
+//! ### Graph Lifecycle Management
+//! - **Multi-Graph Coordination**: Manages multiple isolated knowledge graphs simultaneously
+//! - **Resource Bundling**: Each graph bundles GraphManager + TransactionCoordinator atomically
+//! - **State Management**: Open/closed graph states with automatic recovery
+//! - **Complete Workflows**: `create_new_graph()`, `delete_graph_completely()`, `open_graph()`, `close_graph()`
 //! 
-//! ## Design Philosophy: Coordination, Not Implementation
+//! ### Agent Lifecycle Management  
+//! - **Agent Coordination**: Manages active agents in memory with persistent registry
+//! - **Authorization System**: Runtime permission checks via AgentRegistry
+//! - **Prime Agent**: Auto-created default agent with full graph access
+//! - **Complete Workflows**: `activate_agent()`, `deactivate_agent()`, agent loading/saving
 //! 
-//! AppState provides essential wiring between components while delegating actual work:
-//! - **PKM Operations** → GraphOperationsExt trait with phantom type authorization
-//! - **Graph Storage** → GraphManager with petgraph engine
-//! - **Transactions** → TransactionCoordinator with WAL logging
-//! - **Agent Interactions** → Agent structs with LLM backends
-//! - **Open/Closed State** → GraphRegistry (single source of truth)
-//! - **Authorization** → AgentRegistry with bidirectional mappings
-//! - **Real-time Communication** → WebSocket handlers with async execution
+//! ### Transaction Coordination
+//! - **Per-Graph WAL**: Each graph has isolated write-ahead logging
+//! - **ACID Guarantees**: `with_graph_transaction()` wraps operations
+//! - **Crash Recovery**: `run_graph_recovery()` for specific graphs, `run_all_graphs_recovery()` for startup
+//! - **Graceful Shutdown**: Coordinates transaction completion across all graphs
 //! 
-//! This separation ensures clean architecture, testability, and maintainability.
+//! ### Server Mode Features
+//! - **WebSocket Management**: Active connection tracking with agent association
+//! - **Authentication**: Token-based auth with automatic rotation
+//! - **Async Processing**: High-throughput command execution
 //! 
-//! ## Resource Bundling Pattern
+//! ## Key Methods
 //! 
-//! AppState implements resource bundling to ensure atomic lifecycle management:
+//! ### Initialization
+//! - `new_cli()`, `new_server()` - Factory methods for different runtime modes
 //! 
-//! ### GraphResources Bundle
-//! Each graph bundles GraphManager (petgraph storage) with TransactionCoordinator
-//! (WAL management). This prevents inconsistent states where one resource exists
-//! without its counterpart.
+//! ### Graph Operations
+//! - `create_new_graph()` - Complete graph creation with prime agent authorization
+//! - `delete_graph_completely()` - Archive graph and remove from memory
+//! - `open_graph()`, `close_graph()` - Explicit state management
+//! - `get_or_create_graph_manager()` - Lazy resource loading
 //! 
-//! ### Agent Resource Management
-//! - **Active Agents**: HashMap of loaded Agent instances in memory
-//! - **Agent Registry**: Persistent metadata and authorization mappings
-//! - **Atomic Operations**: Lifecycle changes update both memory and registry
+//! ### Agent Operations
+//! - `activate_agent()`, `deactivate_agent()` - Memory management
+//! - `get_or_load_agent()` - Lazy agent loading
 //! 
-//! ## Multi-Graph Architecture
+//! ### Transaction & Recovery
+//! - `with_graph_transaction()` - ACID wrapper for graph operations
+//! - `run_graph_recovery()` - Replay pending transactions for specific graph
+//! - `run_all_graphs_recovery()` - Startup recovery for all graphs (both open and closed)
 //! 
-//! AppState coordinates multiple isolated knowledge graphs simultaneously:
+//! ### Shutdown Coordination
+//! - `initiate_graceful_shutdown()` - Stop new transactions, track active ones
+//! - `wait_for_transactions()` - Wait for completion with timeout
+//! - `cleanup_and_save()` - Save all graphs, agents, and registries
 //! 
-//! ### Graph Lifecycle States
-//! - **Closed**: Metadata exists but no manager/coordinator in memory
-//! - **Open**: Manager and coordinator loaded, ready for operations
-//! - **Archived**: Moved to archived_graphs/ directory (soft deletion)
+//! ## Architecture Patterns
 //! 
-//! ### Graph Resource Management
-//! - **Lazy Loading**: Resources created on first access
-//! - **Explicit Control**: Open/close operations provide deterministic management
-//! - **Atomic Transitions**: State changes coordinated across registry and memory
-//! - **Recovery**: Open graphs automatically loaded on system startup
+//! ### Resource Bundling
+//! Graph resources are bundled (GraphManager + TransactionCoordinator) to ensure
+//! they're always created/destroyed atomically, preventing inconsistent states.
 //! 
-//! ### Per-Graph Isolation
-//! - **Storage**: Isolated data directory and transaction log per graph
-//! - **Transactions**: Independent WAL and coordinator per graph
-//! - **Authorization**: Agent permissions managed per graph
-//! - **Concurrency**: Graph operations don't interfere with each other
+//! ### Registry Pattern
+//! Both GraphRegistry and AgentRegistry serve as single sources of truth for
+//! metadata, with bidirectional consistency between authorization mappings.
 //! 
-//! ## Multi-Agent Coordination
+//! ### Delegation Pattern
+//! AppState coordinates but doesn't implement domain logic:
+//! - Graph operations → GraphOps trait  
+//! - Graph storage → GraphManager
+//! - Transactions → TransactionCoordinator
+//! - Agent interactions → Agent struct
+//! - Authorization → AgentRegistry
 //! 
-//! AppState manages the complete agent ecosystem:
-//! 
-//! ### Agent Lifecycle Management
-//! - **Registration**: Create metadata and data directories
-//! - **Activation**: Load agent into memory for interaction
-//! - **Deactivation**: Save state and unload from memory
-//! - **Authorization**: Grant/revoke access to specific graphs
-//! - **Archival**: Move agents to archived_agents/ directory
-//! 
-//! ### Prime Agent System
-//! - **Auto-creation**: Created automatically on first startup
-//! - **Deletion Protection**: Cannot be deleted for system stability
-//! - **Default Authorization**: Auto-authorized for all new graphs
-//! - **WebSocket Default**: Used as fallback when no specific agent selected
-//! 
-//! ### Authorization Framework
-//! - **Bidirectional Mapping**: Agents ↔ graphs authorization tracking
-//! - **Phantom Type Enforcement**: Compile-time authorization checking
-//! - **Runtime Validation**: Authorization verified for all graph operations
-//! - **Single Source of Truth**: AgentRegistry maintains authoritative state
-//! 
-//! ## Transaction Architecture
-//! 
-//! AppState coordinates ACID transactions across the entire system:
-//! 
-//! ### Per-Graph Transaction Isolation
-//! - **Independent WAL**: Each graph has its own write-ahead log
-//! - **Separate Coordinators**: Independent transaction management per graph
-//! - **Atomic Operations**: Single-graph operations maintain ACID properties
-//! - **Recovery**: Graph-specific transaction replay during startup/open
-//! 
-//! ### System-Wide Transaction Coordination
-//! - **Graceful Shutdown**: Wait for all active transactions across all graphs
-//! - **Freeze Mechanism**: Test infrastructure to pause transaction execution
-//! - **Forced Termination**: Emergency shutdown with transaction log flush
-//! - **Startup Recovery**: All graphs processed for pending transaction recovery
-//! 
-//! ### Transaction Processing Pipeline
-//! 1. **Operation Request**: Graph operation initiated via GraphOps trait
-//! 2. **Authorization Check**: Agent permissions verified via phantom types
-//! 3. **Transaction Creation**: Operation logged to WAL with content deduplication
-//! 4. **Freeze Check**: Wait if operations frozen for testing
-//! 5. **Execution**: Operation applied to graph with error handling
-//! 6. **Completion**: Transaction marked committed/aborted based on result
-//! 7. **Persistence**: Graph state saved and transaction log updated
-//! 
-//! ## Server Mode Architecture
-//! 
-//! When running in server mode, AppState manages additional real-time components:
-//! - **Connection Tracking**: HashMap of active WebSocket connections by UUID
-//! - **Agent Association**: Each connection tracks current agent for operations
-//! - **Authentication**: Token-based auth with automatic token rotation
-//! - **Async Command Execution**: Commands spawn independent async tasks
-//! - **High Throughput**: Concurrent operation processing without blocking
-//! - **Agent Authorization**: All operations enforce agent permissions
-//! 
-//! ## Graceful Shutdown Architecture
-//! 
-//! AppState implements comprehensive graceful shutdown:
-//! 
-//! ### Shutdown Coordination Sequence
-//! 1. **Signal Handling**: SIGINT triggers graceful shutdown initiation
-//! 2. **Transaction Halt**: No new transactions accepted across all graphs
-//! 3. **Connection Closure**: WebSocket connections notified and closed
-//! 4. **Transaction Completion**: Wait for active transactions (up to 30 seconds)
-//! 5. **Resource Persistence**: All graphs and agents saved to disk
-//! 6. **Registry Persistence**: Graph and agent registries saved
-//! 7. **Transaction Log Flush**: WAL logs flushed and closed
-//! 8. **Process Termination**: Clean exit with std::process::exit(0)
-//! 
-//! ### Force Shutdown Path
-//! Second SIGINT forces immediate termination with transaction flush.
-//! 
-//! ## Initialization and Startup
-//! 
-//! AppState initialization is carefully orchestrated:
-//! 
-//! ### Factory Methods
-//! - **new_cli()**: CLI usage without server components
-//! - **new_server()**: Full server capabilities
-//! - **new_internal()**: Shared initialization logic
-//! 
-//! ### Startup Sequence
-//! 1. **Configuration Loading**: YAML config loaded with CLI overrides
-//! 2. **Data Directory Setup**: Directory structure created/validated
-//! 3. **Registry Initialization**: Graph and agent registries loaded from disk
-//! 4. **Prime Agent Creation**: Ensure prime agent exists for system stability
-//! 5. **Graph Recovery**: Open graphs loaded and transaction recovery performed
-//! 6. **Agent Activation**: Active agents loaded into memory
-//! 7. **Authentication Setup**: Server mode authentication token generation
-//! 8. **Component Wiring**: All subsystems connected and ready
-//! 
-//! ### Startup Validation
-//! - At least one open graph ensures system has a default graph available
-//! - Prime agent available guarantees authentication cannot deadlock
-//! - Data directory integrity validates storage directory structure
-//! - Registry consistency validates graph/agent metadata consistency
-//! 
-//! ## Concurrency and Thread Safety
-//! 
-//! AppState is designed for high-concurrency environments:
-//! - **Async RwLocks**: For frequently accessed resources (graphs, agents, connections)
-//! - **Sync RwLocks**: For registries requiring immediate consistency
-//! - **Lock Ordering**: Consistent acquisition order prevents deadlocks
-//! - **Double-check Pattern**: Prevents race conditions in resource creation
-//! - **Lock Dropping**: Early release to minimize contention windows
-//! - **Atomic Operations**: AtomicBool for shutdown coordination
-//! - **Debug Assertions**: Development-time lock contention detection
-//! 
-//! ## Error Handling and Resilience
-//! 
-//! AppState implements comprehensive error handling with recovery strategies:
-//! - **Configuration/Persistence/Authorization/Resource/Network Errors**: Categorized handling
-//! - **Graceful Degradation**: Continue when non-critical components fail
-//! - **Partial Success**: Agent loading continues even if individual agents fail
-//! - **Clear Error Propagation**: Context provided for debugging
-//! - **Atomic Operations**: Prevent partial state corruption
-//! 
-//! ## Extension Patterns
-//! 
-//! AppState supports clean extension:
-//! - **Extension Trait Pattern**: Domain-specific operations via traits (GraphOperationsExt)
-//! - **Factory Pattern**: Resource creation through factory methods
-//! - **Registry Pattern**: Centralized metadata with single source of truth
-//! - **Bidirectional Consistency**: Registry updates maintain referential integrity
+//! ### Concurrency Design
+//! - Async RwLocks for frequently accessed resources (graphs, agents, connections)
+//! - Sync RwLocks for registries requiring immediate consistency
+//! - Double-check pattern prevents race conditions in resource creation
+//! - Debug assertions detect lock contention during development
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -209,7 +93,7 @@ use crate::{
     agent::agent::Agent,
     graph_manager::GraphManager,
     config::{load_config, Config},
-    storage::{GraphRegistry, AgentRegistry, TransactionLog, TransactionCoordinator},
+    storage::{GraphRegistry, AgentRegistry, TransactionLog, TransactionCoordinator, graph_registry::GraphInfo},
 };
 
 // Re-export the real WsConnection from server module
@@ -457,8 +341,8 @@ impl AppState {
     /// 1. Creates/loads the graph manager and transaction coordinator
     /// 2. Updates the registry to mark the graph as open
     /// 
-    /// Note: Transaction recovery is handled by the caller (GraphOperationsExt::open_graph)
-    /// after this method completes successfully.
+    /// Note: Transaction recovery should be run separately via run_graph_recovery()
+    /// if needed after this method completes successfully.
     pub async fn open_graph(&self, graph_id: &Uuid) -> Result<(), Box<dyn Error + Send + Sync>> {
         // First ensure the graph manager and coordinator exist
         // This will either:
@@ -478,6 +362,210 @@ impl AppState {
             .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to write registry: {}", e)))?;
         registry.open_graph(graph_id)
             .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to open graph: {}", e)))?;
+        
+        Ok(())
+    }
+    
+    /// Run transaction recovery for a specific graph
+    /// 
+    /// This replays any pending transactions found in the graph's WAL.
+    /// Should be called after opening a graph that may have crashed.
+    pub async fn run_graph_recovery(self: &Arc<Self>, graph_id: &Uuid) -> Result<usize, Box<dyn Error + Send + Sync>> {
+        use crate::storage::OperationExecutor;
+        
+        let coordinator = self.get_transaction_coordinator(graph_id).await
+            .ok_or_else(|| format!("No transaction coordinator for graph {}", graph_id))?;
+        
+        let pending_transactions = coordinator.recover_pending_transactions().await
+            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to recover transactions: {}", e)))?;
+        
+        let count = pending_transactions.len();
+        if count > 0 {
+            info!("🔄 Replaying {} pending transactions for graph {}", count, graph_id);
+            
+            // Replay each transaction with proper state updates
+            for transaction in pending_transactions {
+                let tx_id = transaction.id.clone();
+                let operation = transaction.operation.clone();
+                
+                // Execute the operation using the OperationExecutor trait
+                let result = OperationExecutor::execute_operation(self, graph_id, operation).await;
+                
+                // Update transaction state based on result
+                match result {
+                    Ok(()) => {
+                        coordinator.commit_transaction(&tx_id).await
+                            .map_err(|e| Box::<dyn Error + Send + Sync>::from(e.to_string()))?;
+                    }
+                    Err(e) => {
+                        coordinator.abort_transaction(&tx_id, &e).await
+                            .map_err(|e| Box::<dyn Error + Send + Sync>::from(e.to_string()))?;
+                        error!("❌ Failed to replay transaction {}: {}", tx_id, e);
+                    }
+                }
+            }
+            
+            // Save the graph after recovery to ensure replayed changes are persisted
+            let resources = self.graph_resources.read().await;
+            if let Some(graph_resources) = resources.get(graph_id) {
+                match graph_resources.manager.write().await.save_graph() {
+                    Ok(_) => info!("💾 Saved graph {} after recovery", graph_id),
+                    Err(e) => error!("Failed to save graph {} after recovery: {}", graph_id, e),
+                }
+            }
+        }
+        
+        Ok(count)
+    }
+    
+    /// Run recovery for all graphs on startup
+    /// 
+    /// This includes both open and closed graphs to ensure no pending transactions are lost.
+    /// Closed graphs are temporarily opened for recovery, then closed again.
+    pub async fn run_all_graphs_recovery(self: &Arc<Self>) -> Result<usize, Box<dyn Error + Send + Sync>> {
+        let all_graphs = {
+            let registry_guard = self.graph_registry.read()
+                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to read registry for recovery: {}", e)))?;
+            registry_guard.get_all_graphs()
+        };
+        
+        info!("🔄 Running recovery for {} graphs", all_graphs.len());
+        let mut total_recovered = 0;
+        
+        for graph_info in all_graphs {
+            let graph_id = graph_info.id;
+            let graph_name = graph_info.name.clone();
+            
+            // Check if graph is already open
+            let was_open = {
+                let registry_guard = self.graph_registry.read()
+                    .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to read registry: {}", e)))?;
+                registry_guard.is_graph_open(&graph_id)
+            };
+            
+            // If graph is closed, temporarily open it for recovery
+            if !was_open {
+                if let Err(e) = self.open_graph(&graph_id).await {
+                    error!("Failed to open graph {} for recovery: {}", graph_name, e);
+                    continue;
+                }
+            }
+            
+            // Ensure the graph manager is loaded
+            if let Err(e) = self.get_or_create_graph_manager(&graph_id).await {
+                error!("Failed to create graph manager for {}: {}", graph_name, e);
+                if !was_open {
+                    // Try to close it again if we opened it
+                    let _ = self.close_graph(&graph_id).await;
+                }
+                continue;
+            }
+            
+            // Run recovery using the centralized method
+            match self.run_graph_recovery(&graph_id).await {
+                Ok(count) if count > 0 => {
+                    info!("✅ Successfully replayed {} transactions for graph {}", count, graph_name);
+                    total_recovered += count;
+                }
+                Err(e) => {
+                    error!("❌ Failed to recover transactions for {}: {}", graph_name, e);
+                }
+                _ => {} // No pending transactions
+            }
+            
+            // If graph was originally closed, close it again
+            if !was_open {
+                if let Err(e) = self.close_graph(&graph_id).await {
+                    error!("Failed to close graph {} after recovery: {}", graph_name, e);
+                }
+            }
+        }
+        
+        info!("✅ Recovery complete for all graphs - total transactions recovered: {}", total_recovered);
+        Ok(total_recovered)
+    }
+    
+    /// Create a new knowledge graph with automatic prime agent authorization
+    /// 
+    /// This handles the complete graph creation workflow:
+    /// 1. Register the graph in the graph registry
+    /// 2. Authorize the prime agent for the new graph
+    /// 3. Save both registries
+    /// 4. Create the graph manager and coordinator
+    pub async fn create_new_graph(
+        &self,
+        name: Option<String>,
+        description: Option<String>,
+    ) -> Result<GraphInfo, Box<dyn Error + Send + Sync>> {
+        // Register the graph in the registry
+        let graph_info = {
+            debug_assert!(
+                self.graph_registry.try_write().is_ok(),
+                "Registry write lock unavailable - another thread may be holding it"
+            );
+            
+            let mut registry = self.graph_registry.write()
+                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to write registry: {}", e)))?;
+            
+            registry.register_graph(None, name, description, &self.data_dir)
+                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to register graph: {}", e)))?
+        };
+        
+        // Authorize prime agent for the new graph
+        {
+            let mut agent_registry = self.agent_registry.write()
+                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to write agent registry: {}", e)))?;
+            let mut graph_registry = self.graph_registry.write()
+                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to write graph registry: {}", e)))?;
+            
+            agent_registry.authorize_prime_for_new_graph(&graph_info.id, &mut graph_registry)
+                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to authorize prime agent: {}", e)))?;
+            
+            // Save both registries
+            agent_registry.save()
+                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to save agent registry: {}", e)))?;
+            graph_registry.save()
+                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to save graph registry: {}", e)))?;
+        }
+        
+        // Create graph manager for the new graph
+        self.get_or_create_graph_manager(&graph_info.id).await?;
+        
+        info!("Created new knowledge graph: {} ({})", graph_info.name, graph_info.id);
+        
+        Ok(graph_info)
+    }
+    
+    /// Delete a knowledge graph completely
+    /// 
+    /// This handles the complete graph deletion workflow:
+    /// 1. Remove from graph registry (archives the data)
+    /// 2. Remove from memory resources
+    /// 3. Save the updated registry
+    pub async fn delete_graph_completely(&self, graph_id: &Uuid) -> Result<(), Box<dyn Error + Send + Sync>> {
+        // Remove from registry (this also archives the data)
+        {
+            debug_assert!(
+                self.graph_registry.try_write().is_ok(),
+                "Registry write lock unavailable - another thread may be holding it"
+            );
+            
+            let mut registry = self.graph_registry.write()
+                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to write registry: {}", e)))?;
+            
+            registry.remove_graph(graph_id)
+                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to remove graph: {}", e)))?;
+            
+            // Save registry
+            registry.save()
+                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to save registry: {}", e)))?;
+        }
+        
+        // Remove from resources (manager + coordinator bundled together)
+        {
+            let mut resources = self.graph_resources.write().await;
+            resources.remove(graph_id);
+        }
         
         Ok(())
     }

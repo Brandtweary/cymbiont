@@ -166,8 +166,10 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
         // Create server app state
         let app_state = AppState::new_server(args.config.clone(), args.data_dir.clone()).await?;
         
-        // Run recovery for all open graphs (same as CLI path)
-        run_all_graphs_recovery(&app_state).await;
+        // Run recovery for all graphs (same as CLI path)
+        if let Err(e) = app_state.run_all_graphs_recovery().await {
+            error!("Failed to run graph recovery: {}", e);
+        }
         
         // Start server and get handle
         let (server_handle, server_info_file) = server::start_server(app_state.clone()).await?;
@@ -667,8 +669,10 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
                 }
             } // registry_guard drops here
             
-            // Run recovery for all open graphs on startup
-            run_all_graphs_recovery(&app_state).await;
+            // Run recovery for all graphs on startup
+            if let Err(e) = app_state.run_all_graphs_recovery().await {
+                error!("Failed to run graph recovery: {}", e);
+            }
         } else {
             info!("📂 No open graphs");
         }
@@ -745,93 +749,3 @@ async fn handle_graceful_shutdown(app_state: &std::sync::Arc<AppState>) -> bool 
     }
 }
 
-/// Run recovery for all graphs on startup (shared between CLI and server)
-/// This includes both open and closed graphs to ensure no pending transactions are lost
-async fn run_all_graphs_recovery(app_state: &std::sync::Arc<AppState>) {
-    let all_graphs = {
-        let registry_guard = match app_state.graph_registry.read() {
-            Ok(guard) => guard,
-            Err(e) => {
-                error!("Failed to read registry for recovery: {}", e);
-                return;
-            }
-        };
-        registry_guard.get_all_graphs()
-    };
-    
-    info!("🔄 Running recovery for {} graphs", all_graphs.len());
-    
-    for graph_info in all_graphs {
-        let graph_id = graph_info.id;
-        let graph_name = graph_info.name.clone();
-        
-        // Check if graph is already open
-        let was_open = {
-            let registry_guard = match app_state.graph_registry.read() {
-                Ok(guard) => guard,
-                Err(e) => {
-                    error!("Failed to read registry: {}", e);
-                    continue;
-                }
-            };
-            registry_guard.is_graph_open(&graph_id)
-        };
-        
-        // If graph is closed, temporarily open it for recovery
-        if !was_open {
-            if let Err(e) = app_state.open_graph(graph_id).await {
-                error!("Failed to open graph {} for recovery: {}", graph_name, e);
-                continue;
-            }
-        }
-        
-        // Ensure the graph manager is loaded
-        if let Err(e) = app_state.get_or_create_graph_manager(&graph_id).await {
-            error!("Failed to create graph manager for {}: {}", graph_name, e);
-            if !was_open {
-                // Try to close it again if we opened it
-                let _ = app_state.close_graph(graph_id).await;
-            }
-            continue;
-        }
-        
-        // Run recovery
-        if let Some(coordinator) = app_state.get_transaction_coordinator(&graph_id).await {
-            match coordinator.recover_pending_transactions().await {
-                Ok(pending_transactions) => {
-                    if !pending_transactions.is_empty() {
-                        info!("🔄 Replaying {} pending transactions for graph {}", 
-                              pending_transactions.len(), graph_name);
-                        
-                        for transaction in pending_transactions {
-                            if let Err(e) = app_state.replay_transaction(&graph_id, transaction, coordinator.clone()).await {
-                                error!("Failed to replay transaction: {}", e);
-                            }
-                        }
-                        
-                        // Save the graph after recovery
-                        let resources = app_state.graph_resources.read().await;
-                        if let Some(graph_resources) = resources.get(&graph_id) {
-                            match graph_resources.manager.write().await.save_graph() {
-                                Ok(_) => info!("💾 Saved graph {} after recovery", graph_name),
-                                Err(e) => error!("Failed to save graph {} after recovery: {}", graph_name, e),
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    error!("Failed to recover transactions for {}: {}", graph_name, e);
-                }
-            }
-        }
-        
-        // If graph was originally closed, close it again
-        if !was_open {
-            if let Err(e) = app_state.close_graph(graph_id).await {
-                error!("Failed to close graph {} after recovery: {}", graph_name, e);
-            }
-        }
-    }
-    
-    info!("✅ Recovery complete for all graphs");
-}

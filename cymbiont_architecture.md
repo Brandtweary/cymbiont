@@ -63,8 +63,13 @@ cymbiont/
 │       ├── websocket_commands.rs  # WebSocket tests
 │       ├── agent_commands.rs      # Agent chat and admin command tests
 │       └── freeze_mechanism.rs    # Operation freeze/unfreeze tests
-└── autodebugger/                  # Git submodule: LLM developer utilities toolbag
+├── autodebugger/                  # Git submodule: LLM developer utilities toolbag
+└── build.rs                       # Build script: enforces tracing macro usage
 ```
+
+## Build Script
+
+The build.rs script enforces consistent use of tracing macros throughout the codebase by detecting and failing the build when println!, eprintln!, print!, eprint!, or dbg! macros are found in src/ or tests/ directories.
 
 ## Module Requirements and Data Flow
 

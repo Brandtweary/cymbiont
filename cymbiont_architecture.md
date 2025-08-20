@@ -91,9 +91,10 @@ cymbiont/
 **Key methods**: 
 - `new_cli()`, `new_server()` - initialization with agent registry loading
 - `get_or_create_graph_manager()` - lazy graph manager creation
-- `get_or_load_agent()`, `activate_agent()`, `deactivate_agent()` - agent lifecycle parallel to graphs
+- `get_or_load_agent()`, `activate_agent()`, `deactivate_agent()` - agent lifecycle parallel to graphs (delegates to registry complete workflows)
+- `create_new_graph()`, `delete_graph_completely()` - graph lifecycle (delegates to registry complete workflows)
 - `with_graph_transaction(graph_id)` - wraps operations in transactions for specific graph
-- `run_graph_recovery(graph_id)` - replay pending transactions for specific graph
+- `run_graph_recovery(graph_id)` - replay pending transactions for specific graph (delegates to helper functions)
 - `run_all_graphs_recovery()` - startup recovery for all graphs (both open and closed)
 - `initiate_graceful_shutdown()`, `wait_for_transactions()` - shutdown coordination
 - `get_transaction_coordinator()` - access to per-graph WAL
@@ -160,6 +161,7 @@ cymbiont/
 - `get_open_graphs()`, `is_graph_open()` - query graph states
 - `resolve_graph_target()` - centralized UUID/name resolution with smart defaults
 - `ensure_graph_open()` - startup logic to guarantee at least one open graph
+- `create_new_graph_complete()`, `delete_graph_complete()` - complete workflows with prime agent authorization
 **Data structure**: Tracks `open_graphs: HashSet<Uuid>` and `authorized_agents` per graph
 **Persistence**: Open graph state persists across restarts for automatic recovery
 **Safety pattern**: Write operations use `debug_assert!(registry.try_write().is_ok())` as tripwires to detect lock contention during development
@@ -173,6 +175,7 @@ cymbiont/
 - `authorize_agent_for_graph()`, `deauthorize_agent_from_graph()` - bidirectional authorization
 - `resolve_agent_target()` - UUID/name resolution with prime agent fallback
 - `ensure_default_agent()` - creates prime agent on first run
+- `activate_agent_complete()`, `deactivate_agent_complete()` - complete workflows with persistence
 **Prime agent**: Auto-created default agent with full graph access for seamless experience
 **Persistence**: Saves to `agent_registry.json` with active/inactive state tracking
 
@@ -223,12 +226,13 @@ cymbiont/
 **Trees**: Transactions, content hash index, pending index
 
 ### storage/transaction.rs
-**Purpose**: Transaction lifecycle coordination with graceful shutdown support  
+**Purpose**: Transaction lifecycle coordination with graceful shutdown support and AppState verbosity reduction
 **States**: `Active` → `Committed` | `Aborted`
 **Key methods**: 
 - `create_transaction()`, `complete_transaction()` - transaction lifecycle
 - `recover_pending_transactions()` - crash recovery
 - `initiate_shutdown()`, `wait_for_completion()` - graceful shutdown coordination
+- `run_single_graph_recovery_helper()`, `save_graph_after_recovery_helper()` - extracted helpers to reduce AppState verbosity
 **Per-graph isolation**: Each graph has its own TransactionCoordinator instance
 **Shutdown behavior**: Tracks all active transactions, rejects new ones during shutdown
 

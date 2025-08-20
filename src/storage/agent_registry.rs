@@ -23,6 +23,7 @@
 //! - `activate_agent()` - Load agent into memory
 //! - `deactivate_agent()` - Save and unload agent
 //! - `remove_agent()` - Archive agent to `archived_agents/`
+//! - `activate_agent_complete()`, `deactivate_agent_complete()` - Complete workflows with persistence
 //!
 //! ### Authorization Management
 //! - `authorize_agent_for_graph()` - Grant agent access to a graph
@@ -47,6 +48,15 @@
 //! - Authorized for all new graphs
 //! - Protected from deletion
 //! - Used as smart default for agent_info operations
+//!
+//! ## Complete Workflow Methods
+//!
+//! To reduce AppState verbosity, the registry provides complete workflow methods:
+//! - `activate_agent_complete()` - Agent activation with registry persistence
+//! - `deactivate_agent_complete()` - Agent deactivation with registry persistence
+//!
+//! These methods handle validation, state updates, and persistence, allowing AppState
+//! to focus on memory management rather than workflow orchestration.
 //!
 //! ## Data Structure
 //!
@@ -552,6 +562,36 @@ impl AgentRegistry {
         
         Ok(())
     }
+    
+    /// Deactivate agent with persistence workflow
+    /// 
+    /// This provides the registry-side of deactivation that AppState can call
+    /// after it has saved the Agent instance itself.
+    pub fn deactivate_agent_complete(&mut self, agent_id: &Uuid) -> Result<()> {
+        // Deactivate the agent
+        self.deactivate_agent(agent_id)?;
+        
+        // Save the registry
+        self.save()?;
+        
+        info!("Completed agent deactivation workflow: {}", agent_id);
+        Ok(())
+    }
+    
+    /// Complete agent activation workflow with validation
+    /// 
+    /// Enhanced version that includes persistence and better error handling.
+    pub fn activate_agent_complete(&mut self, agent_id: &Uuid) -> Result<AgentInfo> {
+        // Activate the agent (validates existence)
+        let agent_info = self.activate_agent(agent_id)?;
+        
+        // Save the registry
+        self.save()?;
+        
+        info!("Completed agent activation workflow: {} ({})", agent_info.name, agent_id);
+        Ok(agent_info)
+    }
+    
 }
 
 #[cfg(test)]

@@ -28,6 +28,7 @@
 //! - Handles graph lifecycle: register, open, close, remove
 //! - Provides centralized graph resolution by UUID or name
 //! - Persists registry state to `{data_dir}/graph_registry.json`
+//! - Offers complete workflow methods that coordinate with AgentRegistry for prime agent authorization
 //!
 //! ## Graph State Management
 //!
@@ -51,6 +52,15 @@
 //! If profiling shows that some degree of lock contention is acceptable for your use case, 
 //! the assertions can be removed. However, this decision must be made after profiling and 
 //! measuring actual performance impact, never preemptively.
+//!
+//! ## Complete Workflow Methods
+//!
+//! To reduce AppState verbosity, the registry provides complete workflow methods:
+//! - `create_new_graph_complete()` - Full graph creation including prime agent authorization
+//! - `delete_graph_complete()` - Complete graph deletion with data archival
+//!
+//! These methods handle cross-registry coordination and persistence, allowing AppState 
+//! to focus on resource management rather than workflow orchestration.
 //!
 //! ## Data Directory Structure
 //!
@@ -390,6 +400,55 @@ impl GraphRegistry {
         
         Ok(())
     }
+    
+    /// Complete graph creation workflow with prime agent authorization
+    /// 
+    /// This handles the full workflow that AppState was previously orchestrating:
+    /// 1. Register the graph in this registry
+    /// 2. Authorize the prime agent for the new graph (bidirectional)
+    /// 3. Save both registries
+    pub fn create_new_graph_complete(
+        &mut self,
+        name: Option<String>,
+        description: Option<String>,
+        agent_registry: &mut crate::storage::AgentRegistry,
+    ) -> Result<GraphInfo> {
+        let data_dir = self.data_dir.as_ref()
+            .ok_or_else(|| GraphRegistryError::ValidationError("No data directory set".to_string()))?
+            .clone();
+        
+        // Register the graph
+        let graph_info = self.register_graph(None, name, description, &data_dir)?;
+        
+        // Authorize prime agent for the new graph
+        agent_registry.authorize_prime_for_new_graph(&graph_info.id, self)
+            .map_err(|e| GraphRegistryError::ValidationError(format!("Failed to authorize prime agent: {:?}", e)))?;
+        
+        // Save both registries
+        agent_registry.save()
+            .map_err(|e| GraphRegistryError::ValidationError(format!("Failed to save agent registry: {:?}", e)))?;
+        self.save()?;
+        
+        info!("Completed graph creation workflow: {} ({})", graph_info.name, graph_info.id);
+        Ok(graph_info)
+    }
+    
+    /// Complete graph deletion workflow with cleanup
+    /// 
+    /// This handles the full workflow that AppState was previously orchestrating:
+    /// 1. Remove from this registry (which archives the data)
+    /// 2. Save the updated registry
+    pub fn delete_graph_complete(&mut self, graph_id: &Uuid) -> Result<()> {
+        // Remove graph (this handles archival)
+        self.remove_graph(graph_id)?;
+        
+        // Save registry
+        self.save()?;
+        
+        info!("Completed graph deletion workflow for: {}", graph_id);
+        Ok(())
+    }
+    
     
 }
 

@@ -93,7 +93,7 @@ use crate::{
     agent::agent::Agent,
     graph_manager::GraphManager,
     config::{load_config, Config},
-    storage::{GraphRegistry, AgentRegistry, TransactionLog, TransactionCoordinator, graph_registry::GraphInfo},
+    storage::{GraphRegistry, AgentRegistry, TransactionLog, TransactionCoordinator, graph_registry::GraphInfo, transaction},
 };
 
 // Re-export the real WsConnection from server module
@@ -368,50 +368,20 @@ impl AppState {
     
     /// Run transaction recovery for a specific graph
     /// 
-    /// This replays any pending transactions found in the graph's WAL.
-    /// Should be called after opening a graph that may have crashed.
+    /// Simplified using downstream helper functions.
     pub async fn run_graph_recovery(self: &Arc<Self>, graph_id: &Uuid) -> Result<usize, Box<dyn Error + Send + Sync>> {
-        use crate::storage::OperationExecutor;
-        
         let coordinator = self.get_transaction_coordinator(graph_id).await
             .ok_or_else(|| format!("No transaction coordinator for graph {}", graph_id))?;
         
-        let pending_transactions = coordinator.recover_pending_transactions().await
-            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to recover transactions: {}", e)))?;
+        // Delegate core recovery logic to helper
+        let count = transaction::run_single_graph_recovery_helper(&coordinator, self, graph_id).await?;
         
-        let count = pending_transactions.len();
+        // Save graph if transactions were recovered
         if count > 0 {
-            info!("🔄 Replaying {} pending transactions for graph {}", count, graph_id);
-            
-            // Replay each transaction with proper state updates
-            for transaction in pending_transactions {
-                let tx_id = transaction.id.clone();
-                let operation = transaction.operation.clone();
-                
-                // Execute the operation using the OperationExecutor trait
-                let result = OperationExecutor::execute_operation(self, graph_id, operation).await;
-                
-                // Update transaction state based on result
-                match result {
-                    Ok(()) => {
-                        coordinator.commit_transaction(&tx_id).await
-                            .map_err(|e| Box::<dyn Error + Send + Sync>::from(e.to_string()))?;
-                    }
-                    Err(e) => {
-                        coordinator.abort_transaction(&tx_id, &e).await
-                            .map_err(|e| Box::<dyn Error + Send + Sync>::from(e.to_string()))?;
-                        error!("❌ Failed to replay transaction {}: {}", tx_id, e);
-                    }
-                }
-            }
-            
-            // Save the graph after recovery to ensure replayed changes are persisted
             let resources = self.graph_resources.read().await;
             if let Some(graph_resources) = resources.get(graph_id) {
-                match graph_resources.manager.write().await.save_graph() {
-                    Ok(_) => info!("💾 Saved graph {} after recovery", graph_id),
-                    Err(e) => error!("Failed to save graph {} after recovery: {}", graph_id, e),
-                }
+                let mut manager = graph_resources.manager.write().await;
+                transaction::save_graph_after_recovery_helper(&mut *manager, graph_id).await;
             }
         }
         
@@ -487,81 +457,43 @@ impl AppState {
     
     /// Create a new knowledge graph with automatic prime agent authorization
     /// 
-    /// This handles the complete graph creation workflow:
-    /// 1. Register the graph in the graph registry
-    /// 2. Authorize the prime agent for the new graph
-    /// 3. Save both registries
-    /// 4. Create the graph manager and coordinator
+    /// Simplified workflow using downstream registry methods.
     pub async fn create_new_graph(
         &self,
         name: Option<String>,
         description: Option<String>,
     ) -> Result<GraphInfo, Box<dyn Error + Send + Sync>> {
-        // Register the graph in the registry
+        // Delegate complete workflow to GraphRegistry
         let graph_info = {
-            debug_assert!(
-                self.graph_registry.try_write().is_ok(),
-                "Registry write lock unavailable - another thread may be holding it"
-            );
-            
-            let mut registry = self.graph_registry.write()
-                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to write registry: {}", e)))?;
-            
-            registry.register_graph(None, name, description, &self.data_dir)
-                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to register graph: {}", e)))?
-        };
-        
-        // Authorize prime agent for the new graph
-        {
-            let mut agent_registry = self.agent_registry.write()
-                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to write agent registry: {}", e)))?;
             let mut graph_registry = self.graph_registry.write()
                 .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to write graph registry: {}", e)))?;
+            let mut agent_registry = self.agent_registry.write()
+                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to write agent registry: {}", e)))?;
             
-            agent_registry.authorize_prime_for_new_graph(&graph_info.id, &mut graph_registry)
-                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to authorize prime agent: {}", e)))?;
-            
-            // Save both registries
-            agent_registry.save()
-                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to save agent registry: {}", e)))?;
-            graph_registry.save()
-                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to save graph registry: {}", e)))?;
-        }
+            graph_registry.create_new_graph_complete(name, description, &mut agent_registry)
+                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to create graph: {}", e)))?
+        };
         
-        // Create graph manager for the new graph
+        // Create graph manager resources (AppState-specific coordination)
         self.get_or_create_graph_manager(&graph_info.id).await?;
-        
-        info!("Created new knowledge graph: {} ({})", graph_info.name, graph_info.id);
         
         Ok(graph_info)
     }
     
     /// Delete a knowledge graph completely
     /// 
-    /// This handles the complete graph deletion workflow:
-    /// 1. Remove from graph registry (archives the data)
-    /// 2. Remove from memory resources
-    /// 3. Save the updated registry
+    /// Simplified workflow using downstream registry methods.
     pub async fn delete_graph_completely(&self, graph_id: &Uuid) -> Result<(), Box<dyn Error + Send + Sync>> {
-        // Remove from registry (this also archives the data)
+        // Delegate complete workflow to GraphRegistry
         {
-            debug_assert!(
-                self.graph_registry.try_write().is_ok(),
-                "Registry write lock unavailable - another thread may be holding it"
-            );
-            
             let mut registry = self.graph_registry.write()
                 .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to write registry: {}", e)))?;
             
-            registry.remove_graph(graph_id)
-                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to remove graph: {}", e)))?;
-            
-            // Save registry
-            registry.save()
-                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to save registry: {}", e)))?;
+            registry.delete_graph_complete(graph_id)
+                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to delete graph: {}", e)))?;
         }
         
-        // Remove from resources (manager + coordinator bundled together)
+        // Remove from memory resources (AppState-specific coordination)
         {
             let mut resources = self.graph_resources.write().await;
             resources.remove(graph_id);
@@ -655,23 +587,15 @@ impl AppState {
     
     /// Activate an agent (load into memory and update registry)
     /// 
-    /// This performs the following steps:
-    /// 1. Loads the agent from disk (or creates new if doesn't exist)
-    /// 2. Updates the registry to mark the agent as active
+    /// Simplified workflow using downstream registry methods.
     pub async fn activate_agent(&self, agent_id: &Uuid) -> Result<(), Box<dyn Error + Send + Sync>> {
-        // First ensure the agent is loaded
+        // First ensure the agent is loaded (AppState-specific coordination)
         self.get_or_load_agent(agent_id).await?;
         
-        // Debug assertion to fail fast if another thread holds the write lock
-        debug_assert!(
-            self.agent_registry.try_write().is_ok(),
-            "Agent registry write lock unavailable - another thread may be holding it"
-        );
-        
-        // Update registry (single source of truth)
+        // Delegate workflow to AgentRegistry
         let mut registry = self.agent_registry.write()
             .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to write agent registry: {}", e)))?;
-        registry.activate_agent(agent_id)
+        registry.activate_agent_complete(agent_id)
             .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to activate agent: {:?}", e)))?;
         
         Ok(())
@@ -679,31 +603,21 @@ impl AppState {
     
     /// Deactivate an agent (save and unload from memory)
     /// 
-    /// Mirrors close_graph() - saves before removing from memory
+    /// Simplified workflow using downstream registry methods.
     pub async fn deactivate_agent(&self, agent_id: &Uuid) -> Result<(), Box<dyn Error + Send + Sync>> {
-        // Get the agent to save
+        // Save and unload agent from memory (AppState-specific coordination)
         let mut agents = self.agents.write().await;
-        
         if let Some(mut agent) = agents.remove(agent_id) {
-            // Save the agent before removing from memory
             agent.save()
                 .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to save agent before deactivation: {:?}", e)))?;
-            
             info!("Saved and unloaded agent: {}", agent_id);
         }
-        
         drop(agents);
         
-        // Debug assertion to fail fast if another thread holds the write lock
-        debug_assert!(
-            self.agent_registry.try_write().is_ok(),
-            "Agent registry write lock unavailable - another thread may be holding it"
-        );
-        
-        // Update registry (single source of truth)
+        // Delegate workflow to AgentRegistry
         let mut registry = self.agent_registry.write()
             .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to write agent registry: {}", e)))?;
-        registry.deactivate_agent(agent_id)
+        registry.deactivate_agent_complete(agent_id)
             .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to deactivate agent: {:?}", e)))?;
         
         Ok(())

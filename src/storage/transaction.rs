@@ -3,6 +3,7 @@
  * 
  * Manages transaction lifecycle and state transitions for the WAL system.
  * Provides high-level operations for beginning, committing, and aborting transactions.
+ * Includes helper functions to reduce AppState verbosity.
  * 
  * ## Transaction-Aware Persistence
  * 
@@ -17,6 +18,14 @@
  * - Graph can be saved frequently without worrying about transactions
  * - Transactions persist independently with ACID guarantees via sled
  * - Recovery is automatic and doesn't require graph modification
+ * 
+ * ## Helper Functions for AppState Verbosity Reduction
+ * 
+ * This module provides extracted helper functions to simplify AppState:
+ * - `run_single_graph_recovery_helper()` - Core recovery logic without circular dependencies
+ * - `save_graph_after_recovery_helper()` - Graph saving with error logging that never fails
+ * 
+ * These helpers maintain the original AppState behavior while reducing code duplication.
  */
 
 use crate::storage::transaction_log::{Operation, Transaction, TransactionLog, TransactionLogError, TransactionState};
@@ -260,6 +269,67 @@ impl TransactionCoordinator {
     pub async fn force_shutdown(&self) -> Result<()> {
         error!("Force shutdown requested - flushing transaction log");
         self.log.close().await.map_err(|e| e.into())
+    }
+}
+
+/// Helper function for single graph recovery to reduce AppState verbosity
+/// 
+/// This extracts the core recovery logic without creating circular dependencies.
+/// Takes the coordinator, operation executor, and graph ID as parameters.
+pub async fn run_single_graph_recovery_helper<E>(
+    coordinator: &TransactionCoordinator,
+    operation_executor: &E,
+    graph_id: &uuid::Uuid,
+) -> std::result::Result<usize, Box<dyn std::error::Error + Send + Sync>>
+where
+    E: crate::storage::OperationExecutor,
+{
+    use crate::storage::OperationExecutor;
+    
+    let pending_transactions = coordinator.recover_pending_transactions().await
+        .map_err(|e| Box::<dyn std::error::Error + Send + Sync>::from(format!("Failed to recover transactions: {}", e)))?;
+    
+    let count = pending_transactions.len();
+    if count > 0 {
+        info!("🔄 Replaying {} pending transactions for graph {}", count, graph_id);
+        
+        // Replay each transaction with proper state updates
+        for transaction in pending_transactions {
+            let tx_id = transaction.id.clone();
+            let operation = transaction.operation.clone();
+            
+            // Execute the operation using the OperationExecutor trait
+            let result = OperationExecutor::execute_operation(operation_executor, graph_id, operation).await;
+            
+            // Update transaction state based on result
+            match result {
+                Ok(()) => {
+                    coordinator.commit_transaction(&tx_id).await
+                        .map_err(|e| Box::<dyn std::error::Error + Send + Sync>::from(e.to_string()))?;
+                }
+                Err(e) => {
+                    coordinator.abort_transaction(&tx_id, &e).await
+                        .map_err(|e| Box::<dyn std::error::Error + Send + Sync>::from(e.to_string()))?;
+                    error!("❌ Failed to replay transaction {}: {}", tx_id, e);
+                }
+            }
+        }
+    }
+    
+    Ok(count)
+}
+
+/// Helper function to save graph after recovery
+/// 
+/// Extracted from AppState to reduce verbosity. Logs errors but never fails
+/// to match original AppState behavior.
+pub async fn save_graph_after_recovery_helper(
+    graph_manager: &mut crate::graph_manager::GraphManager,
+    graph_id: &uuid::Uuid,
+) {
+    match graph_manager.save_graph() {
+        Ok(_) => info!("💾 Saved graph {} after recovery", graph_id),
+        Err(e) => error!("Failed to save graph {} after recovery: {}", graph_id, e),
     }
 }
 

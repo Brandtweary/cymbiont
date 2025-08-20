@@ -74,16 +74,20 @@ The build.rs script enforces consistent use of tracing macros throughout the cod
 ## Module Requirements and Data Flow
 
 ### main.rs
-**Purpose**: CLI entry point with unified runtime lifecycle management and agent commands
+**Purpose**: CLI entry point with phased startup sequence and unified runtime management
 **Key functionality**: 
 - Parse command line arguments including agent management commands
-- Create AppState (both CLI and server modes) with agent registry initialization
-- Run `app_state.run_all_graphs_recovery()` on startup for all graphs
+- Execute 5-phase startup: initialization, common startup, command handling, runtime loop, cleanup
+- Check for orphaned graphs during startup and warn users
 - Execute agent CLI commands (create, delete, activate, authorize, etc.)
 - Handle duration limits and shutdown signals uniformly for both modes
-- Execute cleanup_and_save() on exit (saves agents and graphs)
+**Key functions**:
+- `run_startup_sequence()` - Common initialization for both server and CLI modes
+- `check_orphaned_graphs()` - Warns about graphs with no authorized agents
+- `handle_cli_commands()` - Processes CLI-specific commands with early exit support
+- `show_cli_status()` - Displays graph and agent status information
+- `run_server_loop()` / `run_cli_loop()` - Mode-specific runtime event loops
 **Runtime behavior**: Controls duration timeout and graceful shutdown for both CLI and server modes
-**Server mode**: Starts server via `server::start_server()` but manages lifecycle in main.rs
 **Agent integration**: Ensures prime agent exists on first run for seamless experience
 
 ### config.rs
@@ -180,6 +184,7 @@ The build.rs script enforces consistent use of tracing macros throughout the cod
 - `authorize_agent_for_graph()`, `deauthorize_agent_from_graph()` - bidirectional authorization
 - `resolve_agent_target()` - UUID/name resolution with prime agent fallback
 - `ensure_default_agent()` - creates prime agent on first run
+- `find_orphaned_graphs()` - identifies graphs with no authorized agents
 - `activate_agent_complete()`, `deactivate_agent_complete()` - complete workflows with persistence
 **Prime agent**: Auto-created default agent with full graph access for seamless experience
 **Persistence**: Saves to `agent_registry.json` with active/inactive state tracking

@@ -504,9 +504,6 @@ impl AgentRegistry {
     /// for all new graphs by default, so orphaning only occurs if a user manually
     /// deauthorizes their prime agent from a specific graph. Most users will
     /// only ever use the prime agent and never encounter orphaned graphs.
-    /// 
-    /// TODO: Call this during startup and implement recovery logic
-    #[allow(dead_code)]
     pub fn find_orphaned_graphs(
         &self,
         graph_registry: &crate::storage::GraphRegistry,

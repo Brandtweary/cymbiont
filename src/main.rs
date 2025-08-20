@@ -27,6 +27,21 @@
  * cymbiont --server --duration 60
  * ```
  * 
+ * ## Program Architecture
+ * 
+ * The program follows a 5-phase startup sequence:
+ * 1. **Initialization**: Create AppState based on mode (server vs CLI)
+ * 2. **Common Startup**: Run shared initialization (recovery, orphan check)
+ * 3. **Command Handling**: Process CLI-specific commands (CLI mode only)
+ * 4. **Runtime Loop**: Enter mode-specific event loop (server or CLI)
+ * 5. **Cleanup**: Save state and terminate gracefully
+ * 
+ * Key functions organize the flow:
+ * - `run_startup_sequence()`: Common initialization for both modes
+ * - `check_orphaned_graphs()`: Warns about graphs with no authorized agents
+ * - `handle_cli_commands()`: Processes all CLI commands
+ * - `run_server_loop()` / `run_cli_loop()`: Mode-specific runtime handling
+ * 
  * ## Lifecycle Behavior
  * 
  * The CLI always runs continuously after performing any requested operations:
@@ -161,71 +176,105 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
     // Track start time for total runtime measurement
     let start_time = std::time::Instant::now();
     
-    // Branch based on server flag
+    // Phase 1: Create AppState based on mode
+    let app_state = if args.server {
+        AppState::new_server(args.config.clone(), args.data_dir.clone()).await?
+    } else {
+        AppState::new_cli(args.config.clone(), args.data_dir.clone()).await?
+    };
+    
+    // Phase 2: Common startup sequence (shared between modes)
+    run_startup_sequence(&app_state).await?;
+    
+    // Phase 3: Handle one-off commands (CLI mode only)
+    if !args.server {
+        if handle_cli_commands(&app_state, &args).await? {
+            // Command requested early exit, run cleanup
+            app_state.cleanup_and_save().await;
+            utils::remove_pid_file();
+            info!("🧹 CLI shutdown complete");
+            
+            let total_runtime = start_time.elapsed();
+            info!("💫 Total runtime: {:.2}s", total_runtime.as_secs_f64());
+            
+            if let Some(report) = verbosity_layer.check_and_report() {
+                warn!("{}", report);
+            }
+            
+            trace!("Forcing process exit (sled workaround)");
+            std::process::exit(0);
+        }
+    }
+    
+    // Phase 4: Enter runtime loop
     if args.server {
-        // Create server app state
-        let app_state = AppState::new_server(args.config.clone(), args.data_dir.clone()).await?;
-        
-        // Run recovery for all graphs (same as CLI path)
-        if let Err(e) = app_state.run_all_graphs_recovery().await {
-            error!("Failed to run graph recovery: {}", e);
-        }
-        
-        // Start server and get handle
-        let (server_handle, server_info_file) = server::start_server(app_state.clone()).await?;
-        
-        // Handle duration and shutdown uniformly with CLI mode
-        if let Some(duration) = args.duration.or(app_state.config.development.default_duration) {
-            tokio::select! {
-                result = server_handle => {
-                    if let Err(e) = result {
-                        error!("Server task error: {}", e);
-                    }
-                }
-                _ = tokio::time::sleep(std::time::Duration::from_secs(duration)) => {
-                    info!("⏱️ Duration limit reached");
-                }
-                _ = tokio::signal::ctrl_c() => {
-                    info!("🛑 Received shutdown signal");
-                    if handle_graceful_shutdown(&app_state).await {
-                        // Force quit requested
-                        server::cleanup_server_info(&server_info_file);
-                        std::process::exit(1);
-                    }
-                }
-            }
-        } else {
-            // Run indefinitely
-            tokio::select! {
-                result = server_handle => {
-                    if let Err(e) = result {
-                        error!("Server task error: {}", e);
-                    }
-                }
-                _ = tokio::signal::ctrl_c() => {
-                    info!("🛑 Received shutdown signal");
-                    if handle_graceful_shutdown(&app_state).await {
-                        // Force quit requested
-                        server::cleanup_server_info(&server_info_file);
-                        std::process::exit(1);
-                    }
-                }
-            }
-        }
-        
-        // Cleanup for server mode
-        server::cleanup_server_info(&server_info_file);
-        app_state.cleanup_and_save().await;
+        run_server_loop(&app_state, &args).await?;
         info!("🧹 Server shutdown complete");
     } else {
-        // Run as CLI
-        let app_state = AppState::new_cli(args.config, args.data_dir.clone()).await?;
-        
-        info!("🧠 Cymbiont CLI initialized");
-        info!("📁 Data directory: {}", app_state.data_dir.display());
-        
-        // Handle Logseq import if requested
-        if let Some(logseq_path) = args.import_logseq {
+        run_cli_loop(&app_state, &args).await?;
+        info!("🧹 CLI shutdown complete");
+    }
+    
+    // Phase 5: Final cleanup
+    let total_runtime = start_time.elapsed();
+    info!("💫 Total runtime: {:.2}s", total_runtime.as_secs_f64());
+    
+    // Check log verbosity and report if excessive
+    if let Some(report) = verbosity_layer.check_and_report() {
+        warn!("{}", report);
+    }
+    
+    // Force exit because sled/tokio threads won't terminate
+    trace!("Forcing process exit (sled workaround)");
+    std::process::exit(0)
+}
+
+/// Common startup sequence for both server and CLI modes
+async fn run_startup_sequence(app_state: &std::sync::Arc<AppState>) -> Result<(), Box<dyn Error + Send + Sync>> {
+    info!("🧠 Cymbiont initialized");
+    info!("📁 Data directory: {}", app_state.data_dir.display());
+    
+    // Run transaction recovery for all graphs
+    if let Err(e) = app_state.run_all_graphs_recovery().await {
+        error!("Failed to run graph recovery: {}", e);
+    }
+    
+    // Check for orphaned graphs (graphs with no authorized agents)
+    check_orphaned_graphs(app_state).await;
+    
+    // Future startup checks can go here:
+    // - Check disk space
+    // - Validate configuration
+    // - Run integrity checks
+    // - etc.
+    
+    Ok(())
+}
+
+/// Check for graphs with no authorized agents and warn
+async fn check_orphaned_graphs(app_state: &std::sync::Arc<AppState>) {
+    let agent_registry = app_state.agent_registry.read().unwrap();
+    let graph_registry = app_state.graph_registry.read().unwrap();
+    let orphaned_graphs = agent_registry.find_orphaned_graphs(&graph_registry);
+    
+    if !orphaned_graphs.is_empty() {
+        warn!("⚠️  Found {} orphaned graph(s) with no authorized agents:", orphaned_graphs.len());
+        for graph_id in &orphaned_graphs {
+            if let Some(graph_info) = graph_registry.get_graph(graph_id) {
+                warn!("  - {} ({})", graph_info.name, graph_id);
+            } else {
+                warn!("  - {}", graph_id);
+            }
+        }
+        warn!("  Consider authorizing an agent using: cymbiont --authorize-agent <AGENT> --for-graph <GRAPH>");
+    }
+}
+
+/// Handle all CLI-specific commands
+/// Returns true if should exit after command completion
+async fn handle_cli_commands(app_state: &std::sync::Arc<AppState>, args: &Args) -> Result<bool, Box<dyn Error + Send + Sync>> {
+    // Handle Logseq import if requested (continues running after)
+    if let Some(logseq_path) = &args.import_logseq {
             let import_start = std::time::Instant::now();
             let path = std::path::Path::new(&logseq_path);
             let result = import::import_logseq_graph(&app_state, path, None).await?;
@@ -239,10 +288,11 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
             }
             
             info!("✅ Import complete in {:.3}s. Continuing to run...", import_start.elapsed().as_secs_f64());
+            // Don't return true - continue running
         }
         
-        // Handle graph deletion if requested
-        if let Some(graph_identifier) = args.delete_graph {
+        // Handle graph deletion if requested (continues running after)
+        if let Some(graph_identifier) = &args.delete_graph {
             use crate::graph_operations::GraphOps;
             use uuid::Uuid;
             
@@ -270,12 +320,13 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
             
             info!("✅ Graph deleted successfully");
             info!("Continuing to run...");
+            // Don't return true - continue running
         }
         
-        // Handle agent admin commands
+        // Handle agent admin commands (these exit after completion)
         
         // Create agent
-        if let Some(agent_name) = args.create_agent {
+        if let Some(agent_name) = &args.create_agent {
             let agent_info = {
                 let mut registry = app_state.agent_registry.write()
                     .map_err(|e| format!("Failed to write agent registry: {}", e))?;
@@ -301,7 +352,7 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
                     agent_name.clone(),
                     LLMConfig::default(),  // MockLLM by default
                     agent_info.data_path.clone(),
-                    args.agent_description.or(Some("An intelligent assistant".to_string())),
+                    args.agent_description.clone().or(Some("An intelligent assistant".to_string())),
                 );
                 
                 // Save the agent to disk
@@ -318,11 +369,11 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
             }
             
             info!("✅ Created agent '{}' with ID: {}", agent_info.name, agent_info.id);
-            return Ok(());  // Exit after creating agent
+            return Ok(true);  // Exit after creating agent
         }
         
         // Delete agent
-        if let Some(agent_identifier) = args.delete_agent {
+        if let Some(agent_identifier) = &args.delete_agent {
             use uuid::Uuid;
             
             let resolved_id = {
@@ -369,11 +420,11 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
             }
             
             info!("✅ Deleted agent: {}", resolved_id);
-            return Ok(());  // Exit after deleting agent
+            return Ok(true);  // Exit after deleting agent
         }
         
         // Activate agent
-        if let Some(agent_identifier) = args.activate_agent {
+        if let Some(agent_identifier) = &args.activate_agent {
             use uuid::Uuid;
             
             let resolved_id = {
@@ -394,11 +445,11 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
                 .map_err(|e| format!("Failed to activate agent: {:?}", e))?;
             
             info!("✅ Activated agent: {}", resolved_id);
-            return Ok(());  // Exit after activating agent
+            return Ok(true);  // Exit after activating agent
         }
         
         // Deactivate agent
-        if let Some(agent_identifier) = args.deactivate_agent {
+        if let Some(agent_identifier) = &args.deactivate_agent {
             use uuid::Uuid;
             
             let resolved_id = {
@@ -431,11 +482,11 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
                 .map_err(|e| format!("Failed to deactivate agent: {:?}", e))?;
             
             info!("✅ Deactivated agent: {}", resolved_id);
-            return Ok(());  // Exit after deactivating agent
+            return Ok(true);  // Exit after deactivating agent
         }
         
         // Authorize agent for graph
-        if let Some(agent_identifier) = args.authorize_agent {
+        if let Some(agent_identifier) = &args.authorize_agent {
             use uuid::Uuid;
             
             // Resolve agent (no smart default for authorize)
@@ -454,7 +505,7 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
             };
             
             // Resolve graph (requires --for-graph)
-            let graph_identifier = args.for_graph
+            let graph_identifier = args.for_graph.as_deref()
                 .ok_or_else(|| "Must specify --for-graph with --authorize-agent")?;
             
             let resolved_graph_id = {
@@ -500,11 +551,11 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
             }
             
             info!("✅ Authorized agent {} for graph {}", resolved_agent_id, resolved_graph_id);
-            return Ok(());  // Exit after authorization
+            return Ok(true);  // Exit after authorization
         }
         
         // Deauthorize agent from graph
-        if let Some(agent_identifier) = args.deauthorize_agent {
+        if let Some(agent_identifier) = &args.deauthorize_agent {
             use uuid::Uuid;
             
             // Resolve agent (no smart default for deauthorize)
@@ -523,7 +574,7 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
             };
             
             // Resolve graph (requires --from-graph)
-            let graph_identifier = args.from_graph
+            let graph_identifier = args.from_graph.as_deref()
                 .ok_or_else(|| "Must specify --from-graph with --deauthorize-agent")?;
             
             let resolved_graph_id = {
@@ -569,11 +620,11 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
             }
             
             info!("✅ Deauthorized agent {} from graph {}", resolved_agent_id, resolved_graph_id);
-            return Ok(());  // Exit after deauthorization
+            return Ok(true);  // Exit after deauthorization
         }
         
         // Show agent info
-        if let Some(agent_identifier) = args.agent_info {
+        if let Some(agent_identifier) = &args.agent_info {
             use uuid::Uuid;
             
             // Resolve agent (allows smart default to prime if not specified)
@@ -640,10 +691,18 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
                 }
             }
             
-            return Ok(());  // Exit after showing info
+            return Ok(true);  // Exit after showing info
         }
         
-        let graphs = {
+        // If no commands, show status
+        show_cli_status(app_state).await?;
+        
+        Ok(false)
+    }
+
+/// Show CLI status information
+async fn show_cli_status(app_state: &std::sync::Arc<AppState>) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let graphs = {
             let registry_guard = app_state.graph_registry.read().unwrap();
             registry_guard.get_all_graphs()
         };
@@ -668,55 +727,97 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
                     }
                 }
             } // registry_guard drops here
-            
-            // Run recovery for all graphs on startup
-            if let Err(e) = app_state.run_all_graphs_recovery().await {
-                error!("Failed to run graph recovery: {}", e);
-            }
         } else {
             info!("📂 No open graphs");
         }
-        
-        // Handle duration for CLI mode
-        if let Some(duration) = args.duration.or(app_state.config.development.default_duration) {
-            tokio::time::sleep(std::time::Duration::from_secs(duration)).await;
-            info!("⏱️ Duration limit reached");
-        } else {
-            // Run indefinitely (for future interactive features)
-            utils::write_pid_file()
-                .map_err(|e| Box::<dyn Error + Send + Sync>::from(e.to_string()))?;
-            
-            info!("Running indefinitely. Press Ctrl+C to exit.");
-            
-            // First Ctrl+C - initiate graceful shutdown
-            tokio::signal::ctrl_c().await?;
-            info!("🛑 Received shutdown signal");
-            
-            if handle_graceful_shutdown(&app_state).await {
-                // Force quit requested
-                utils::remove_pid_file();
-                std::process::exit(1);
+    
+    Ok(())
+}
+
+/// Run the server event loop
+async fn run_server_loop(
+    app_state: &std::sync::Arc<AppState>,
+    args: &Args,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    // Start server and get handle
+    let (server_handle, server_info_file) = server::start_server(app_state.clone()).await?;
+    
+    // Handle duration and shutdown
+    if let Some(duration) = args.duration.or(app_state.config.development.default_duration) {
+        tokio::select! {
+            result = server_handle => {
+                if let Err(e) = result {
+                    error!("Server task error: {}", e);
+                }
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_secs(duration)) => {
+                info!("⏱️ Duration limit reached");
+            }
+            _ = tokio::signal::ctrl_c() => {
+                info!("🛑 Received shutdown signal");
+                if handle_graceful_shutdown(app_state).await {
+                    server::cleanup_server_info(&server_info_file);
+                    std::process::exit(1);
+                }
             }
         }
+    } else {
+        // Run indefinitely
+        tokio::select! {
+            result = server_handle => {
+                if let Err(e) = result {
+                    error!("Server task error: {}", e);
+                }
+            }
+            _ = tokio::signal::ctrl_c() => {
+                info!("🛑 Received shutdown signal");
+                if handle_graceful_shutdown(app_state).await {
+                    server::cleanup_server_info(&server_info_file);
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
+    
+    // Cleanup for server mode
+    server::cleanup_server_info(&server_info_file);
+    app_state.cleanup_and_save().await;
+    
+    Ok(())
+}
+
+/// Run the CLI event loop
+async fn run_cli_loop(
+    app_state: &std::sync::Arc<AppState>,
+    args: &Args,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    // Handle duration for CLI mode
+    if let Some(duration) = args.duration.or(app_state.config.development.default_duration) {
+        tokio::time::sleep(std::time::Duration::from_secs(duration)).await;
+        info!("⏱️ Duration limit reached");
+    } else {
+        // Run indefinitely (for future interactive features)
+        utils::write_pid_file()
+            .map_err(|e| Box::<dyn Error + Send + Sync>::from(e.to_string()))?;
         
-        // Cleanup for CLI mode
-        app_state.cleanup_and_save().await;
-        utils::remove_pid_file();
-        info!("🧹 CLI shutdown complete");
+        info!("Running indefinitely. Press Ctrl+C to exit.");
+        
+        // First Ctrl+C - initiate graceful shutdown
+        tokio::signal::ctrl_c().await?;
+        info!("🛑 Received shutdown signal");
+        
+        if handle_graceful_shutdown(&app_state).await {
+            // Force quit requested
+            utils::remove_pid_file();
+            std::process::exit(1);
+        }
     }
     
-    let total_runtime = start_time.elapsed();
-    info!("💫 Total runtime: {:.2}s", total_runtime.as_secs_f64());
+    // Cleanup for CLI mode
+    app_state.cleanup_and_save().await;
+    utils::remove_pid_file();
     
-    // Check log verbosity and report if excessive
-    if let Some(report) = verbosity_layer.check_and_report() {
-        warn!("{}", report);
-    }
-    
-    // Force exit because sled/tokio threads won't terminate
-    // This is the recommended workaround for sled issue #1234
-    trace!("Forcing process exit (sled workaround)");
-    std::process::exit(0)
+    Ok(())
 }
 
 /// Handle graceful shutdown with transaction completion

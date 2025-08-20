@@ -52,7 +52,8 @@ env RUST_LOG=debug cargo test -- --nocapture 2>&1 | tee test_output.log  # Captu
 
 ### Project Structure
 - **src/**
-  - **main.rs**: CLI entry point with optional server mode (--server flag) and agent commands
+  - **main.rs**: Application entry point with 5-phase startup sequence
+  - **cli.rs**: CLI argument parsing and command execution
   - **graph_manager.rs**: Generic knowledge graph storage engine using petgraph
   - **config.rs**: YAML configuration loading and validation
   - **utils.rs**: Process management, datetime parsing, general utilities

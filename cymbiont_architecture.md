@@ -4,7 +4,8 @@
 ```
 cymbiont/
 ├── src/                           # Core knowledge graph engine
-│   ├── main.rs                    # CLI entry point with --server flag + agent commands
+│   ├── main.rs                    # Entry point with 5-phase startup sequence
+│   ├── cli.rs                     # CLI argument parsing and command execution
 │   ├── app_state.rs               # Centralized application state with agent management
 │   ├── config.rs                  # YAML configuration management
 │   ├── logging.rs                 # Custom tracing formatter
@@ -74,21 +75,31 @@ The build.rs script enforces consistent use of tracing macros throughout the cod
 ## Module Requirements and Data Flow
 
 ### main.rs
-**Purpose**: CLI entry point with phased startup sequence and unified runtime management
+**Purpose**: Application entry point with phased startup sequence and unified runtime management
 **Key functionality**: 
-- Parse command line arguments including agent management commands
 - Execute 5-phase startup: initialization, common startup, command handling, runtime loop, cleanup
 - Check for orphaned graphs during startup and warn users
-- Execute agent CLI commands (create, delete, activate, authorize, etc.)
 - Handle duration limits and shutdown signals uniformly for both modes
 **Key functions**:
 - `run_startup_sequence()` - Common initialization for both server and CLI modes
 - `check_orphaned_graphs()` - Warns about graphs with no authorized agents
-- `handle_cli_commands()` - Processes CLI-specific commands with early exit support
-- `show_cli_status()` - Displays graph and agent status information
 - `run_server_loop()` / `run_cli_loop()` - Mode-specific runtime event loops
+- `handle_graceful_shutdown()` - Manages transaction completion during shutdown
 **Runtime behavior**: Controls duration timeout and graceful shutdown for both CLI and server modes
 **Agent integration**: Ensures prime agent exists on first run for seamless experience
+
+### cli.rs
+**Purpose**: CLI argument parsing and command execution
+**Key functionality**:
+- Parse command line arguments using clap
+- Execute all CLI-specific commands with early exit support
+- Handle agent management commands (create, delete, activate, authorize, etc.)
+- Process graph operations (import, delete)
+- Display system status information
+**Key types**: `Args` - Complete CLI argument structure with all flags and options
+**Key functions**:
+- `handle_cli_commands()` - Processes CLI-specific commands, returns true for early exit
+- `show_cli_status()` - Displays graph and agent status information
 
 ### config.rs
 **Purpose**: YAML configuration loading with CLI overrides  

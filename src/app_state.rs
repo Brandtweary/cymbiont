@@ -228,7 +228,6 @@ impl AppState {
         // Load all open graphs
         for graph_id in initial_open_graphs {
             app_state.get_or_create_graph_manager(&graph_id).await?;
-            info!("Loaded open graph: {}", graph_id);
         }
         
         // Load all active agents (ensure at least prime agent is active)
@@ -240,7 +239,6 @@ impl AppState {
             let active_agents = registry.get_active_agents();
             if active_agents.is_empty() {
                 if let Some(prime_id) = registry.get_prime_agent_id() {
-                    info!("No agents active on startup, activating prime agent");
                     registry.activate_agent(&prime_id)
                         .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to activate prime agent: {e:?}")))?;
                     // Save after activation
@@ -257,7 +255,6 @@ impl AppState {
                 error!("Failed to load agent {}: {}", agent_id, e);
                 // Continue loading other agents even if one fails
             } else {
-                info!("Loaded active agent: {}", agent_id);
             }
         }
         
@@ -538,7 +535,6 @@ impl AppState {
         registry.close_graph(graph_id)
             .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to close graph: {}", e)))?;
         
-        info!("Closed graph {} and removed all resources from memory", graph_id);
         
         Ok(())
     }
@@ -610,7 +606,6 @@ impl AppState {
         if let Some(mut agent) = agents.remove(agent_id) {
             agent.save()
                 .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to save agent before deactivation: {:?}", e)))?;
-            info!("Saved and unloaded agent: {}", agent_id);
         }
         drop(agents);
         
@@ -640,8 +635,6 @@ impl AppState {
             let connection_count = conn_map.len();
             
             if connection_count > 0 {
-                info!("🔌 Shutting down {} WebSocket connection(s)...", connection_count);
-                
                 // Send shutdown signal to all connections
                 for (_, conn) in conn_map.iter() {
                     let _ = conn.shutdown_tx.send(true);
@@ -687,11 +680,8 @@ impl AppState {
         // Save all active agents
         let mut agents = self.agents.write().await;
         for (agent_id, agent) in agents.iter_mut() {
-            match agent.save() {
-                Ok(_) => {
-                    info!("✅ Saved agent: {}", agent_id);
-                }
-                Err(e) => error!("Failed to save agent {}: {:?}", agent_id, e),
+            if let Err(e) = agent.save() {
+                error!("Failed to save agent {}: {:?}", agent_id, e);
             }
         }
         drop(agents);
@@ -779,16 +769,14 @@ impl AppState {
         
         // Initiate shutdown on all transaction coordinators
         let resources = self.graph_resources.read().await;
-        for (graph_id, graph_resources) in resources.iter() {
+        for (_graph_id, graph_resources) in resources.iter() {
             let active_count = graph_resources.coordinator.initiate_shutdown().await;
             if active_count > 0 {
-                info!("Graph {} has {} active transactions", graph_id, active_count);
             }
             total_active += active_count;
         }
         
         if total_active > 0 {
-            info!("Total active transactions across all graphs: {}", total_active);
         }
         
         total_active

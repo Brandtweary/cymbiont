@@ -65,7 +65,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
-use tracing::{error, info};
+use tracing::error;
 use uuid::Uuid;
 use async_trait::async_trait;
 
@@ -205,7 +205,7 @@ impl TransactionLog {
     
     /// Flush and close the database, ensuring all pending writes are persisted
     pub async fn close(&self) -> Result<()> {
-        info!("Flushing transaction log to disk...");
+        // Flushing transaction log to disk
         
         // Extract the db from the mutex to avoid holding guard across await
         let db_to_flush = {
@@ -216,7 +216,7 @@ impl TransactionLog {
         // Now flush if we had a database
         if let Some(db) = db_to_flush {
             db.flush_async().await?;
-            info!("Transaction log flushed successfully");
+            // Transaction log flushed successfully
             // db is dropped here, triggering sled cleanup
         }
         

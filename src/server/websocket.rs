@@ -332,7 +332,7 @@ pub async fn websocket_handler(
 /// Handle individual WebSocket connection
 async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     let connection_id = Uuid::new_v4().to_string();
-    info!("🔌 New WebSocket connection: {}", connection_id);
+    // Connection established - connection_id: {}
 
     let (mut sender, mut receiver) = socket.split();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -404,7 +404,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     }
 
     // Cleanup on disconnect
-    info!("🔌 WebSocket disconnected: {}", connection_id);
+    // Connection closed - connection_id: {}
     
     // Send shutdown signal
     let _ = shutdown_tx.send(true);
@@ -535,7 +535,7 @@ async fn handle_command(
                             let mut conns = connections.write().await;
                             if let Some(conn) = conns.get_mut(connection_id) {
                                 conn.current_agent_id = Some(prime_id);
-                                info!("🤖 Set prime agent {} as default for connection {}", prime_id, connection_id);
+                                // Set prime agent as default for this connection
                             }
                         }
                     }
@@ -566,7 +566,6 @@ async fn handle_command(
         }
         Command::CreateBlock { content, parent_id, page_name, temp_id: _, graph_id, graph_name } => {
             // Call kg_api to create the block
-            info!("📝 CreateBlock command received via WebSocket");
             
             let resolved_graph_id = resolve_graph_for_command(
                 state,
@@ -596,7 +595,6 @@ async fn handle_command(
         }
         Command::UpdateBlock { block_id, content, graph_id, graph_name } => {
             // Call kg_api to update the block
-            info!("✏️ UpdateBlock command received via WebSocket: {}", block_id);
             
             let resolved_graph_id = resolve_graph_for_command(
                 state,
@@ -626,7 +624,6 @@ async fn handle_command(
         }
         Command::DeleteBlock { block_id, graph_id, graph_name } => {
             // Call kg_api to delete the block
-            info!("🗑️ DeleteBlock command received via WebSocket: {}", block_id);
             
             let resolved_graph_id = resolve_graph_for_command(
                 state,
@@ -656,7 +653,6 @@ async fn handle_command(
         }
         Command::CreatePage { name, properties, graph_id, graph_name } => {
             // Call kg_api to create the page
-            info!("📄 CreatePage command received via WebSocket: {}", name);
             
             let resolved_graph_id = resolve_graph_for_command(
                 state,
@@ -695,7 +691,6 @@ async fn handle_command(
         }
         Command::Test { message } => {
             // Test command - just echo back the message with some stats
-            info!("📡 Test command received from client: {}", message);
             
             let (total, authenticated) = get_connection_stats(state).await;
             let response_data = serde_json::json!({
@@ -709,7 +704,6 @@ async fn handle_command(
         }
         Command::OpenGraph { graph_id, graph_name } => {
             // Open a graph
-            info!("📂 OpenGraph command received via WebSocket");
             
             use crate::graph_operations::GraphOps;
             
@@ -731,7 +725,6 @@ async fn handle_command(
         }
         Command::CloseGraph { graph_id, graph_name } => {
             // Close a graph
-            info!("📁 CloseGraph command received via WebSocket");
             
             use crate::graph_operations::GraphOps;
             
@@ -753,7 +746,6 @@ async fn handle_command(
         }
         Command::CreateGraph { name, description } => {
             // Create a new graph
-            info!("📊 CreateGraph command received via WebSocket");
             
             use crate::graph_operations::GraphOps;
             
@@ -768,7 +760,6 @@ async fn handle_command(
         }
         Command::DeleteGraph { graph_id, graph_name } => {
             // Delete a graph
-            info!("🗑️ DeleteGraph command received via WebSocket");
             
             use crate::graph_operations::GraphOps;
             
@@ -791,7 +782,6 @@ async fn handle_command(
         }
         Command::ListGraphs => {
             // List all graphs
-            info!("📋 ListGraphs command received via WebSocket");
             
             use crate::graph_operations::GraphOps;
             
@@ -807,7 +797,6 @@ async fn handle_command(
         }
         Command::DeletePage { page_name, graph_id, graph_name } => {
             // Delete a page
-            info!("🗑️ DeletePage command received via WebSocket: {}", page_name);
             
             let resolved_graph_id = resolve_graph_for_command(
                 state,
@@ -837,7 +826,6 @@ async fn handle_command(
         }
         Command::FreezeOperations => {
             // Freeze all graph operations
-            info!("❄️ FreezeOperations command received via WebSocket");
             
             let mut freeze_state = state.operation_freeze.write().await;
             *freeze_state = true;
@@ -846,7 +834,6 @@ async fn handle_command(
         }
         Command::UnfreezeOperations => {
             // Unfreeze all graph operations
-            info!("🔥 UnfreezeOperations command received via WebSocket");
             
             let mut freeze_state = state.operation_freeze.write().await;
             *freeze_state = false;
@@ -855,7 +842,6 @@ async fn handle_command(
         }
         Command::GetFreezeState => {
             // Get current freeze state
-            info!("🌡️ GetFreezeState command received via WebSocket");
             
             let freeze_state = state.operation_freeze.read().await;
             let data = serde_json::json!({ "frozen": *freeze_state });
@@ -865,7 +851,6 @@ async fn handle_command(
         
         // Agent Commands
         Command::AgentChat { message, echo } => {
-            info!("💬 AgentChat command received: {}", message);
             
             // Get the current agent for this connection (defaults to prime if none selected)
             let agent_id = {
@@ -910,7 +895,6 @@ async fn handle_command(
         }
         
         Command::AgentSelect { agent_id, agent_name } => {
-            info!("🔄 AgentSelect command received: id={:?}, name={:?}", agent_id, agent_name);
             
             // Resolve the agent using the registry's resolution function
             let selected_id = {
@@ -962,7 +946,6 @@ async fn handle_command(
         }
         
         Command::AgentList => {
-            info!("📋 AgentList command received");
             
             let agents_list = {
                 let registry = state.agent_registry.read()
@@ -985,8 +968,6 @@ async fn handle_command(
         }
         
         Command::AgentHistory { agent_id, agent_name, limit } => {
-            info!("📜 AgentHistory command received (id: {:?}, name: {:?}, limit: {:?})", 
-                  agent_id, agent_name, limit);
             
             // Resolve the agent - if none specified, use current connection's agent or prime
             let resolved_id = if agent_id.is_some() || agent_name.is_some() {
@@ -1074,7 +1055,6 @@ async fn handle_command(
         }
         
         Command::AgentReset { agent_id, agent_name } => {
-            info!("🔄 AgentReset command received (id: {:?}, name: {:?})", agent_id, agent_name);
             
             // Resolve the agent - if none specified, use current connection's agent or prime
             let resolved_id = if agent_id.is_some() || agent_name.is_some() {
@@ -1134,7 +1114,6 @@ async fn handle_command(
         
         // Admin Commands
         Command::CreateAgent { name, description } => {
-            info!("➕ CreateAgent command received (name: {:?})", name);
             
             let agent_info = {
                 let mut registry = state.agent_registry.write()
@@ -1194,7 +1173,6 @@ async fn handle_command(
         }
         
         Command::DeleteAgent { agent_id, agent_name } => {
-            info!("➖ DeleteAgent command received (id: {:?}, name: {:?})", agent_id, agent_name);
             
             // Resolve agent (no smart default for destructive operations)
             let resolved_id = {
@@ -1256,7 +1234,6 @@ async fn handle_command(
         }
         
         Command::ActivateAgent { agent_id, agent_name } => {
-            info!("⚡ ActivateAgent command received (id: {:?}, name: {:?})", agent_id, agent_name);
             
             // Resolve agent (no smart default for explicit operations)
             let resolved_id = {
@@ -1288,7 +1265,6 @@ async fn handle_command(
         }
         
         Command::DeactivateAgent { agent_id, agent_name } => {
-            info!("💤 DeactivateAgent command received (id: {:?}, name: {:?})", agent_id, agent_name);
             
             // Resolve agent (no smart default for explicit operations)
             let resolved_id = {
@@ -1320,8 +1296,6 @@ async fn handle_command(
         }
         
         Command::AuthorizeAgent { agent_id, agent_name, graph_id, graph_name } => {
-            info!("🔓 AuthorizeAgent command received (agent_id: {:?}, agent_name: {:?}, graph_id: {:?}, graph_name: {:?})", 
-                  agent_id, agent_name, graph_id, graph_name);
             
             // Resolve agent (must be explicitly specified)
             let resolved_agent_id = {
@@ -1395,8 +1369,6 @@ async fn handle_command(
         }
         
         Command::DeauthorizeAgent { agent_id, agent_name, graph_id, graph_name } => {
-            info!("🔒 DeauthorizeAgent command received (agent_id: {:?}, agent_name: {:?}, graph_id: {:?}, graph_name: {:?})", 
-                  agent_id, agent_name, graph_id, graph_name);
             
             // Resolve agent (must be explicitly specified)
             let resolved_agent_id = {
@@ -1470,7 +1442,6 @@ async fn handle_command(
         }
         
         Command::AgentInfo { agent_id, agent_name } => {
-            info!("ℹ️ AgentInfo command received (id: {:?}, name: {:?})", agent_id, agent_name);
             
             // Resolve agent (defaults to prime if not specified)
             let resolved_id = {

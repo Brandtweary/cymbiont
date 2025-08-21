@@ -154,11 +154,10 @@ impl GraphRegistry {
         let mut registry = if registry_path.exists() {
             let content = fs::read_to_string(registry_path)?;
             let loaded: GraphRegistry = serde_json::from_str(&content)?;
-            info!("Loaded graph registry with {} graphs, {} open", 
+            info!("📊 Loaded graph registry with {} graphs, {} open", 
                   loaded.graphs.len(), loaded.open_graphs.len());
             loaded
         } else {
-            info!("Creating new graph registry");
             GraphRegistry::new()
         };
         
@@ -233,9 +232,7 @@ impl GraphRegistry {
         
         // Always open newly registered graphs
         self.open_graphs.insert(graph_id);
-        info!("Opened newly registered graph: {} ({})", graph_info.name, graph_id);
         
-        info!("Registered knowledge graph: {} ({})", graph_info.name, graph_info.id);
         
         Ok(graph_info)
     }
@@ -275,7 +272,6 @@ impl GraphRegistry {
         
         // Add to open set
         if self.open_graphs.insert(*graph_id) {
-            info!("Opened graph: {} ({})", graph_info.name, graph_id);
         }
         
         // Update last accessed time
@@ -289,7 +285,6 @@ impl GraphRegistry {
     /// Close a graph (remove from open set)
     pub fn close_graph(&mut self, graph_id: &Uuid) -> Result<()> {
         if self.open_graphs.remove(graph_id) {
-            info!("Closed graph: {}", graph_id);
             Ok(())
         } else {
             Err(GraphRegistryError::ValidationError(
@@ -352,9 +347,8 @@ impl GraphRegistry {
     pub fn ensure_graph_open(&mut self) -> Result<()> {
         if self.open_graphs.is_empty() && !self.graphs.is_empty() {
             // Get the first graph (deterministic, not random)
-            if let Some((&graph_id, graph_info)) = self.graphs.iter().next() {
+            if let Some((&graph_id, _graph_info)) = self.graphs.iter().next() {
                 self.open_graphs.insert(graph_id);
-                info!("No graphs were open, auto-opened: {} ({})", graph_info.name, graph_id);
             }
         }
         Ok(())
@@ -395,7 +389,6 @@ impl GraphRegistry {
         
         // Also remove from open graphs if it was open
         if self.open_graphs.remove(graph_id) {
-            info!("Removed graph was open, closing it");
         }
         
         Ok(())
@@ -429,7 +422,7 @@ impl GraphRegistry {
             .map_err(|e| GraphRegistryError::ValidationError(format!("Failed to save agent registry: {:?}", e)))?;
         self.save()?;
         
-        info!("Completed graph creation workflow: {} ({})", graph_info.name, graph_info.id);
+        info!("✅ Created graph: {} ({})", graph_info.name, graph_info.id);
         Ok(graph_info)
     }
     
@@ -445,7 +438,6 @@ impl GraphRegistry {
         // Save registry
         self.save()?;
         
-        info!("Completed graph deletion workflow for: {}", graph_id);
         Ok(())
     }
     

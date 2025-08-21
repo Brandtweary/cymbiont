@@ -277,7 +277,7 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
             }
         }
         
-        info!("✅ Import complete in {:.3}s. Continuing to run...", import_start.elapsed().as_secs_f64());
+        info!("✅ Import complete in {:.3}s", import_start.elapsed().as_secs_f64());
         // Don't return true - continue running
     }
     
@@ -306,7 +306,6 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
             .map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)?;
         
         info!("✅ Graph deleted successfully");
-        info!("Continuing to run...");
         // Don't return true - continue running
     }
     

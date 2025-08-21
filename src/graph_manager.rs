@@ -296,9 +296,8 @@ impl GraphManager {
                 manager.graph = data.graph;
                 manager.pkm_to_node = data.pkm_to_node;
             }
-            Err(e) => {
-                error!("Error loading graph: {:?}, starting with empty graph", e);
-                // Save initial state for new graphs
+            Err(_) => {
+                // This is expected for new graphs - they don't have a saved file yet
                 info!("🌐 Initializing new knowledge graph");
                 if let Err(e) = manager.save_graph() {
                     warn!("Failed to save initial graph state: {}", e);

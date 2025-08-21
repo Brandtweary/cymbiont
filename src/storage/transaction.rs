@@ -234,7 +234,6 @@ impl TransactionCoordinator {
         let active = self.active_transactions.read().await;
         let count = active.len();
         if count > 0 {
-            info!("Shutdown initiated for TransactionCoordinator with {} active transactions", count);
         }
         count
     }
@@ -254,7 +253,6 @@ impl TransactionCoordinator {
         // Wait for notification or timeout
         match tokio::time::timeout(timeout, self.active_count_notify.notified()).await {
             Ok(_) => {
-                info!("All transactions completed");
                 true
             }
             Err(_) => {

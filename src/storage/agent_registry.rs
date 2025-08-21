@@ -165,11 +165,10 @@ impl AgentRegistry {
         let mut registry = if registry_path.exists() {
             let content = fs::read_to_string(registry_path)?;
             let loaded: AgentRegistry = serde_json::from_str(&content)?;
-            info!("Loaded agent registry with {} agents, {} active", 
+            info!("🤖 Loaded agent registry with {} agents, {} active", 
                   loaded.agents.len(), loaded.active_agents.len());
             loaded
         } else {
-            info!("Creating new agent registry");
             AgentRegistry::new()
         };
         
@@ -247,7 +246,7 @@ impl AgentRegistry {
         
         // New agents start as active
         self.active_agents.insert(agent_id);
-        info!("Registered new agent: {} ({})", name, agent_id);
+        info!("✅ Created agent: {} ({})", name, agent_id);
         
         Ok(agent_info)
     }
@@ -283,7 +282,6 @@ impl AgentRegistry {
         
         // Add to active set
         if self.active_agents.insert(*agent_id) {
-            info!("Activated agent: {} ({})", agent_info.name, agent_id);
         }
         
         // Update last active time
@@ -300,7 +298,6 @@ impl AgentRegistry {
     /// responsible for saving the Agent instance before deactivation.
     pub fn deactivate_agent(&mut self, agent_id: &Uuid) -> Result<()> {
         if self.active_agents.remove(agent_id) {
-            info!("Deactivated agent: {}", agent_id);
             Ok(())
         } else {
             Err(AgentRegistryError::ValidationError(
@@ -316,7 +313,6 @@ impl AgentRegistry {
     pub fn ensure_default_agent(&mut self) -> Result<AgentInfo> {
         if self.agents.is_empty() {
             // No agents exist - create the prime agent
-            info!("No agents found, creating prime agent");
             let mut agent_info = self.register_agent(
                 None,
                 Some("Prime Agent".to_string()),
@@ -354,13 +350,12 @@ impl AgentRegistry {
             agent.save()
                 .map_err(|e| AgentRegistryError::ValidationError(format!("Failed to save prime agent: {:?}", e)))?;
             
-            info!("Created and saved prime agent: {} ({})", agent_info.name, agent_id);
+            info!("👑 Created prime agent: {} ({})", agent_info.name, agent_id);
             
             Ok(agent_info)
         } else if self.active_agents.is_empty() {
             // Agents exist but none are active - activate the first one
             let first_id = *self.agents.keys().next().unwrap();
-            info!("No active agents, activating agent: {}", first_id);
             self.activate_agent(&first_id)
         } else {
             // Return the first active agent
@@ -429,7 +424,6 @@ impl AgentRegistry {
         
         if let Some(prime_id) = self.prime_agent_id {
             self.authorize_agent_for_graph(&prime_id, graph_id, graph_registry)?;
-            info!("Authorized prime agent for new graph {}", graph_id);
         } else {
         }
         Ok(())
@@ -464,7 +458,6 @@ impl AgentRegistry {
             }
         }
         
-        info!("Authorized agent {} for graph {}", agent_id, graph_id);
         Ok(())
     }
     
@@ -485,7 +478,6 @@ impl AgentRegistry {
             graph.authorized_agents.retain(|id| id != agent_id);
         }
         
-        info!("Deauthorized agent {} from graph {}", agent_id, graph_id);
         Ok(())
     }
     
@@ -554,7 +546,6 @@ impl AgentRegistry {
         
         // Also remove from active agents if it was active
         if self.active_agents.remove(agent_id) {
-            info!("Removed agent was active, deactivating it");
         }
         
         Ok(())
@@ -571,7 +562,6 @@ impl AgentRegistry {
         // Save the registry
         self.save()?;
         
-        info!("Completed agent deactivation workflow: {}", agent_id);
         Ok(())
     }
     
@@ -585,7 +575,6 @@ impl AgentRegistry {
         // Save the registry
         self.save()?;
         
-        info!("Completed agent activation workflow: {} ({})", agent_info.name, agent_id);
         Ok(agent_info)
     }
     

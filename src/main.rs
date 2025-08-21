@@ -69,7 +69,6 @@ use tracing::{info, error, warn, trace};
 mod agent;
 mod app_state;
 mod cli;
-mod cli_registry;
 mod config;
 mod graph_manager;
 mod graph_operations;

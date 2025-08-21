@@ -62,7 +62,7 @@ cymbiont/
 │       ├── http_logseq_import.rs  # HTTP API tests
 │       ├── websocket_commands.rs  # WebSocket tests
 │       ├── agent_commands.rs      # Agent chat and admin command tests
-│       ├── cli_commands.rs        # CLI command tests via WebSocket bridge
+│       ├── cli_commands.rs        # CLI command tests with contract enforcement
 │       └── freeze_mechanism.rs    # Operation freeze/unfreeze tests
 ├── autodebugger/                  # Git submodule: LLM developer utilities toolbag
 └── build.rs                       # Build script: enforces tracing macro usage
@@ -70,7 +70,9 @@ cymbiont/
 
 ## Build Script
 
-The build.rs script enforces consistent use of tracing macros throughout the codebase by detecting and failing the build when println!, eprintln!, print!, eprint!, or dbg! macros are found in src/ or tests/ directories.
+The build.rs script performs two critical functions:
+1. **Enforces tracing macro usage**: Detects and fails the build when println!, eprintln!, print!, eprint!, or dbg! macros are found in src/ or tests/ directories
+2. **CLI command extraction**: Parses the `cli_commands!` macro invocation to generate a list of all commands for integration test contract enforcement
 
 ## Module Requirements and Data Flow
 
@@ -89,17 +91,22 @@ The build.rs script enforces consistent use of tracing macros throughout the cod
 **Agent integration**: Ensures prime agent exists on first run for seamless experience
 
 ### cli.rs
-**Purpose**: CLI argument parsing and command execution
+**Purpose**: CLI argument parsing and command execution with macro-based contract enforcement
 **Key functionality**:
-- Parse command line arguments using clap
+- Parse command line arguments using clap via generated `Args` struct
 - Execute all CLI-specific commands with early exit support
 - Handle agent management commands (create, delete, activate, authorize, etc.)
-- Process graph operations (import, delete)
+- Process graph operations (import, delete, list)
 - Display system status information
-**Key types**: `Args` - Complete CLI argument structure with all flags and options
+**Key macro**: `cli_commands!` - Single source of truth for all CLI commands
+**Generated code**:
+- `Args` struct with all command fields and clap annotations
+- `from_json_with_args()` - JSON to Args conversion for WebSocket bridge
 **Key functions**:
 - `handle_cli_commands()` - Processes CLI-specific commands, returns true for early exit
 - `show_cli_status()` - Displays graph and agent status information
+- `dispatch_cli_command()` - WebSocket bridge for CLI command execution
+**Contract enforcement**: Build script extracts commands for test verification
 
 ### config.rs
 **Purpose**: YAML configuration loading with CLI overrides  
@@ -427,6 +434,7 @@ cymbiont [OPTIONS]
   # Graph management
   --import-logseq <PATH>        # Import Logseq graph directory
   --delete-graph <NAME_OR_ID>   # Delete a graph by name or UUID
+  --list-graphs                 # List all graphs with metadata
   
   # Agent management
   --create-agent <NAME>         # Create new agent

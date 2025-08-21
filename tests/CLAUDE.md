@@ -9,7 +9,7 @@
 - **integration/**: Integration test suite (single binary for parallelism)
   - **main.rs**: Entry point - imports common utilities and test modules
   - **http_logseq_import.rs**: HTTP API import tests
-  - **cli_commands.rs**: CLI command tests (including import)
+  - **cli_commands.rs**: CLI command tests with build-time contract enforcement (see src/cli.rs header for adding commands)
   - **websocket_commands.rs**: WebSocket API tests
   - **agent_commands.rs**: Agent chat and admin command tests
   - **freeze_mechanism.rs**: Freeze/unfreeze operation tests for deterministic testing

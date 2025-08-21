@@ -96,6 +96,9 @@ cargo run -- --import-logseq ~/Documents/my-notes
 # View current graphs and status
 cargo run
 
+# List all graphs with metadata
+cargo run -- --list-graphs
+
 # Import knowledge from Logseq
 cargo run -- --import-logseq /path/to/notes
 
@@ -205,6 +208,7 @@ cargo run -- --server --duration 60        # Run server for 60 seconds
 # Graph management
 cargo run -- --import-logseq ~/Documents/notes  # Import Logseq graph
 cargo run -- --delete-graph my-notes       # Delete a graph by name
+cargo run -- --list-graphs                  # List all graphs with metadata
 
 # Agent management
 cargo run -- --create-agent "Research Assistant" --agent-description "Handles research queries"

@@ -22,6 +22,7 @@ env RUST_LOG=debug cargo test -- --nocapture 2>&1 | tee test_output.log  # Captu
 ### Graph Management
 - `--import-logseq <PATH>`: Import Logseq graph directory (then continues running)
 - `--delete-graph <NAME_OR_ID>`: Archive a graph by name or ID
+- `--list-graphs`: List all graphs with metadata
 
 ### Agent Management
 - `--create-agent <NAME>`: Create new agent

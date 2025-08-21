@@ -7,6 +7,48 @@ use crate::common::test_harness::{
     authenticate_websocket, TestServer, read_auth_token, WsConnection
 };
 
+// Include the generated CLI commands list from build script
+include!(concat!(env!("OUT_DIR"), "/cli_commands.rs"));
+
+/// List of CLI commands that have been integration tested
+/// When adding a new CLI command, add the command name to this list after writing tests
+const TESTED_COMMANDS: &[&str] = &[
+    "import_logseq",      // ✓ tested in test_all_cli_commands
+    "delete_graph",       // ✓ tested in test_all_cli_commands
+    "create_agent",       // ✓ tested in test_all_cli_commands
+    "delete_agent",       // ✓ tested in test_all_cli_commands
+    "activate_agent",     // ✓ tested in test_all_cli_commands
+    "deactivate_agent",   // ✓ tested in test_all_cli_commands
+    "agent_info",         // ✓ tested in test_all_cli_commands
+    "authorize_agent",    // ✓ tested in test_all_cli_commands
+    "deauthorize_agent",  // ✓ tested in test_all_cli_commands
+    "list_graphs",        // ✓ tested in test_all_cli_commands
+];
+
+/// Contract enforcement: Verify we test all CLI commands from macro
+#[allow(dead_code)]
+fn verify_all_commands_tested() {
+    let mut missing = Vec::new();
+    for &cmd in ALL_CLI_COMMANDS {
+        if !TESTED_COMMANDS.contains(&cmd) {
+            missing.push(cmd);
+        }
+    }
+    if !missing.is_empty() {
+        panic!("Missing tests for CLI commands: {:?}. Add them to TESTED_COMMANDS after writing tests.", missing);
+    }
+    
+    let mut extra = Vec::new();
+    for &cmd in TESTED_COMMANDS {
+        if !ALL_CLI_COMMANDS.contains(&cmd) {
+            extra.push(cmd);
+        }
+    }
+    if !extra.is_empty() {
+        panic!("TESTED_COMMANDS contains commands not in macro: {:?}. Remove them or add to macro.", extra);
+    }
+}
+
 /// Helper to send a CLI command via WebSocket
 fn send_cli_command(ws: &mut WsConnection, command: &str, params: serde_json::Value) -> serde_json::Value {
     let cmd = json!({
@@ -17,8 +59,12 @@ fn send_cli_command(ws: &mut WsConnection, command: &str, params: serde_json::Va
     send_command(ws, cmd)
 }
 
+
 /// Test all CLI commands
 pub fn test_all_cli_commands() {
+    // Contract enforcement: Verify we test all commands from the macro
+    verify_all_commands_tested();
+    
     let test_env = setup_test_env();
     let cleanup_env = test_env.clone();
     
@@ -111,7 +157,7 @@ pub fn test_all_cli_commands() {
         {
             let response = send_cli_command(&mut ws, "authorize_agent", json!({
                 "agent": test_agent_name,
-                "graph": &graph_id
+                "for_graph": &graph_id
             }));
             let data = expect_success(response).expect("Authorize agent should succeed");
             assert!(data["exit_after"].as_bool().unwrap_or(false), "Authorize should exit");
@@ -122,7 +168,7 @@ pub fn test_all_cli_commands() {
         {
             let response = send_cli_command(&mut ws, "deauthorize_agent", json!({
                 "agent": test_agent_name,
-                "graph": &graph_id
+                "from_graph": &graph_id
             }));
             let data = expect_success(response).expect("Deauthorize agent should succeed");
             assert!(data["exit_after"].as_bool().unwrap_or(false), "Deauthorize should exit");
@@ -214,6 +260,17 @@ pub fn test_all_cli_commands() {
             assert_eq!(graphs.len(), 1, "Should have only the original graph after deletion");
             assert_eq!(graphs[0]["id"].as_str().unwrap(), &graph_id, "Original graph should remain");
         }
+        
+        // Test list_graphs
+        {
+            let response = send_cli_command(&mut ws, "list_graphs", json!({}));
+            let data = expect_success(response).expect("List graphs should succeed");
+            assert!(data["exit_after"].as_bool().unwrap_or(false), "List graphs should exit");
+            
+            // The actual listing is done via the CLI command, not the WebSocket command
+            // So we just verify it executed successfully
+        }
+        
         
         let _ = ws.close(None);
         let test_env = server.shutdown();

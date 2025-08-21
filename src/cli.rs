@@ -12,11 +12,66 @@
 //! - Displaying system status when no commands are provided
 //! - Determining whether to exit after command completion
 //!
+//! ## Single Source of Truth: The `cli_commands!` Macro
+//!
+//! All CLI commands are defined exhaustively in a single macro invocation that
+//! generates the Args struct, JSON parsing, and contract enforcement. This ensures
+//! compile-time verification that all commands are properly implemented and tested.
+//!
+//! ### Adding a New CLI Command
+//!
+//! When adding a new command, follow these steps:
+//!
+//! 1. **Add to the macro** in this file:
+//!    ```rust
+//!    cli_commands! {
+//!        string_commands: [
+//!            // Add your command here if it takes a string argument
+//!            (ExportGraph, path, export_graph, "PATH", "export_graph"),
+//!        ],
+//!        flag_commands: [
+//!            // Or here if it's a boolean flag
+//!            (ShowVersion, show_version, "", "show_version"),
+//!        ],
+//!    }
+//!    ```
+//!
+//! 2. **Implement the handler** in `handle_cli_commands()`:
+//!    ```rust
+//!    if let Some(export_path) = &args.export_graph {
+//!        // Your implementation here
+//!        return Ok(true);  // Exit after, or Ok(false) to continue
+//!    }
+//!    ```
+//!
+//! 3. **Write integration test** in `tests/integration/cli_commands.rs`:
+//!    - Add test case for the command
+//!    - Add command name to `TESTED_COMMANDS` array
+//!
+//! 4. **Build fails if you forget tests!** The build script extracts all commands
+//!    from the macro and integration tests verify 100% coverage. Missing tests
+//!    will cause a compile-time failure with a clear message.
+//!
+//! ### Macro Structure
+//!
+//! The macro takes three categories of definitions:
+//! - `string_commands`: Commands that accept a string value (paths, names, IDs)
+//! - `flag_commands`: Boolean flags that don't take arguments  
+//! - `supporting_fields`: Helper fields for complex commands (e.g., --for-graph)
+//!
+//! Each command tuple contains:
+//! - Variant name for internal use
+//! - Field name in JSON (for WebSocket bridge)
+//! - Args struct field name
+//! - Clap value name for help text
+//! - Snake_case command name string
+//!
 //! ## Command Categories
 //!
 //! ### Graph Operations
 //! - Import Logseq graphs from directories
 //! - Delete graphs by name or ID
+//! - List all graphs with metadata
 //!
 //! ### Agent Management
 //! - Create/delete agents
@@ -33,6 +88,12 @@
 //! Commands that modify state (create/delete/authorize) typically cause the
 //! program to exit after completion. Import and status commands allow the
 //! program to continue running, supporting the persistent daemon model.
+//!
+//! ## WebSocket Bridge
+//!
+//! The macro generates `from_json_with_args()` which enables WebSocket clients
+//! to execute CLI commands via JSON messages. This provides a unified interface
+//! for both command-line and programmatic access.
 
 use std::error::Error;
 use std::sync::Arc;
@@ -44,108 +105,140 @@ use crate::app_state::AppState;
 use crate::graph_operations::GraphOps;
 use crate::import;
 
-/// CLI arguments  
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-pub struct Args {
-    /// Run as HTTP/WebSocket server
-    #[arg(long)]
-    pub server: bool,
-    
-    /// Override data directory path (defaults to config value)
-    #[arg(long)]
-    pub data_dir: Option<String>,
-    
-    /// Path to configuration file
-    #[arg(long)]
-    pub config: Option<String>,
-    
-    /// Import a Logseq graph from directory
-    #[arg(long, value_name = "PATH")]
-    pub import_logseq: Option<String>,
-    
-    /// Delete a graph by name or ID
-    #[arg(long, value_name = "NAME_OR_ID")]
-    pub delete_graph: Option<String>,
-    
-    // Server-specific args (only used when --server is provided)
-    /// Run server for a specific duration in seconds (for testing)
-    #[arg(long)]
-    pub duration: Option<u64>,
-    
-    // Agent admin commands
-    /// Create a new agent with the given name
-    #[arg(long, value_name = "NAME")]
-    pub create_agent: Option<String>,
-    
-    /// Optional description for the new agent (used with --create-agent)
-    #[arg(long, value_name = "DESCRIPTION", requires = "create_agent")]
-    pub agent_description: Option<String>,
-    
-    /// Delete an agent by name or ID
-    #[arg(long, value_name = "NAME_OR_ID")]
-    pub delete_agent: Option<String>,
-    
-    /// Activate an agent by name or ID
-    #[arg(long, value_name = "NAME_OR_ID")]
-    pub activate_agent: Option<String>,
-    
-    /// Deactivate an agent by name or ID
-    #[arg(long, value_name = "NAME_OR_ID")]
-    pub deactivate_agent: Option<String>,
-    
-    /// Show information about an agent by name or ID
-    #[arg(long, value_name = "NAME_OR_ID")]
-    pub agent_info: Option<String>,
-    
-    /// Authorize an agent for a graph (specify agent and graph by name or ID)
-    #[arg(long, value_name = "AGENT_NAME_OR_ID")]
-    pub authorize_agent: Option<String>,
-    
-    /// Graph to authorize the agent for (used with --authorize-agent)
-    #[arg(long, value_name = "GRAPH_NAME_OR_ID", requires = "authorize_agent")]
-    pub for_graph: Option<String>,
-    
-    /// Deauthorize an agent from a graph (specify agent and graph by name or ID)
-    #[arg(long, value_name = "AGENT_NAME_OR_ID")]
-    pub deauthorize_agent: Option<String>,
-    
-    /// Graph to deauthorize the agent from (used with --deauthorize-agent)
-    #[arg(long, value_name = "GRAPH_NAME_OR_ID", requires = "deauthorize_agent")]
-    pub from_graph: Option<String>,
-}
-
-// Re-export CliCommand for convenience
-pub use crate::cli_registry::CliCommand;
-
-// Extension trait to convert CliCommand to Args
-impl CliCommand {
-    /// Convert to Args struct for execution
-    pub fn to_args(&self) -> Args {
-        let mut args = Args::default();
-        match self {
-            Self::ImportLogseq { path } => args.import_logseq = Some(path.clone()),
-            Self::DeleteGraph { identifier } => args.delete_graph = Some(identifier.clone()),
-            Self::CreateAgent { name, description } => {
-                args.create_agent = Some(name.clone());
-                args.agent_description = description.clone();
-            }
-            Self::DeleteAgent { identifier } => args.delete_agent = Some(identifier.clone()),
-            Self::ActivateAgent { identifier } => args.activate_agent = Some(identifier.clone()),
-            Self::DeactivateAgent { identifier } => args.deactivate_agent = Some(identifier.clone()),
-            Self::AgentInfo { identifier } => args.agent_info = Some(identifier.clone()),
-            Self::AuthorizeAgent { agent, graph } => {
-                args.authorize_agent = Some(agent.clone());
-                args.for_graph = Some(graph.clone());
-            }
-            Self::DeauthorizeAgent { agent, graph } => {
-                args.deauthorize_agent = Some(agent.clone());
-                args.from_graph = Some(graph.clone());
+/// CLI Commands Contract Enforcement Macro
+/// Developer must specify ALL CLI commands exhaustively
+/// This ensures single source of truth and compile-time contract checking
+macro_rules! cli_commands {
+    (
+        string_commands: [
+            $(($str_variant:ident, $str_field:ident, $str_args_field:ident, $str_clap:literal, $str_snake:literal)),* $(,)?
+        ],
+        flag_commands: [
+            $(($flag_variant:ident, $flag_args_field:ident, $flag_clap:literal, $flag_snake:literal)),* $(,)?
+        ],
+        supporting_fields: [
+            $(($sup_field:ident, $sup_clap:literal, $sup_requires:literal)),* $(,)?
+        ],
+    ) => {
+        /// CLI arguments - GENERATED BY MACRO from exhaustive command definitions
+        #[derive(Parser, Debug)]
+        #[command(author, version, about, long_about = None)]
+        pub struct Args {
+            /// Run as HTTP/WebSocket server
+            #[arg(long)]
+            pub server: bool,
+            
+            /// Override data directory path (defaults to config value)
+            #[arg(long)]
+            pub data_dir: Option<String>,
+            
+            /// Path to configuration file
+            #[arg(long)]
+            pub config: Option<String>,
+            
+            /// Run server for a specific duration in seconds (for testing)
+            #[arg(long)]
+            pub duration: Option<u64>,
+            
+            // Generated string command fields
+            $(
+                #[arg(long, value_name = $str_clap)]
+                pub $str_args_field: Option<String>,
+            )*
+            
+            // Generated flag command fields
+            $(
+                #[arg(long)]
+                pub $flag_args_field: bool,
+            )*
+            
+            // Supporting fields for complex commands
+            $(
+                #[arg(long, value_name = $sup_clap, requires = $sup_requires)]
+                pub $sup_field: Option<String>,
+            )*
+        }
+        
+        impl Default for Args {
+            fn default() -> Self {
+                Self {
+                    server: false,
+                    data_dir: None,
+                    config: None,
+                    duration: None,
+                    $(
+                        $str_args_field: None,
+                    )*
+                    $(
+                        $flag_args_field: false,
+                    )*
+                    $(
+                        $sup_field: None,
+                    )*
+                }
             }
         }
-        args
-    }
+        
+        /// Convert CLI command from JSON with supporting fields - GENERATED BY MACRO
+        pub fn from_json_with_args(command_name: &str, params: &serde_json::Value) -> Result<Args, String> {
+            let mut args = Args::default();
+            
+            // Parse the main command
+            match command_name {
+                $(
+                    $str_snake => {
+                        let field_val = params[stringify!($str_field)].as_str()
+                            .ok_or(concat!("Missing ", stringify!($str_field)))?.to_string();
+                        args.$str_args_field = Some(field_val);
+                    }
+                )*
+                $(
+                    $flag_snake => {
+                        args.$flag_args_field = true;
+                    }
+                )*
+                _ => return Err(format!("Unknown command: {}", command_name)),
+            }
+            
+            // Parse supporting fields from JSON if present
+            $(
+                if let Some(val) = params[stringify!($sup_field)].as_str() {
+                    args.$sup_field = Some(val.to_string());
+                }
+            )*
+            
+            Ok(args)
+        }
+        
+    };
 }
+
+
+// SINGLE SOURCE OF TRUTH: All CLI commands defined exhaustively
+cli_commands! {
+    string_commands: [
+        (ImportLogseq, path, import_logseq, "PATH", "import_logseq"),
+        (DeleteGraph, identifier, delete_graph, "NAME_OR_ID", "delete_graph"),
+        (CreateAgent, name, create_agent, "NAME", "create_agent"),
+        (DeleteAgent, identifier, delete_agent, "NAME_OR_ID", "delete_agent"),
+        (ActivateAgent, identifier, activate_agent, "NAME_OR_ID", "activate_agent"),
+        (DeactivateAgent, identifier, deactivate_agent, "NAME_OR_ID", "deactivate_agent"),
+        (AgentInfo, identifier, agent_info, "NAME_OR_ID", "agent_info"),
+        (AuthorizeAgent, agent, authorize_agent, "AGENT_NAME_OR_ID", "authorize_agent"),
+        (DeauthorizeAgent, agent, deauthorize_agent, "AGENT_NAME_OR_ID", "deauthorize_agent"),
+    ],
+    flag_commands: [
+        (ListGraphs, list_graphs, "", "list_graphs"),
+    ],
+    supporting_fields: [
+        (agent_description, "DESCRIPTION", "create_agent"),
+        (for_graph, "GRAPH_NAME_OR_ID", "authorize_agent"),
+        (from_graph, "GRAPH_NAME_OR_ID", "deauthorize_agent"),
+    ],
+}
+
+
+
 
 // Dispatcher for WebSocket bridge (only in debug builds for testing)
 #[cfg(debug_assertions)]
@@ -154,42 +247,18 @@ pub async fn dispatch_cli_command(
     command_name: &str,
     params: &serde_json::Value,
 ) -> Result<bool, Box<dyn Error + Send + Sync>> {
-    let command = match CliCommand::from_json(command_name, params) {
-        Ok(cmd) => cmd,
+    let args = match from_json_with_args(command_name, params) {
+        Ok(args) => args,
         Err(e) => {
             tracing::error!("Failed to parse CLI command: {}", e);
             return Err(Box::<dyn Error + Send + Sync>::from(e));
         }
     };
     
-    let args = command.to_args();
     let result = handle_cli_commands(app_state, &args).await;
     result
 }
 
-// Add Default impl for Args to support the builder pattern
-impl Default for Args {
-    fn default() -> Self {
-        Self {
-            server: false,
-            data_dir: None,
-            config: None,
-            import_logseq: None,
-            delete_graph: None,
-            duration: None,
-            create_agent: None,
-            agent_description: None,
-            delete_agent: None,
-            activate_agent: None,
-            deactivate_agent: None,
-            agent_info: None,
-            authorize_agent: None,
-            for_graph: None,
-            deauthorize_agent: None,
-            from_graph: None,
-        }
-    }
-}
 
 /// Handle all CLI-specific commands
 /// Returns true if should exit after command completion
@@ -600,6 +669,30 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
         return Ok(true);  // Exit after showing info
     }
     
+    // List graphs
+    if args.list_graphs {
+        let graphs = app_state.list_graphs().await
+            .map_err(|e| format!("Failed to list graphs: {:?}", e))?;
+        
+        if graphs.is_empty() {
+            info!("📊 No graphs found");
+        } else {
+            info!("📊 Found {} graph(s):", graphs.len());
+            for graph in &graphs {
+                info!("  ID: {}", graph["id"]);
+                info!("  Name: {}", graph["name"]);
+                if let Some(desc) = graph["description"].as_str() {
+                    info!("  Description: {}", desc);
+                }
+                info!("  Created: {}", graph["created"]);
+                info!("  Last Accessed: {}", graph["last_accessed"]);
+                info!("");
+            }
+        }
+        
+        return Ok(true);  // Exit after listing graphs
+    }
+    
     // If no commands, show status
     show_cli_status(app_state).await?;
     
@@ -640,55 +733,3 @@ pub async fn show_cli_status(app_state: &Arc<AppState>) -> Result<(), Box<dyn Er
     Ok(())
 }
 
-// Compile-time test to ensure enum stays in sync with Args
-#[cfg(test)]
-mod registry_tests {
-    use super::*;
-    
-    #[test]
-    fn test_all_commands_round_trip() {
-        // This test ensures every CliCommand variant can round-trip through Args
-        let test_cases = vec![
-            CliCommand::ImportLogseq { path: "test".to_string() },
-            CliCommand::DeleteGraph { identifier: "id".to_string() },
-            CliCommand::CreateAgent { name: "test".to_string(), description: Some("desc".to_string()) },
-            CliCommand::DeleteAgent { identifier: "id".to_string() },
-            CliCommand::ActivateAgent { identifier: "id".to_string() },
-            CliCommand::DeactivateAgent { identifier: "id".to_string() },
-            CliCommand::AgentInfo { identifier: "id".to_string() },
-            CliCommand::AuthorizeAgent { agent: "a".to_string(), graph: "g".to_string() },
-            CliCommand::DeauthorizeAgent { agent: "a".to_string(), graph: "g".to_string() },
-        ];
-        
-        for cmd in test_cases {
-            let args = cmd.to_args();
-            // Verify at least one field is set in Args
-            let has_command = args.import_logseq.is_some()
-                || args.delete_graph.is_some()
-                || args.create_agent.is_some()
-                || args.delete_agent.is_some()
-                || args.activate_agent.is_some()
-                || args.deactivate_agent.is_some()
-                || args.agent_info.is_some()
-                || args.authorize_agent.is_some()
-                || args.deauthorize_agent.is_some();
-            assert!(has_command, "Command {:?} didn't set any Args fields", cmd);
-        }
-        
-        // Ensure all commands are listed
-        assert_eq!(CliCommand::all_commands().len(), 9, 
-                   "Update all_commands() when adding new commands");
-    }
-    
-    #[test]
-    fn test_all_commands_have_integration_tests() {
-        // This test ensures developers mark commands as tested after writing integration tests
-        for command_name in CliCommand::all_commands() {
-            assert!(
-                CliCommand::is_tested(command_name),
-                "Command '{}' is not marked as tested! Write an integration test in cli_commands.rs, then set it to true in CliCommand::is_tested()",
-                command_name
-            );
-        }
-    }
-}

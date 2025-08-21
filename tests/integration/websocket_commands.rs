@@ -288,7 +288,7 @@ fn test_error_cases(ws: &mut WsConnection, port: u16, _original_graph_id: &str) 
         "Expected error response for unauthenticated command"
     );
     assert!(
-        response["message"].as_str().unwrap().contains("Not authenticated"),
+        response["message"].as_str().unwrap().contains("not authenticated"),
         "Unexpected error message: {}",
         response["message"]
     );

@@ -94,6 +94,7 @@ pub async fn send_response(
         if let Some(conn) = conns.get(connection_id) {
             conn.sender.clone()
         } else {
+            tracing::warn!("Attempted to send response to disconnected client: {}", connection_id);
             return Ok(()); // Connection gone, silently succeed
         }
     } else {

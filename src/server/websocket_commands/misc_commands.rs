@@ -55,7 +55,7 @@ use tracing::{info, warn, error};
 use crate::AppState;
 use crate::server::websocket::Command;
 use crate::server::websocket_utils::{
-    send_success_response, send_error_response, set_authenticated, get_connection_stats
+    send_success_response, set_authenticated, get_connection_stats
 };
 
 /// Main handler function for miscellaneous commands
@@ -71,8 +71,7 @@ pub async fn handle(
             
             if !validate_token(state, &token).await {
                 warn!("🔐 WebSocket authentication failed for {}: invalid token", connection_id);
-                send_error_response(connection_id, state, "Invalid authentication token").await?;
-                return Ok(());
+                return Err("Failed to authenticate: invalid token".into());
             }
             
             // Set authenticated (atomic operation)
@@ -92,6 +91,8 @@ pub async fn handle(
                                 conn.current_agent_id = Some(prime_id);
                                 // Set prime agent as default for this connection
                             }
+                        } else {
+                            warn!("🔐 Auth succeeded but no prime agent exists - system may be in corrupted state");
                         }
                     }
                     
@@ -111,7 +112,7 @@ pub async fn handle(
                 }
                 Err(e) => {
                     error!("Failed to authenticate connection {}: {}", connection_id, e);
-                    send_error_response(connection_id, state, "Authentication failed").await?;
+                    return Err(format!("Failed to authenticate: {}", e).into());
                 }
             }
         }

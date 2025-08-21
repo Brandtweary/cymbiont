@@ -403,7 +403,7 @@ impl AgentRegistry {
             // Use prime agent as default
             self.prime_agent_id
                 .ok_or_else(|| AgentRegistryError::ValidationError(
-                    "No prime agent available".to_string()
+                    "No prime agent exists. Create an agent first".to_string()
                 ))
         } else {
             Err(AgentRegistryError::ValidationError(

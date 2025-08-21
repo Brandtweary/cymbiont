@@ -11,7 +11,7 @@
  * The WebSocket server follows a layered architecture:
  * - **Protocol Layer** (this module): Connection handling, message parsing, command routing
  * - **Utility Layer** (websocket_utils): Shared helpers for auth, responses, resolution
- * - **Handler Layer** (websocket_commands/*): Domain-specific command implementations
+ * - **Handler Layer** (websocket_commands/): Domain-specific command implementations
  * 
  * ## Connection Lifecycle
  * 
@@ -48,6 +48,13 @@
  * - `WsConnection`: Connection state including auth status and current agent
  * - `Command`: Comprehensive enum of all supported WebSocket commands
  * - `Response`: Success/Error/Heartbeat response types
+ * 
+ * ## Error Handling
+ * 
+ * Commands use idiomatic Rust error propagation with the `?` operator.
+ * Handlers return errors that bubble up to handle_message() where they're
+ * sent to clients as error responses. This provides clean, consistent error
+ * handling without explicit error response calls in most handlers.
  * 
  * ## Integration Points
  * 
@@ -161,6 +168,7 @@ pub enum Command {
     // Agent commands
     AgentChat {
         message: String,
+        // TODO: Re-evaluate if echo field should be feature-gated or if it has legitimate user use cases
         echo: Option<String>,  // Test-only: force MockLLM to echo this response
     },
     AgentSelect {
@@ -311,7 +319,7 @@ pub async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
             if let Err(e) = handle_message(msg, &conn_id, &app_state).await {
                 error!("Error handling message from {}: {:?}", conn_id, e);
                 // Send error response back to client so they're not left hanging
-                if let Err(send_err) = crate::server::websocket_utils::send_error_response(&conn_id, &app_state, &format!("Command processing failed: {}", e)).await {
+                if let Err(send_err) = crate::server::websocket_utils::send_error_response(&conn_id, &app_state, &e.to_string()).await {
                     error!("Failed to send error response: {:?}", send_err);
                 }
             }
@@ -394,7 +402,7 @@ async fn route_command(
     ) && !is_test_cli_command {
         if !crate::server::websocket_utils::is_authenticated(connection_id, state).await {
             warn!("Rejecting command from unauthenticated connection {}: {:?}", connection_id, command);
-            crate::server::websocket_utils::send_error_response(connection_id, state, "Not authenticated").await?;
+            crate::server::websocket_utils::send_error_response(connection_id, state, "Failed to execute command: not authenticated").await?;
             return Ok(());
         }
     }

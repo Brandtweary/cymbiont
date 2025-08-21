@@ -273,6 +273,7 @@ The build.rs script performs two critical functions:
 - **Agent operations**: Chat, selection, history, administration, authorization management
 - **System commands**: Auth, test, freeze/unfreeze for deterministic testing
 **Key features**: Async task spawning per message, smart graph/agent resolution, prime agent defaults
+**Error handling**: Idiomatic Rust pattern using `?` operator for error propagation - handlers return errors that bubble up to a central catch point where they're sent as error responses
 **Full API reference**: See `src/server/CLAUDE.md` for complete command documentation
 
 ### import/logseq.rs

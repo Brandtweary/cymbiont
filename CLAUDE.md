@@ -58,7 +58,6 @@ env RUST_LOG=debug cargo test -- --nocapture 2>&1 | tee test_output.log  # Captu
   - **graph_manager.rs**: Generic knowledge graph storage engine using petgraph
   - **config.rs**: YAML configuration loading and validation
   - **utils.rs**: Process management, datetime parsing, general utilities
-  - **logging.rs**: Custom formatter (file:line only for ERROR/WARN)
   - **app_state.rs**: Centralized application state management with agent integration
   - **graph_operations.rs**: Multi-agent graph operations with runtime authorization
   - **agent/**: Agent abstraction layer

@@ -146,12 +146,7 @@ use tungstenite::{connect, Message, WebSocket};
 use tungstenite::stream::MaybeTlsStream;
 use std::net::TcpStream;
 
-// Include the main logging module directly (avoids needing lib.rs)
-#[path = "../../src/logging.rs"]
-mod logging;
-
-use self::logging::init_logging;
-use autodebugger::VerbosityCheckLayer;
+use autodebugger::{init_logging, VerbosityCheckLayer};
 use std::sync::Mutex;
 
 // Global counter for unique test directories

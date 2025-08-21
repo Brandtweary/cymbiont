@@ -72,7 +72,6 @@ mod cli;
 mod config;
 mod graph_manager;
 mod graph_operations;
-mod logging;
 mod import;
 mod server;
 mod storage;
@@ -80,7 +79,7 @@ mod utils;
 
 use app_state::AppState;
 use cli::{Args, handle_cli_commands};
-use logging::init_logging;
+use autodebugger::init_logging;
 
 fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     // Create Tokio runtime explicitly for proper shutdown control

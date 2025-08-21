@@ -8,7 +8,6 @@ cymbiont/
 │   ├── cli.rs                     # CLI argument parsing and command execution
 │   ├── app_state.rs               # Centralized application state with agent management
 │   ├── config.rs                  # YAML configuration management
-│   ├── logging.rs                 # Custom tracing formatter
 │   ├── utils.rs                   # Process management and utilities
 │   ├── graph_manager.rs           # Petgraph-based knowledge graph engine
 │   ├── graph_operations.rs        # Multi-agent graph operations with runtime authorization
@@ -494,7 +493,7 @@ The shutdown sequence runs `cleanup_and_save()` to close WebSocket connections, 
 
 ### autodebugger/
 **Purpose**: Git submodule providing LLM-oriented developer utilities  
-**Features**: Automated log verbosity detection via tracing Layer, command execution wrappers for structured results, and utilities that address common pain points in LLM-assisted development. The VerbosityCheckLayer automatically monitors log output and warns when applications exceed reasonable thresholds (50/100/200 logs for INFO/DEBUG/TRACE levels).
+**Features**: Automated log verbosity detection via tracing Layer, command execution wrappers for structured results, and utilities that address common pain points in LLM-assisted development. The VerbosityCheckLayer automatically monitors log output and warns when applications exceed reasonable thresholds (50/100/200 logs for INFO/DEBUG/TRACE levels). Also provides a complete tracing subscriber with clean console output optimized for terminal development.
 
 **Usage Examples**:
 ```bash

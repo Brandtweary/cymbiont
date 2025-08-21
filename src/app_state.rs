@@ -77,10 +77,18 @@
 //! - Sync RwLocks for registries requiring immediate consistency
 //! - Double-check pattern prevents race conditions in resource creation
 //! - Debug assertions detect lock contention during development
+//! 
+//! ### Lock Ordering Hierarchy
+//! To prevent deadlocks, locks must be acquired in this strict order:
+//! 1. `graph_registry` (SyncRwLock) - Always acquired first
+//! 2. `agent_registry` (SyncRwLock) - Acquired after graph_registry
+//! 3. Async locks (`graph_resources`, `agents`, `ws_connections`) - No ordering required
+//! 
+//! Use `lock_registries_for_write()` when both registries need write access.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock as SyncRwLock, Mutex};
+use std::sync::{Arc, RwLock as SyncRwLock, RwLockWriteGuard as SyncRwLockWriteGuard, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::error::Error;
 use std::fs;
@@ -269,6 +277,31 @@ impl AppState {
         }
         
         Ok(app_state)
+    }
+    
+    /// Acquire both registries for write access in the correct order to prevent deadlocks
+    /// 
+    /// This helper enforces the canonical lock ordering: graph_registry before agent_registry.
+    /// Always use this method when you need write access to both registries.
+    /// 
+    /// # Example
+    /// ```
+    /// let (mut graph_registry, mut agent_registry) = state.lock_registries_for_write()?;
+    /// // Perform operations requiring both registries
+    /// agent_registry.authorize_agent_for_graph(&agent_id, &graph_id, &mut graph_registry)?;
+    /// ```
+    pub fn lock_registries_for_write(&self) 
+        -> Result<(
+            SyncRwLockWriteGuard<GraphRegistry>,
+            SyncRwLockWriteGuard<AgentRegistry>
+        ), Box<dyn Error + Send + Sync>> 
+    {
+        // Always acquire graph_registry first (canonical ordering)
+        let graph_registry = self.graph_registry.write()
+            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to write graph registry: {}", e)))?;
+        let agent_registry = self.agent_registry.write()
+            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to write agent registry: {}", e)))?;
+        Ok((graph_registry, agent_registry))
     }
     
     /// Get or create graph resources (manager + coordinator) for the given graph ID
@@ -462,10 +495,7 @@ impl AppState {
     ) -> Result<GraphInfo, Box<dyn Error + Send + Sync>> {
         // Delegate complete workflow to GraphRegistry
         let graph_info = {
-            let mut graph_registry = self.graph_registry.write()
-                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to write graph registry: {}", e)))?;
-            let mut agent_registry = self.agent_registry.write()
-                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to write agent registry: {}", e)))?;
+            let (mut graph_registry, mut agent_registry) = self.lock_registries_for_write()?;
             
             graph_registry.create_new_graph_complete(name, description, &mut agent_registry)
                 .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to create graph: {}", e)))?

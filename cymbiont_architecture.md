@@ -474,6 +474,11 @@ The shutdown sequence runs `cleanup_and_save()` to close WebSocket connections, 
 
 **Prime Agent**: Auto-created on first run → Authorized for all new graphs → Cannot be deleted → Default for all operations
 
+**Lock Ordering**: To prevent deadlocks, all code that needs both `graph_registry` and `agent_registry` locks must acquire them in a consistent order:
+1. `graph_registry` (SyncRwLock) - Always acquired first
+2. `agent_registry` (SyncRwLock) - Acquired after graph_registry
+3. Use `AppState::lock_registries_for_write()` helper method to ensure correct ordering
+
 ### autodebugger/
 **Purpose**: Git submodule providing LLM-oriented developer utilities  
 **Features**: Automated log verbosity detection via tracing Layer, command execution wrappers for structured results, and utilities that address common pain points in LLM-assisted development. The VerbosityCheckLayer automatically monitors log output and warns when applications exceed reasonable thresholds (50/100/200 logs for INFO/DEBUG/TRACE levels). Also provides a complete tracing subscriber with clean console output optimized for terminal development.

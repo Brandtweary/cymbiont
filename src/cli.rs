@@ -12,6 +12,12 @@
 //! - Displaying system status when no commands are provided
 //! - Determining whether to exit after command completion
 //!
+//! ## Concurrency Considerations
+//!
+//! Authorization operations that modify both agent and graph registries use
+//! `AppState::lock_registries_for_write()` to acquire locks in the canonical
+//! order (graph_registry → agent_registry) preventing potential deadlocks
+//!
 //! ## Single Source of Truth: The `cli_commands!` Macro
 //!
 //! All CLI commands are defined exhaustively in a single macro invocation that
@@ -498,10 +504,8 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
         
         // Authorize agent for graph
         {
-            let mut agent_registry = app_state.agent_registry.write()
-                .map_err(|e| format!("Failed to write agent registry: {}", e))?;
-            let mut graph_registry = app_state.graph_registry.write()
-                .map_err(|e| format!("Failed to write graph registry: {}", e))?;
+            let (mut graph_registry, mut agent_registry) = app_state.lock_registries_for_write()
+                .map_err(|e| format!("Failed to lock registries: {}", e))?;
             
             agent_registry.authorize_agent_for_graph(
                 &resolved_agent_id,
@@ -564,10 +568,8 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
         
         // Deauthorize agent from graph
         {
-            let mut agent_registry = app_state.agent_registry.write()
-                .map_err(|e| format!("Failed to write agent registry: {}", e))?;
-            let mut graph_registry = app_state.graph_registry.write()
-                .map_err(|e| format!("Failed to write graph registry: {}", e))?;
+            let (mut graph_registry, mut agent_registry) = app_state.lock_registries_for_write()
+                .map_err(|e| format!("Failed to lock registries: {}", e))?;
             
             agent_registry.deauthorize_agent_from_graph(
                 &resolved_agent_id,

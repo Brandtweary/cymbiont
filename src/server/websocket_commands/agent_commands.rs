@@ -42,6 +42,11 @@
  * Authorization updates both agent and graph registries to maintain
  * consistency and enable efficient permission checks.
  * 
+ * ### Lock Ordering
+ * When both registries need write access (authorization operations),
+ * uses `AppState::lock_registries_for_write()` to acquire locks in the
+ * canonical order (graph_registry → agent_registry) to prevent deadlocks.
+ * 
  * ## Integration
  * 
  * - Uses AgentRegistry for lifecycle and authorization management
@@ -546,10 +551,8 @@ pub async fn handle(
             
             // Authorize agent for graph
             {
-                let mut agent_registry = state.agent_registry.write()
-                    .map_err(|e| format!("Failed to write agent registry: {}", e))?;
-                let mut graph_registry = state.graph_registry.write()
-                    .map_err(|e| format!("Failed to write graph registry: {}", e))?;
+                let (mut graph_registry, mut agent_registry) = state.lock_registries_for_write()
+                    .map_err(|e| format!("Failed to lock registries: {}", e))?;
                 
                 agent_registry.authorize_agent_for_graph(
                     &resolved_agent_id,
@@ -619,10 +622,8 @@ pub async fn handle(
             
             // Deauthorize agent from graph
             {
-                let mut agent_registry = state.agent_registry.write()
-                    .map_err(|e| format!("Failed to write agent registry: {}", e))?;
-                let mut graph_registry = state.graph_registry.write()
-                    .map_err(|e| format!("Failed to write graph registry: {}", e))?;
+                let (mut graph_registry, mut agent_registry) = state.lock_registries_for_write()
+                    .map_err(|e| format!("Failed to lock registries: {}", e))?;
                 
                 agent_registry.deauthorize_agent_from_graph(
                     &resolved_agent_id,

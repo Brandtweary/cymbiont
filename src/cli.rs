@@ -356,7 +356,6 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
         }
         
         info!("✅ Created agent '{}' with ID: {}", agent_info.name, agent_info.id);
-        return Ok(true);  // Exit after creating agent
     }
     
     // Delete agent
@@ -405,7 +404,6 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
         }
         
         info!("✅ Deleted agent: {}", resolved_id);
-        return Ok(true);  // Exit after deleting agent
     }
     
     // Activate agent
@@ -428,7 +426,6 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
             .map_err(|e| format!("Failed to activate agent: {:?}", e))?;
         
         info!("✅ Activated agent: {}", resolved_id);
-        return Ok(true);  // Exit after activating agent
     }
     
     // Deactivate agent
@@ -463,7 +460,6 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
             .map_err(|e| format!("Failed to deactivate agent: {:?}", e))?;
         
         info!("✅ Deactivated agent: {}", resolved_id);
-        return Ok(true);  // Exit after deactivating agent
     }
     
     // Authorize agent for graph
@@ -530,7 +526,6 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
         }
         
         info!("✅ Authorized agent {} for graph {}", resolved_agent_id, resolved_graph_id);
-        return Ok(true);  // Exit after authorization
     }
     
     // Deauthorize agent from graph
@@ -597,7 +592,6 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
         }
         
         info!("✅ Deauthorized agent {} from graph {}", resolved_agent_id, resolved_graph_id);
-        return Ok(true);  // Exit after deauthorization
     }
     
     // Show agent info
@@ -666,7 +660,6 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
             }
         }
         
-        return Ok(true);  // Exit after showing info
     }
     
     // List graphs
@@ -689,8 +682,6 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
                 info!("");
             }
         }
-        
-        return Ok(true);  // Exit after listing graphs
     }
     
     // If no commands, show status

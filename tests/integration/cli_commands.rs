@@ -87,8 +87,7 @@ pub fn test_all_cli_commands() {
             let response = send_cli_command(&mut ws, "import_logseq", json!({
                 "path": "logseq_databases/dummy_graph/"
             }));
-            let data = expect_success(response).expect("Import should succeed");
-            assert!(!data["exit_after"].as_bool().unwrap_or(true), "Import should not exit");
+            expect_success(response).expect("Import should succeed");
             
             // The fixture validates that the graph was created with expected structure
             graph_fixture.expect_dummy_graph();
@@ -126,8 +125,7 @@ pub fn test_all_cli_commands() {
                 "name": test_agent_name,
                 "description": "Test agent created via CLI"
             }));
-            let data = expect_success(response).expect("Create agent should succeed");
-            assert!(data["exit_after"].as_bool().unwrap_or(false), "Create agent should exit");
+            expect_success(response).expect("Create agent should succeed");
         }
         
         // Get test agent ID
@@ -149,8 +147,7 @@ pub fn test_all_cli_commands() {
             let response = send_cli_command(&mut ws, "agent_info", json!({
                 "identifier": test_agent_name
             }));
-            let data = expect_success(response).expect("Agent info should succeed");
-            assert!(data["exit_after"].as_bool().unwrap_or(false), "Agent info should exit");
+            expect_success(response).expect("Agent info should succeed");
         }
         
         // Test authorize_agent
@@ -159,8 +156,7 @@ pub fn test_all_cli_commands() {
                 "agent": test_agent_name,
                 "for_graph": &graph_id
             }));
-            let data = expect_success(response).expect("Authorize agent should succeed");
-            assert!(data["exit_after"].as_bool().unwrap_or(false), "Authorize should exit");
+            expect_success(response).expect("Authorize agent should succeed");
             agent_fixture.expect_authorization(&test_agent_id, &Uuid::parse_str(&graph_id).unwrap());
         }
         
@@ -170,8 +166,7 @@ pub fn test_all_cli_commands() {
                 "agent": test_agent_name,
                 "from_graph": &graph_id
             }));
-            let data = expect_success(response).expect("Deauthorize agent should succeed");
-            assert!(data["exit_after"].as_bool().unwrap_or(false), "Deauthorize should exit");
+            expect_success(response).expect("Deauthorize agent should succeed");
             agent_fixture.expect_deauthorization(&test_agent_id, &Uuid::parse_str(&graph_id).unwrap());
         }
         
@@ -180,8 +175,7 @@ pub fn test_all_cli_commands() {
             let response = send_cli_command(&mut ws, "deactivate_agent", json!({
                 "identifier": test_agent_name
             }));
-            let data = expect_success(response).expect("Deactivate agent should succeed");
-            assert!(data["exit_after"].as_bool().unwrap_or(false), "Deactivate should exit");
+            expect_success(response).expect("Deactivate agent should succeed");
             agent_fixture.expect_agent_deactivated(&test_agent_id);
         }
         
@@ -190,8 +184,7 @@ pub fn test_all_cli_commands() {
             let response = send_cli_command(&mut ws, "activate_agent", json!({
                 "identifier": test_agent_name
             }));
-            let data = expect_success(response).expect("Activate agent should succeed");
-            assert!(data["exit_after"].as_bool().unwrap_or(false), "Activate should exit");
+            expect_success(response).expect("Activate agent should succeed");
             agent_fixture.expect_agent_activated(&test_agent_id);
         }
         
@@ -200,8 +193,7 @@ pub fn test_all_cli_commands() {
             let response = send_cli_command(&mut ws, "delete_agent", json!({
                 "identifier": test_agent_name
             }));
-            let data = expect_success(response).expect("Delete agent should succeed");
-            assert!(data["exit_after"].as_bool().unwrap_or(false), "Delete agent should exit");
+            expect_success(response).expect("Delete agent should succeed");
             agent_fixture.expect_agent_deleted(&test_agent_id);
         }
         
@@ -249,8 +241,7 @@ pub fn test_all_cli_commands() {
             let response = send_cli_command(&mut ws, "delete_graph", json!({
                 "identifier": &delete_graph_id
             }));
-            let data = expect_success(response).expect("Delete graph should succeed");
-            assert!(!data["exit_after"].as_bool().unwrap_or(true), "Delete graph should not exit");
+            expect_success(response).expect("Delete graph should succeed");
             
             // Verify it's gone
             let cmd = json!({"type": "list_graphs"});
@@ -264,8 +255,7 @@ pub fn test_all_cli_commands() {
         // Test list_graphs
         {
             let response = send_cli_command(&mut ws, "list_graphs", json!({}));
-            let data = expect_success(response).expect("List graphs should succeed");
-            assert!(data["exit_after"].as_bool().unwrap_or(false), "List graphs should exit");
+            expect_success(response).expect("List graphs should succeed");
             
             // The actual listing is done via the CLI command, not the WebSocket command
             // So we just verify it executed successfully

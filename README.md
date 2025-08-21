@@ -195,6 +195,8 @@ cargo run -- --server --config instance2.yaml
 
 ### All CLI Options
 
+Note: Commands can be combined but execute in a fixed order and are not idempotent—some operations may fail if repeated or combined inappropriately.
+
 ```bash
 # Basic options
 cargo run -- --help                        # View all options

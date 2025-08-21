@@ -5,6 +5,8 @@
 
 pub mod http_api;
 pub mod websocket;
+pub mod websocket_utils;
+pub mod websocket_commands;
 pub mod server;
 pub mod auth;
 

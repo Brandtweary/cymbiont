@@ -80,11 +80,7 @@ env RUST_LOG=debug cargo test -- --nocapture 2>&1 | tee test_output.log  # Captu
     - **registry_utils.rs**: Shared UUID serialization utilities
     - **transaction_log.rs**: Write-ahead logging with sled database
     - **transaction.rs**: Transaction coordinator and state management
-  - **server/**: Server-specific functionality
-    - **http_api.rs**: HTTP endpoints for health, import, WebSocket upgrade
-    - **websocket.rs**: WebSocket server with agent chat and admin commands
-    - **auth.rs**: Authentication system with token generation and validation
-    - **server.rs**: HTTP/WebSocket server setup and configuration
+  - **server/**: HTTP/WebSocket server - see `src/server/CLAUDE.md` for API reference and module details
 - **tests/**: Test binaries (e.g. integration tests) - see `tests/CLAUDE.md` for test harness details
 - **autodebugger/**: Git submodule - LLM developer utilities with automated log verbosity detection
 - **.gitignore**: Git ignore patterns

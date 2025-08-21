@@ -23,12 +23,17 @@ cymbiont/
 │   │   ├── logseq.rs              # Logseq-specific parsing
 │   │   ├── import_utils.rs        # Import coordination with agent authorization
 │   │   └── reference_resolver.rs  # Block reference resolution
-│   ├── server/                    # Server-specific functionality
+│   ├── server/                    # Server-specific functionality - see src/server/CLAUDE.md
 │   │   ├── mod.rs                 # Server module exports
+│   │   ├── server.rs              # Server lifecycle and port management
 │   │   ├── http_api.rs            # HTTP endpoints (health, import, WebSocket upgrade)
-│   │   ├── websocket.rs           # Real-time WebSocket with agent commands
-│   │   ├── server.rs              # Server utilities and lifecycle
-│   │   └── auth.rs                # Authentication system with token management
+│   │   ├── websocket.rs           # WebSocket protocol and connection handling
+│   │   ├── websocket_utils.rs     # Shared helpers (auth, response, graph resolution)
+│   │   ├── websocket_commands/    # Command handlers by domain
+│   │   │   ├── agent_commands.rs  # Agent chat and administration
+│   │   │   ├── graph_commands.rs  # Graph CRUD operations
+│   │   │   └── misc_commands.rs   # Auth, test, freeze commands
+│   │   └── auth.rs                # Token generation and validation
 │   └── storage/                   # Persistence layer
 │       ├── mod.rs                 # Storage module exports
 │       ├── graph_persistence.rs   # Graph save/load utilities
@@ -130,12 +135,8 @@ The build.rs script performs two critical functions:
 
 ### server/http_api.rs
 **Purpose**: HTTP API endpoints for health checks, imports, and WebSocket upgrades  
-**Active endpoints**:
-- `GET /` - Health check (no auth)
-- `POST /import/logseq` - One-time Logseq graph import (requires auth)
-- `GET /ws` - WebSocket upgrade (no auth, handled post-upgrade)
-- `GET /api/websocket/status` - WebSocket connection metrics (requires auth)
-- `GET /api/websocket/recent-activity` - WebSocket activity monitoring (requires auth)
+**Key endpoints**: Health check (`/`), Logseq import (`/import/logseq`), WebSocket upgrade (`/ws`), monitoring endpoints
+**Auth**: Middleware protection for sensitive endpoints, WebSocket auth handled post-upgrade
 
 ### graph_manager.rs
 **Purpose**: Generic knowledge graph storage engine using petgraph  
@@ -244,8 +245,9 @@ The build.rs script performs two critical functions:
 **Design**: JSON schemas describing available graph operations
 
 ### server/server.rs
-**Purpose**: Server initialization and HTTP/WebSocket setup  
-**Functions**: `start_server()` - creates axum server and returns handle for external lifecycle management
+**Purpose**: Server lifecycle management and port finding
+**Functions**: `start_server()` - finds available port, creates Axum server, returns handle for external control
+**Features**: Automatic port selection, server info file management, graceful previous instance cleanup
 
 ### storage/transaction_log.rs
 **Purpose**: Write-ahead logging with sled database  
@@ -263,35 +265,15 @@ The build.rs script performs two critical functions:
 **Per-graph isolation**: Each graph has its own TransactionCoordinator instance
 **Shutdown behavior**: Tracks all active transactions, rejects new ones during shutdown
 
-### server/websocket.rs
-**Purpose**: Real-time WebSocket communication with agent integration and high-throughput async processing
-**Architecture**: Each command spawns as independent async task for concurrent execution
-**Protocol**: Request/response with token auth, heartbeat, async command execution
-**Authorization**: All graph operations use `GraphOps` trait with runtime agent authorization
-**Graph commands**: 
-- `Auth { token }` - authentication (sets prime agent as current)
-- `OpenGraph`, `CloseGraph` - explicit graph lifecycle
-- `CreateBlock`, `UpdateBlock`, `DeleteBlock` - block operations (require current agent, accept optional graph_id/graph_name)
-- `CreatePage`, `DeletePage` - page operations (require current agent, accept optional graph_id/graph_name)
-- `CreateGraph`, `DeleteGraph`, `ListGraphs` - graph management
-**Agent chat commands**:
-- `AgentChat { message, echo?, agent_id?, agent_name? }` - chat with agent (echo for testing)
-- `AgentSelect { agent_id?, agent_name? }` - switch current agent for connection
-- `AgentList` - list all agents with status
-- `AgentHistory { limit?, agent_id?, agent_name? }` - get conversation history
-- `AgentReset { agent_id?, agent_name? }` - clear conversation
-- `AgentInfo { agent_id?, agent_name? }` - detailed agent information
-**Agent admin commands**:
-- `CreateAgent { name, description? }` - create new agent
-- `DeleteAgent { agent_id?, agent_name? }` - remove agent (prime protected)
-- `ActivateAgent`, `DeactivateAgent` - memory management
-- `AuthorizeAgent`, `DeauthorizeAgent` - graph access control
-**Test commands**: `FreezeOperations`, `UnfreezeOperations`, `GetFreezeState`
-**Graph targeting**: All CRUD commands accept optional `graph_id` (UUID string) or `graph_name` fields
-**Agent targeting**: All agent commands accept optional agent_id/agent_name, default to current/prime
-**Responses**: `Success`, `Error`, `Heartbeat`
-**Authentication**: Requires `Auth { token }` command before other operations
-**Connection state**: Each WebSocket maintains current_agent_id (defaults to prime)
+### server/websocket.rs & websocket_commands/
+**Purpose**: WebSocket protocol handling and command routing to domain-specific handlers
+**Architecture**: Core protocol in websocket.rs, commands split into agent/graph/misc handlers
+**Command categories**: 
+- **Graph operations**: Block/page CRUD, graph lifecycle (all require agent authorization via GraphOps)
+- **Agent operations**: Chat, selection, history, administration, authorization management
+- **System commands**: Auth, test, freeze/unfreeze for deterministic testing
+**Key features**: Async task spawning per message, smart graph/agent resolution, prime agent defaults
+**Full API reference**: See `src/server/CLAUDE.md` for complete command documentation
 
 ### import/logseq.rs
 **Purpose**: Logseq-specific parsing and transformation  

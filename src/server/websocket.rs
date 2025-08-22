@@ -255,6 +255,9 @@ pub async fn websocket_handler(
 }
 
 /// Handle individual WebSocket connection
+// TODO 🚦: Implement rate limiting per connection to prevent spam
+// TODO 🔒: Add connection limits per IP address  
+// TODO 📏: Enforce maximum message size limits
 pub async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     let connection_id = Uuid::new_v4().to_string();
     // Connection established - connection_id: {}

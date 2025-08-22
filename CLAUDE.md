@@ -68,20 +68,8 @@ env RUST_LOG=debug cargo test -- --nocapture 2>&1 | tee test_output.log  # Captu
     - **llm.rs**: LLM backend abstraction and MockLLM implementation
     - **kg_tools.rs**: Knowledge graph tool registry
     - **schemas.rs**: Ollama-compatible tool schemas
-  - **import/**: Data import functionality
-    - **pkm_data.rs**: PKM data structures and graph transformation logic
-    - **logseq.rs**: Logseq-specific parsing
-    - **import_utils.rs**: Import coordination with agent authorization
-    - **reference_resolver.rs**: Block reference resolution
-  - **storage/**: Persistence layer
-    - **mod.rs**: Storage module exports
-    - **graph_persistence.rs**: Graph save/load/archive utilities
-    - **graph_registry.rs**: Multi-graph identification and management with agent tracking
-    - **agent_registry.rs**: Agent lifecycle and authorization management
-    - **agent_persistence.rs**: Agent save/load with auto-save thresholds
-    - **registry_utils.rs**: Shared UUID serialization utilities
-    - **transaction_log.rs**: Write-ahead logging with sled database
-    - **transaction.rs**: Transaction coordinator and state management
+  - **import/**: Data import functionality - see `src/import/CLAUDE.md` for module details
+  - **storage/**: Persistence layer - see `src/storage/CLAUDE.md` for module details
   - **server/**: HTTP/WebSocket server - see `src/server/CLAUDE.md` for API reference and module details
 - **tests/**: Test binaries (e.g. integration tests) - see `tests/CLAUDE.md` for test harness details
 - **autodebugger/**: Git submodule - LLM developer utilities with automated log verbosity detection

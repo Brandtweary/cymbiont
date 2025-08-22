@@ -163,6 +163,8 @@ pub struct TransactionLog {
 }
 
 impl TransactionLog {
+    // TODO 🔄: Implement transaction log compaction based on compaction_threshold_mb config
+    // TODO 🗑️: Implement retention policy to clean up transactions older than retention_days
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path_ref = path.as_ref();
         

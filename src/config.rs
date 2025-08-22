@@ -211,6 +211,8 @@ impl Default for TransactionLogConfig {
 
 
 // Load configuration from file
+// TODO ✅: Add validation for config values (e.g., default_duration > 0, valid data_dir path)
+// TODO 🛡️: Check for invalid config combinations and provide helpful error messages
 pub fn load_config(config_path: Option<String>) -> Config {
     // If explicit path provided, use it
     if let Some(path) = config_path {

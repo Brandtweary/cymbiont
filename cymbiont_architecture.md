@@ -212,6 +212,7 @@ fn example() -> Result<()> {
 **Purpose**: Persistence layer module with registry, transactions, and WAL logging  
 **Components**: GraphRegistry, TransactionLog, TransactionCoordinator, graph_persistence utilities
 **Key features**: Multi-graph management, ACID transactions, crash recovery, graph serialization
+**Module documentation**: See `src/storage/CLAUDE.md` for condensed overview 💾
 
 ### storage/graph_persistence.rs
 **Purpose**: Graph serialization and persistence utilities  
@@ -258,6 +259,22 @@ fn example() -> Result<()> {
 **Key modules**: `uuid_hashmap_serde`, `uuid_hashset_serde`, `uuid_vec_serde`
 **Design**: Prevents code duplication between GraphRegistry and AgentRegistry
 
+### storage/transaction_log.rs
+**Purpose**: Write-ahead logging with sled database  
+**Features**: Content hash deduplication, ACID guarantees, crash recovery
+**Trees**: Transactions, content hash index, pending index
+
+### storage/transaction.rs
+**Purpose**: Transaction lifecycle coordination with graceful shutdown support and AppState verbosity reduction
+**States**: `Active` → `Committed` | `Aborted`
+**Key methods**: 
+- `create_transaction()`, `complete_transaction()` - transaction lifecycle
+- `recover_pending_transactions()` - crash recovery
+- `initiate_shutdown()`, `wait_for_completion()` - graceful shutdown coordination
+- `run_single_graph_recovery_helper()`, `save_graph_after_recovery_helper()` - extracted helpers to reduce AppState verbosity
+**Per-graph isolation**: Each graph has its own TransactionCoordinator instance
+**Shutdown behavior**: Tracks all active transactions, rejects new ones during shutdown
+
 ### agent/agent.rs
 **Purpose**: Core Agent struct with conversation management and LLM interaction
 **Key types**: `Agent`, `Message` enum (User/Assistant/Tool)
@@ -289,22 +306,6 @@ fn example() -> Result<()> {
 **Functions**: `start_server()` - finds available port, creates Axum server, returns handle for external control
 **Features**: Automatic port selection, server info file management, graceful previous instance cleanup
 
-### storage/transaction_log.rs
-**Purpose**: Write-ahead logging with sled database  
-**Features**: Content hash deduplication, ACID guarantees, crash recovery
-**Trees**: Transactions, content hash index, pending index
-
-### storage/transaction.rs
-**Purpose**: Transaction lifecycle coordination with graceful shutdown support and AppState verbosity reduction
-**States**: `Active` → `Committed` | `Aborted`
-**Key methods**: 
-- `create_transaction()`, `complete_transaction()` - transaction lifecycle
-- `recover_pending_transactions()` - crash recovery
-- `initiate_shutdown()`, `wait_for_completion()` - graceful shutdown coordination
-- `run_single_graph_recovery_helper()`, `save_graph_after_recovery_helper()` - extracted helpers to reduce AppState verbosity
-**Per-graph isolation**: Each graph has its own TransactionCoordinator instance
-**Shutdown behavior**: Tracks all active transactions, rejects new ones during shutdown
-
 ### server/websocket.rs & websocket_commands/
 **Purpose**: WebSocket protocol handling and command routing to domain-specific handlers
 **Architecture**: Core protocol in websocket.rs, commands split into agent/graph/misc handlers
@@ -317,27 +318,58 @@ fn example() -> Result<()> {
 **Lock handling**: All async locks use `read_or_panic()` and `write_or_panic()` extension methods
 **Full API reference**: See `src/server/CLAUDE.md` for complete command documentation
 
-### import/logseq.rs
-**Purpose**: Logseq-specific parsing and transformation  
-**Key features**: Reads .md files, parses frontmatter, extracts blocks and hierarchies
+### import/mod.rs
+**Purpose**: Import module exports and error definitions
+**Key exports**: `import_logseq_graph()`, PKM data types, ImportError
+**Module documentation**: See `src/import/CLAUDE.md` for condensed overview 🚀
 
 ### import/pkm_data.rs
 **Purpose**: PKM data structures and graph application logic  
-**Key types**: `PKMBlockData`, `PKMPageData`, `PKMReference`
+**Key types**: 
+- `PKMBlockData` - Block content with hierarchy, timestamps, properties
+- `PKMPageData` - Page metadata with block lists
+- `PKMReference` - Cross-references between blocks
 **Key methods**: 
 - `apply_to_graph()` - Transforms PKM data into graph nodes/edges with reference resolution
 - `new_block()`, `new_page()` - Factory methods for creating PKM data structures
 - `create_or_update_page()`, `update_block_content()` - Complex operation helpers
+**Node types**: Page, Block (with archived variants)
+**Edge types**: PageRef, BlockRef, PageToBlock, ParentChild
+
+### import/logseq.rs
+**Purpose**: Logseq-specific parsing and transformation  
+**Key functions**:
+- `parse_logseq_directory()` - Entry point for directory scanning
+- `parse_markdown_file()` - Extract pages and blocks from .md files
+- `extract_properties()` - Parse YAML frontmatter
+- `parse_blocks()` - Hierarchical block extraction with indentation tracking
+**Key features**: 
+- Reads .md files recursively
+- Parses frontmatter properties
+- Extracts nested block hierarchies
+- Detects `((block-id))` references
 
 ### import/import_utils.rs
 **Purpose**: High-level import coordination with agent authorization
-**Key operations**: `import_logseq_graph()` - full graph import with prime agent authorization
+**Key operations**: 
+- `import_logseq_graph()` - Full import workflow with transaction wrapping
+- Creates new graph via `create_graph()` 
+- Authorizes prime agent automatically
+- Returns graph UUID for further operations
 **Integration**: Uses centralized `create_graph()` to ensure consistent agent authorization
+**Progress tracking**: Logs import stages for monitoring
 
 ### import/reference_resolver.rs
 **Purpose**: Block reference resolution during import  
-**Key features**: Resolves `((block-id))` references, prevents circular references
-**Helper functions**: `build_block_map_from_graph()`, `resolve_references_in_graph()` - simplified resolution patterns
+**Key functions**:
+- `build_block_map_from_graph()` - Creates ID → NodeIndex mapping
+- `resolve_references_in_graph()` - Two-pass reference resolution
+- `extract_block_references()` - Pattern matching for `((block-id))`
+**Key features**: 
+- Resolves `((block-id))` references post-import
+- Prevents circular references
+- Updates reference_content field with resolved text
+**Helper functions**: Simplified resolution patterns for maintainability
 
 ### server/auth.rs
 **Purpose**: Token-based authentication system with auto-generation and rotation  

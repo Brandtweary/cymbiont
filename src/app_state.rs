@@ -282,6 +282,8 @@ impl AppState {
     /// Get or create graph resources (manager + coordinator) for the given graph ID
     /// 
     /// Resources are bundled together to ensure they're always created/destroyed atomically.
+    // TODO 💾: Implement LRU cache eviction for graph managers to prevent unbounded memory growth
+    // TODO 📊: Add memory pressure monitoring and automatic graph unloading
     pub async fn get_or_create_graph_manager(&self, graph_id: &Uuid) -> Result<()> {
         let resources = self.graph_resources.read_or_panic("read graph resources").await;
         

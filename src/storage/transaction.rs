@@ -32,6 +32,7 @@ use crate::storage::transaction_log::{Operation, Transaction, TransactionLog, Tr
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{RwLock, Notify};
+use crate::lock::AsyncRwLockExt;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use tracing::{warn, error, info};
@@ -70,13 +71,13 @@ impl TransactionCoordinator {
         
         // Add to pending operations if it has a content hash
         if let Some(content_hash) = &transaction.content_hash {
-            let mut pending = self.pending_operations.write().await;
+            let mut pending = self.pending_operations.write_or_panic("begin transaction - pending operations").await;
             pending.insert(content_hash.clone(), tx_id.clone());
         }
         
         // Add to active transactions set
         {
-            let mut active = self.active_transactions.write().await;
+            let mut active = self.active_transactions.write_or_panic("transaction state - active transactions").await;
             active.insert(tx_id.clone());
         }
         
@@ -89,13 +90,13 @@ impl TransactionCoordinator {
         
         // Remove from pending operations
         if let Some(content_hash) = &transaction.content_hash {
-            let mut pending = self.pending_operations.write().await;
+            let mut pending = self.pending_operations.write_or_panic("begin transaction - pending operations").await;
             pending.remove(content_hash);
         }
         
         // Remove from active transactions and check if shutdown should complete
         {
-            let mut active = self.active_transactions.write().await;
+            let mut active = self.active_transactions.write_or_panic("transaction state - active transactions").await;
             active.remove(tx_id);
             
             // If shutdown requested and no more active transactions, notify
@@ -113,13 +114,13 @@ impl TransactionCoordinator {
         
         // Remove from pending operations
         if let Some(content_hash) = &transaction.content_hash {
-            let mut pending = self.pending_operations.write().await;
+            let mut pending = self.pending_operations.write_or_panic("begin transaction - pending operations").await;
             pending.remove(content_hash);
         }
         
         // Remove from active transactions and check if shutdown should complete
         {
-            let mut active = self.active_transactions.write().await;
+            let mut active = self.active_transactions.write_or_panic("transaction state - active transactions").await;
             active.remove(tx_id);
             
             // If shutdown requested and no more active transactions, notify
@@ -140,7 +141,7 @@ impl TransactionCoordinator {
     
     
     pub async fn is_content_pending(&self, content_hash: &str) -> bool {
-        let pending = self.pending_operations.read().await;
+        let pending = self.pending_operations.read_or_panic("is content pending").await;
         pending.contains_key(content_hash)
     }
     
@@ -217,7 +218,7 @@ impl TransactionCoordinator {
     /// Returns the count of currently active transactions
     pub async fn initiate_shutdown(&self) -> usize {
         self.shutdown_requested.store(true, Ordering::Release);
-        let active = self.active_transactions.read().await;
+        let active = self.active_transactions.read_or_panic("initiate shutdown - read active").await;
         let count = active.len();
         if count > 0 {
         }
@@ -228,7 +229,7 @@ impl TransactionCoordinator {
     /// Returns true if all completed, false if timeout
     pub async fn wait_for_completion(&self, timeout: Duration) -> bool {
         let active_count = {
-            let active = self.active_transactions.read().await;
+            let active = self.active_transactions.read_or_panic("initiate shutdown - read active").await;
             active.len()
         };
         
@@ -242,7 +243,7 @@ impl TransactionCoordinator {
                 true
             }
             Err(_) => {
-                let remaining = self.active_transactions.read().await.len();
+                let remaining = self.active_transactions.read_or_panic("wait for completion - check remaining").await.len();
                 warn!("Timeout waiting for transactions - {} still active", remaining);
                 false
             }

@@ -10,6 +10,7 @@ use axum::extract::ws::Message;
 use std::sync::Arc;
 use crate::error::*;
 use crate::AppState;
+use crate::lock::AsyncRwLockExt;
 use crate::server::websocket::Response;
 
 /// Helper to resolve graph ID from optional graph_id and graph_name
@@ -41,7 +42,7 @@ pub async fn is_authenticated(
     state: &Arc<AppState>,
 ) -> bool {
     if let Some(ref connections) = state.ws_connections {
-        let conns = connections.read().await;
+        let conns = connections.read_or_panic("send response - read connections").await;
         if let Some(conn) = conns.get(connection_id) {
             return conn.authenticated;
         }
@@ -55,7 +56,7 @@ pub async fn set_authenticated(
     state: &Arc<AppState>,
 ) -> Result<bool> {
     if let Some(ref connections) = state.ws_connections {
-        let mut conns = connections.write().await;
+        let mut conns = connections.write_or_panic("set auth state - write connections").await;
         if let Some(conn) = conns.get_mut(connection_id) {
             conn.authenticated = true;
             // Return true if this is the first authenticated connection
@@ -73,7 +74,7 @@ pub async fn get_connection_stats(
     state: &Arc<AppState>,
 ) -> (usize, usize) {
     if let Some(ref connections) = state.ws_connections {
-        let conns = connections.read().await;
+        let conns = connections.read_or_panic("send response - read connections").await;
         let total = conns.len();
         let authenticated = conns.values().filter(|c| c.authenticated).count();
         (total, authenticated)
@@ -90,7 +91,7 @@ pub async fn send_response(
 ) -> Result<()> {
     // Get the sender without holding lock
     let sender = if let Some(ref connections) = state.ws_connections {
-        let conns = connections.read().await;
+        let conns = connections.read_or_panic("send response - read connections").await;
         if let Some(conn) = conns.get(connection_id) {
             conn.sender.clone()
         } else {

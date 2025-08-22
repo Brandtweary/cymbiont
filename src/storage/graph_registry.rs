@@ -41,17 +41,17 @@
 //!
 //! ## Concurrency Safety
 //!
-//! The GraphRegistry is accessed through `Arc<RwLock<GraphRegistry>>` with development-time
-//! contention detection:
+//! The GraphRegistry is accessed through `Arc<RwLock<GraphRegistry>>` with panic-on-poison
+//! strategy implemented via the lock.rs module:
 //! 
-//! - **Write Pattern**: Use `debug_assert!(registry.try_write().is_ok()` before acquiring write locks
-//! - **Purpose**: Acts as a tripwire to detect lock contention during development, causing fast failure instead of mysterious hangs
-//! - **Scope Management**: Keep lock scopes minimal and never hold both registry and graph_resources locks simultaneously
+//! - **Lock Pattern**: Use `read_or_panic()` and `write_or_panic()` for all lock operations
+//! - **Contention Detection**: Write operations automatically warn about lock contention in debug builds
+//! - **Lock Ordering**: When acquiring both graph_registry and agent_registry, use `lock_registries_for_write()`
+//! - **Scope Management**: Keep lock scopes minimal to reduce contention
 //! 
-//! **Important**: The debug assertions are tripwires for investigation, not concrete walls. 
-//! If profiling shows that some degree of lock contention is acceptable for your use case, 
-//! the assertions can be removed. However, this decision must be made after profiling and 
-//! measuring actual performance impact, never preemptively.
+//! The panic-on-poison strategy ensures data integrity by immediately halting execution
+//! when a thread panics while holding a lock, preventing continued operation with
+//! potentially corrupted state.
 //!
 //! ## Complete Workflow Methods
 //!

@@ -78,6 +78,7 @@ use std::sync::Arc;
 use tracing::{info, error};
 use serde::{Deserialize, Serialize};
 use crate::error::*;
+use crate::lock::AsyncRwLockExt;
 use crate::AppState;
 use crate::server::websocket::websocket_handler;
 use crate::server::auth::auth_middleware;
@@ -246,7 +247,7 @@ pub async fn get_websocket_status(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
     let connections = if let Some(ws_connections) = &state.ws_connections {
-        let conns = ws_connections.read().await;
+        let conns = ws_connections.read_or_panic("websocket status - read connections").await;
         conns.len()
     } else {
         0
@@ -273,7 +274,7 @@ pub async fn get_websocket_activity(
     // TODO: Implement proper activity tracking in WebSocket module
     // For now, return basic connection info
     let active_connections = if let Some(ws_connections) = &state.ws_connections {
-        let conns = ws_connections.read().await;
+        let conns = ws_connections.read_or_panic("websocket status - read connections").await;
         conns.values()
             .map(|conn| {
                 serde_json::json!({

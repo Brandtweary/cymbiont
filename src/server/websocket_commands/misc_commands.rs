@@ -53,6 +53,7 @@
 use std::sync::Arc;
 use tracing::{info, warn, error};
 use crate::error::*;
+use crate::lock::{RwLockExt, AsyncRwLockExt};
 use crate::AppState;
 use crate::server::websocket::Command;
 use crate::server::websocket_utils::{
@@ -86,7 +87,7 @@ pub async fn handle(
                         };
                         
                         if let Some(prime_id) = prime_agent_id {
-                            let mut conns = connections.write().await;
+                            let mut conns = connections.write_or_panic("auth command - write connections").await;
                             if let Some(conn) = conns.get_mut(connection_id) {
                                 conn.current_agent_id = Some(prime_id);
                                 // Set prime agent as default for this connection
@@ -135,24 +136,21 @@ pub async fn handle(
         }
         Command::FreezeOperations => {
             // Freeze all graph operations
-            
-            let mut freeze_state = state.operation_freeze.write().await;
+            let mut freeze_state = state.operation_freeze.write_or_panic("freeze operations").await;
             *freeze_state = true;
             
             send_success_response(connection_id, state, None).await?;
         }
         Command::UnfreezeOperations => {
             // Unfreeze all graph operations
-            
-            let mut freeze_state = state.operation_freeze.write().await;
+            let mut freeze_state = state.operation_freeze.write_or_panic("unfreeze operations").await;
             *freeze_state = false;
             
             send_success_response(connection_id, state, None).await?;
         }
         Command::GetFreezeState => {
             // Get current freeze state
-            
-            let freeze_state = state.operation_freeze.read().await;
+            let freeze_state = state.operation_freeze.read_or_panic("get freeze state").await;
             let data = serde_json::json!({ "frozen": *freeze_state });
             
             send_success_response(connection_id, state, Some(data)).await?;

@@ -3,6 +3,45 @@
 //! This module provides a hierarchical error system that replaces the fragmented
 //! error handling patterns throughout the codebase. All errors in Cymbiont should
 //! ultimately be convertible to `CymbiontError` for consistent propagation.
+//!
+//! ## Architecture
+//! 
+//! The error system follows a hierarchical design where domain-specific errors
+//! are wrapped in a root `CymbiontError` type. This allows for:
+//! - Type-safe error creation with domain context
+//! - Automatic error conversion via `From` traits
+//! - Consistent error propagation with the `?` operator
+//! - Clear error boundaries between modules
+//!
+//! ## Usage
+//! 
+//! ```rust
+//! use crate::error::*;
+//! 
+//! // Create domain-specific errors using convenience constructors
+//! fn example() -> Result<()> {
+//!     // Using convenience constructors
+//!     return Err(StorageError::graph_registry("Graph not found").into());
+//!     
+//!     // Automatic conversion with ?
+//!     let data = serde_json::from_str(&json)?;  // Converts to StorageError::Serialization
+//!     
+//!     // Entity not found pattern
+//!     return Err(StorageError::not_found("graph", "name", "my-graph").into());
+//! }
+//! ```
+//!
+//! ## Error Categories
+//! 
+//! - **StorageError**: Registry, persistence, and transaction errors
+//! - **AgentError**: LLM backend and tool execution errors
+//! - **GraphError**: Graph operations and lifecycle errors
+//! - **ServerError**: HTTP, WebSocket, and authentication errors
+//! - **ImportError**: Data import and parsing errors
+//! - **ConfigError**: Configuration loading and validation errors
+//!
+//! Each category provides convenience constructors for common error patterns,
+//! making it easy to create appropriate errors without verbose boilerplate.
 
 use thiserror::Error;
 use uuid::Uuid;
@@ -44,9 +83,6 @@ pub enum CymbiontError {
     #[error("Configuration error: {0}")]
     Config(#[from] ConfigError),
 
-    /// Lock errors (RwLock poisoning - rarely used, mostly panic)
-    #[error("Lock error: {0}")]
-    Lock(#[from] LockError),
 
     /// File system and I/O errors
     #[error("I/O error: {0}")]
@@ -204,17 +240,6 @@ pub enum ConfigError {
     IO(#[from] std::io::Error),
 }
 
-/// Lock errors for RwLock poisoning (rarely used, mostly panic)
-#[derive(Error, Debug)]
-pub enum LockError {
-    /// RwLock poisoning error
-    #[error("Lock poisoned: {message}")]
-    Poisoned { message: String },
-
-    /// Lock contention error (development-time detection)
-    #[error("Lock contention detected: {message}")]
-    Contention { message: String },
-}
 
 // Convenience From implementations for common error types
 
@@ -364,15 +389,4 @@ impl ImportError {
         ImportError::Path { message: message.into() }
     }
 
-}
-
-
-impl LockError {
-    pub fn poisoned(message: impl Into<String>) -> Self {
-        LockError::Poisoned { message: message.into() }
-    }
-
-    pub fn contention(message: impl Into<String>) -> Self {
-        LockError::Contention { message: message.into() }
-    }
 }

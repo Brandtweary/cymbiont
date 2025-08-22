@@ -153,6 +153,7 @@ use serde_json::json;
 use async_trait::async_trait;
 use uuid::Uuid;
 use crate::error::*;
+use crate::lock::AsyncRwLockExt;
 
 
 /// Helper to verify agent authorization for a graph operation.
@@ -420,10 +421,10 @@ impl GraphOps for Arc<AppState> {
     async fn get_node(&self, agent_id: Uuid, node_id: &str, graph_id: &Uuid) -> Result<serde_json::Value> {
         check_authorization(&self.agent_registry, &agent_id, graph_id)?;
         
-        let resources = self.graph_resources.read().await;
+        let resources = self.graph_resources.read_or_panic("get node - read resources").await;
         let graph_resources = resources.get(graph_id)
             .ok_or_else(|| GraphError::not_found(format!("graph {}", graph_id)))?;
-        let graph_manager = graph_resources.manager.read().await;
+        let graph_manager = graph_resources.manager.read_or_panic("get node - read manager").await;
         
         if let Some(node_idx) = graph_manager.find_node(node_id) {
             if let Some(node) = graph_manager.get_node(node_idx) {

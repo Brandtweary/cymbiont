@@ -44,7 +44,7 @@
  * 
  * ### Lock Ordering
  * When both registries need write access (authorization operations),
- * uses `AppState::lock_registries_for_write()` to acquire locks in the
+ * uses `lock_registries_for_write()` to acquire locks in the
  * canonical order (graph_registry → agent_registry) to prevent deadlocks.
  * 
  * ## Integration
@@ -60,6 +60,7 @@ use crate::error::*;
 use crate::AppState;
 use crate::server::websocket::Command;
 use crate::server::websocket_utils::{send_success_response, send_error_response};
+use crate::lock::{lock_registries_for_write, AsyncRwLockExt};
 
 /// Main handler function for agent commands
 pub async fn handle(
@@ -74,7 +75,7 @@ pub async fn handle(
             // Get the current agent for this connection (defaults to prime if none selected)
             let agent_id = {
                 if let Some(ref connections) = state.ws_connections {
-                    let conns = connections.read().await;
+                    let conns = connections.read_or_panic("agent chat - read connections").await;
                     if let Some(conn) = conns.get(connection_id) {
                         conn.current_agent_id.or_else(|| {
                             // Use prime agent if none selected
@@ -94,7 +95,7 @@ pub async fn handle(
             
             // Get the agent and process the message
             let response = {
-                let mut agents = state.agents.write().await;
+                let mut agents = state.agents.write_or_panic("agent operation - write agents").await;
                 if let Some(agent) = agents.get_mut(&agent_id) {
                     agent.process_message(message, echo).await?
                 } else {
@@ -140,7 +141,7 @@ pub async fn handle(
             
             // Update the connection's current agent
             if let Some(ref connections) = state.ws_connections {
-                let mut conns = connections.write().await;
+                let mut conns = connections.write_or_panic("agent select - write connections").await;
                 if let Some(conn) = conns.get_mut(connection_id) {
                     conn.current_agent_id = Some(selected_id);
                 }
@@ -201,7 +202,7 @@ pub async fn handle(
             } else {
                 // No agent specified, use current connection's agent or prime
                 if let Some(ref connections) = state.ws_connections {
-                    let conns = connections.read().await;
+                    let conns = connections.read_or_panic("agent chat - read connections").await;
                     if let Some(conn) = conns.get(connection_id) {
                         conn.current_agent_id.or_else(|| {
                             // Use prime agent if none selected
@@ -218,7 +219,7 @@ pub async fn handle(
             
             // Get conversation history
             let history = {
-                let agents = state.agents.read().await;
+                let agents = state.agents.read_or_panic("agent history - read agents").await;
                 if let Some(agent) = agents.get(&resolved_id) {
                     let messages = if let Some(limit) = limit {
                         agent.get_recent_messages(limit)
@@ -287,7 +288,7 @@ pub async fn handle(
             } else {
                 // No agent specified, use current connection's agent or prime
                 if let Some(ref connections) = state.ws_connections {
-                    let conns = connections.read().await;
+                    let conns = connections.read_or_panic("agent chat - read connections").await;
                     if let Some(conn) = conns.get(connection_id) {
                         conn.current_agent_id.or_else(|| {
                             // Use prime agent if none selected
@@ -304,7 +305,7 @@ pub async fn handle(
             
             // Clear the agent's conversation history
             {
-                let mut agents = state.agents.write().await;
+                let mut agents = state.agents.write_or_panic("agent operation - write agents").await;
                 if let Some(agent) = agents.get_mut(&resolved_id) {
                     agent.clear_history();
                     // Save after clearing
@@ -357,7 +358,7 @@ pub async fn handle(
                 agent.save()?;
                 
                 // Add to active agents map
-                let mut agents = state.agents.write().await;
+                let mut agents = state.agents.write_or_panic("agent operation - write agents").await;
                 agents.insert(agent_info.id, agent);
             }
             
@@ -530,7 +531,10 @@ pub async fn handle(
             
             // Authorize agent for graph
             {
-                let (mut graph_registry, mut agent_registry) = state.lock_registries_for_write()
+                let (mut graph_registry, mut agent_registry) = lock_registries_for_write(
+                    &state.graph_registry,
+                    &state.agent_registry
+                )
                     ?;
                 
                 agent_registry.authorize_agent_for_graph(
@@ -595,7 +599,10 @@ pub async fn handle(
             
             // Deauthorize agent from graph
             {
-                let (mut graph_registry, mut agent_registry) = state.lock_registries_for_write()
+                let (mut graph_registry, mut agent_registry) = lock_registries_for_write(
+                    &state.graph_registry,
+                    &state.agent_registry
+                )
                     ?;
                 
                 agent_registry.deauthorize_agent_from_graph(
@@ -655,7 +662,7 @@ pub async fn handle(
             
             // Get conversation stats if agent is loaded
             let conversation_stats = if is_active {
-                let agents = state.agents.read().await;
+                let agents = state.agents.read_or_panic("agent history - read agents").await;
                 agents.get(&resolved_id).map(|agent| {
                     serde_json::json!({
                         "message_count": agent.conversation_history.len(),

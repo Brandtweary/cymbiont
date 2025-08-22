@@ -62,6 +62,7 @@
  */
 
 use crate::error::*;
+use crate::lock::RwLockExt;
 use clap::Parser;
 use tracing::{info, error, warn, trace};
 
@@ -184,8 +185,8 @@ async fn run_startup_sequence(app_state: &std::sync::Arc<AppState>) -> Result<()
 
 /// Check for graphs with no authorized agents and warn
 async fn check_orphaned_graphs(app_state: &std::sync::Arc<AppState>) {
-    let agent_registry = app_state.agent_registry.read().unwrap();
-    let graph_registry = app_state.graph_registry.read().unwrap();
+    let agent_registry = app_state.agent_registry.read_or_panic("check orphaned graphs - agent registry");
+    let graph_registry = app_state.graph_registry.read_or_panic("check orphaned graphs - graph registry");
     let orphaned_graphs = agent_registry.find_orphaned_graphs(&graph_registry);
     
     if !orphaned_graphs.is_empty() {

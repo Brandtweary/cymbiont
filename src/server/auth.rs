@@ -54,6 +54,7 @@ use tracing::{info, warn, error};
 use uuid::Uuid;
 
 use crate::error::*;
+use crate::lock::AsyncRwLockExt;
 use crate::AppState;
 
 /// Generate a new cryptographically secure auth token
@@ -121,7 +122,7 @@ pub async fn auth_middleware(
     }
     
     // Get the stored auth token
-    let token_guard = state.auth_token.read().await;
+    let token_guard = state.auth_token.read_or_panic("auth middleware - read token").await;
     let expected_token = match &*token_guard {
         Some(token) => token,
         None => {
@@ -160,7 +161,7 @@ pub async fn validate_token(app_state: &AppState, token: &str) -> bool {
         return true;
     }
     
-    let token_guard = app_state.auth_token.read().await;
+    let token_guard = app_state.auth_token.read_or_panic("verify websocket auth - read token").await;
     match &*token_guard {
         Some(expected_token) => token == expected_token,
         None => {

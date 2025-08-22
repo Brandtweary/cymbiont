@@ -15,7 +15,7 @@
 //! ## Concurrency Considerations
 //!
 //! Authorization operations that modify both agent and graph registries use
-//! `AppState::lock_registries_for_write()` to acquire locks in the canonical
+//! `lock_registries_for_write()` to acquire locks in the canonical
 //! order (graph_registry → agent_registry) preventing potential deadlocks
 //!
 //! ## Single Source of Truth: The `cli_commands!` Macro
@@ -106,7 +106,7 @@ use clap::Parser;
 use tracing::{info, error};
 use uuid::Uuid;
 use crate::error::*;
-use crate::lock::ArcRwLockExt;
+use crate::lock::{RwLockExt, AsyncRwLockExt, lock_registries_for_write};
 use crate::app_state::AppState;
 use crate::graph_operations::GraphOps;
 use crate::import;
@@ -485,7 +485,10 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
         
         // Authorize agent for graph
         {
-            let (mut graph_registry, mut agent_registry) = app_state.lock_registries_for_write()
+            let (mut graph_registry, mut agent_registry) = lock_registries_for_write(
+                &app_state.graph_registry,
+                &app_state.agent_registry
+            )
                 ?;
             
             agent_registry.authorize_agent_for_graph(
@@ -545,7 +548,10 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
         
         // Deauthorize agent from graph
         {
-            let (mut graph_registry, mut agent_registry) = app_state.lock_registries_for_write()
+            let (mut graph_registry, mut agent_registry) = lock_registries_for_write(
+                &app_state.graph_registry,
+                &app_state.agent_registry
+            )
                 ?;
             
             agent_registry.deauthorize_agent_from_graph(
@@ -627,7 +633,7 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
         
         // Show conversation stats if agent is loaded
         if is_active {
-            let agents = app_state.agents.read().await;
+            let agents = app_state.agents.read_or_panic("show agent status - read agents").await;
             if let Some(agent) = agents.get(&resolved_id) {
                 info!("  Conversation Messages: {}", agent.conversation_history.len());
             }
@@ -666,7 +672,7 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
 /// Show CLI status information
 pub async fn show_cli_status(app_state: &Arc<AppState>) -> Result<()> {
     let graphs = {
-        let registry_guard = app_state.graph_registry.read().unwrap();
+        let registry_guard = app_state.graph_registry.read_or_panic("show cli status - graph registry");
         registry_guard.get_all_graphs()
     };
     
@@ -682,7 +688,7 @@ pub async fn show_cli_status(app_state: &Arc<AppState>) -> Result<()> {
     
     if !open_graphs.is_empty() {
         {
-            let registry_guard = app_state.graph_registry.read().unwrap();
+            let registry_guard = app_state.graph_registry.read_or_panic("show cli status - graph registry");
             info!("📂 {} open graph(s):", open_graphs.len());
             for graph_id in &open_graphs {
                 if let Some(graph_info) = registry_guard.get_graph(graph_id) {

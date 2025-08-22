@@ -82,6 +82,7 @@ use tracing::{error, warn};
 use uuid::Uuid;
 
 use crate::error::*;
+use crate::lock::AsyncRwLockExt;
 use crate::AppState;
 
 /// WebSocket connection state
@@ -274,7 +275,7 @@ pub async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
 
     // Add connection to state
     if let Some(ref connections) = state.ws_connections {
-        connections.write().await.insert(connection_id.clone(), ws_connection);
+        connections.write_or_panic("websocket handler - insert connection").await.insert(connection_id.clone(), ws_connection);
     }
 
     // Spawn task to handle sending messages
@@ -335,7 +336,7 @@ pub async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     
     // Remove from connections map
     if let Some(ref connections) = state.ws_connections {
-        connections.write().await.remove(&connection_id);
+        connections.write_or_panic("websocket handler - remove connection").await.remove(&connection_id);
     }
     
     // Cancel tasks explicitly to prevent them from becoming zombie threads
@@ -358,7 +359,7 @@ async fn handle_message(
                 Ok(command) => {
                     // Get current agent for authorization checks
                     let current_agent_id = if let Some(ref connections) = state.ws_connections {
-                        let conns = connections.read().await;
+                        let conns = connections.read_or_panic("heartbeat - read connections").await;
                         conns.get(connection_id).and_then(|conn| conn.current_agent_id)
                     } else {
                         None

@@ -9,6 +9,8 @@ cymbiont/
 │   ├── app_state.rs               # Centralized application state with agent management
 │   ├── config.rs                  # YAML configuration management
 │   ├── utils.rs                   # Process management and utilities
+│   ├── error.rs                   # Hierarchical error system with domain-specific types
+│   ├── lock.rs                    # Lock handling utilities with panic-on-poison strategy
 │   ├── graph_manager.rs           # Petgraph-based knowledge graph engine
 │   ├── graph_operations.rs        # Multi-agent graph operations with runtime authorization
 │   ├── agent/                     # Agent abstraction layer
@@ -116,6 +118,43 @@ The build.rs script performs two critical functions:
 **Purpose**: YAML configuration loading with CLI overrides  
 **Key types**: `Config`, `BackendConfig`, `DevelopmentConfig`
 
+### error.rs
+**Purpose**: Hierarchical error system with domain-specific types for consistent error handling
+**Key types**: 
+- `CymbiontError` - Root error type wrapping all domain errors
+- `StorageError` - Registry, persistence, transaction errors
+- `AgentError` - LLM backend and tool errors
+- `GraphError` - Graph operations and lifecycle errors
+- `ServerError` - WebSocket, HTTP, authentication errors
+- `ImportError` - Data import and parsing errors
+- `ConfigError` - Configuration parsing errors
+**Key patterns**:
+- Global `Result<T>` type alias for consistency
+- Automatic `From` trait implementations for error conversion
+- Convenience constructors for type-safe error creation (e.g., `StorageError::graph_registry("message")`)
+- Idiomatic `?` operator usage throughout codebase
+**Usage example**:
+```rust
+use crate::error::*;
+fn example() -> Result<()> {
+    // Create domain-specific errors
+    return Err(StorageError::not_found("graph", "id", graph_id).into());
+    // Or use ? for automatic conversion
+    serde_json::from_str(&data)?;  // Automatically converts to StorageError::Serialization
+}
+
+### lock.rs
+**Purpose**: Lock handling utilities implementing panic-on-poison strategy with contention detection
+**Key traits**:
+- `RwLockExt` - Extension for `std::sync::RwLock` with `read_or_panic()` and `write_or_panic()`
+- `AsyncRwLockExt` - Extension for `tokio::sync::RwLock` with consistent async API
+**Key features**:
+- Panic-on-poison for data integrity (sync locks only)
+- Automatic lock contention warnings in debug builds
+- Descriptive context messages for debugging
+- `lock_registries_for_write()` - Enforces canonical lock ordering
+**Design rationale**: Poisoned locks indicate data corruption; immediate panic preferred over recovery attempts
+
 ### app_state.rs
 **Purpose**: Centralized application state management and coordination with agent integration
 **Key types**: `AppState` - coordinates graph managers, registries, agents, transactions, and WebSocket connections
@@ -131,6 +170,7 @@ The build.rs script performs two critical functions:
 - `get_transaction_coordinator()` - access to per-graph WAL
 - `cleanup_and_save()` - saves all agents and graphs on shutdown
 **Agent state**: Manages `agents: HashMap<Uuid, Agent>` and `agent_registry: AgentRegistry`
+**Lock usage**: Uses `read_or_panic()` and `write_or_panic()` for all lock operations
 **Role**: Acts as the central nervous system, connecting all components without implementing business logic
 
 ### server/http_api.rs
@@ -181,7 +221,7 @@ The build.rs script performs two critical functions:
 ### storage/graph_registry.rs
 **Purpose**: Multi-graph UUID tracking and management with open/closed state and agent associations
 **Key types**: Uses `Uuid` type throughout with custom JSON serialization
-**Concurrency**: Uses `Arc<RwLock<GraphRegistry>>` with development-time contention detection
+**Concurrency**: Uses `Arc<RwLock<GraphRegistry>>` with panic-on-poison strategy
 **Key operations**: 
 - `register_graph()`, `remove_graph()` - graph lifecycle
 - `open_graph()`, `close_graph()` - explicit state management
@@ -191,7 +231,7 @@ The build.rs script performs two critical functions:
 - `create_new_graph_complete()`, `delete_graph_complete()` - complete workflows with prime agent authorization
 **Data structure**: Tracks `open_graphs: HashSet<Uuid>` and `authorized_agents` per graph
 **Persistence**: Open graph state persists across restarts for automatic recovery
-**Safety pattern**: Write operations use `debug_assert!(registry.try_write().is_ok())` as tripwires to detect lock contention during development
+**Lock handling**: All lock operations use `write_or_panic()` with automatic contention detection
 
 ### storage/agent_registry.rs
 **Purpose**: Agent lifecycle and authorization management parallel to GraphRegistry
@@ -273,7 +313,8 @@ The build.rs script performs two critical functions:
 - **Agent operations**: Chat, selection, history, administration, authorization management
 - **System commands**: Auth, test, freeze/unfreeze for deterministic testing
 **Key features**: Async task spawning per message, smart graph/agent resolution, prime agent defaults
-**Error handling**: Idiomatic Rust pattern using `?` operator for error propagation - handlers return errors that bubble up to a central catch point where they're sent as error responses
+**Error handling**: Uses hierarchical error system with domain-specific types (ServerError, etc.)
+**Lock handling**: All async locks use `read_or_panic()` and `write_or_panic()` extension methods
 **Full API reference**: See `src/server/CLAUDE.md` for complete command documentation
 
 ### import/logseq.rs
@@ -477,7 +518,7 @@ The shutdown sequence runs `cleanup_and_save()` to close WebSocket connections, 
 **Lock Ordering**: To prevent deadlocks, all code that needs both `graph_registry` and `agent_registry` locks must acquire them in a consistent order:
 1. `graph_registry` (SyncRwLock) - Always acquired first
 2. `agent_registry` (SyncRwLock) - Acquired after graph_registry
-3. Use `AppState::lock_registries_for_write()` helper method to ensure correct ordering
+3. Use `lock_registries_for_write()` function from `lock.rs` to ensure correct ordering
 
 ### autodebugger/
 **Purpose**: Git submodule providing LLM-oriented developer utilities  

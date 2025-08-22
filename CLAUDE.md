@@ -58,6 +58,8 @@ env RUST_LOG=debug cargo test -- --nocapture 2>&1 | tee test_output.log  # Captu
   - **graph_manager.rs**: Generic knowledge graph storage engine using petgraph
   - **config.rs**: YAML configuration loading and validation
   - **utils.rs**: Process management, datetime parsing, general utilities
+  - **error.rs**: Hierarchical error system with domain-specific types
+  - **lock.rs**: Lock handling utilities with panic-on-poison strategy
   - **app_state.rs**: Centralized application state management with agent integration
   - **graph_operations.rs**: Multi-agent graph operations with runtime authorization
   - **agent/**: Agent abstraction layer
@@ -93,7 +95,8 @@ env RUST_LOG=debug cargo test -- --nocapture 2>&1 | tee test_output.log  # Captu
 
 ## Codebase Guidelines
 - Logging: use `tracing` macros - `error!()`, `warn!()`, `info!()`, `debug!()`, `trace!()` (enforced by build.rs)
-- Error handling: use `thiserror` for custom error types; define module-specific `Error` enums and `type Result<T>` aliases
+- Error handling: use the centralized `error.rs` system with domain-specific types (StorageError, ServerError, etc.) and the global `Result<T>` type alias
+- Lock handling: use `read_or_panic()` and `write_or_panic()` from the `lock.rs` module for all RwLock operations
 - Whenever you update `config.example.yaml` ensure that you also update `config.yaml`
 - Don't make live LLM calls during tests
 - When modifying startup logic in `main.rs`, ensure BOTH the CLI path and server path are updated equally. Extract shared logic into functions to avoid divergence.

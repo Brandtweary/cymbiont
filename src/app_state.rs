@@ -88,7 +88,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock as SyncRwLock, RwLockWriteGuard as SyncRwLockWriteGuard, Mutex};
+use std::sync::{Arc, RwLock as SyncRwLock, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::fs;
 use std::time::Duration;
@@ -102,6 +102,7 @@ use crate::{
     graph_manager::GraphManager,
     config::{load_config, Config},
     storage::{GraphRegistry, AgentRegistry, TransactionLog, TransactionCoordinator, graph_registry::GraphInfo, transaction},
+    lock::{RwLockExt, AsyncRwLockExt, lock_registries_for_write},
 };
 
 // Re-export the real WsConnection from server module
@@ -269,7 +270,7 @@ impl AppState {
             use crate::server::auth::initialize_auth;
             let token = initialize_auth(&app_state).await?;
             if !app_state.config.auth.disabled {
-                let mut token_guard = app_state.auth_token.write().await;
+                let mut token_guard = app_state.auth_token.write_or_panic("initialize auth token").await;
                 *token_guard = Some(token);
             }
         }
@@ -277,34 +278,12 @@ impl AppState {
         Ok(app_state)
     }
     
-    /// Acquire both registries for write access in the correct order to prevent deadlocks
-    /// 
-    /// This helper enforces the canonical lock ordering: graph_registry before agent_registry.
-    /// Always use this method when you need write access to both registries.
-    /// 
-    /// # Example
-    /// ```
-    /// let (mut graph_registry, mut agent_registry) = state.lock_registries_for_write()?;
-    /// // Perform operations requiring both registries
-    /// agent_registry.authorize_agent_for_graph(&agent_id, &graph_id, &mut graph_registry)?;
-    /// ```
-    pub fn lock_registries_for_write(&self) 
-        -> Result<(
-            SyncRwLockWriteGuard<GraphRegistry>,
-            SyncRwLockWriteGuard<AgentRegistry>
-        )> 
-    {
-        // Always acquire graph_registry first (canonical ordering)
-        let graph_registry = self.graph_registry.write_or_panic("lock registries for write - graph registry");
-        let agent_registry = self.agent_registry.write_or_panic("lock registries for write - agent registry");
-        Ok((graph_registry, agent_registry))
-    }
     
     /// Get or create graph resources (manager + coordinator) for the given graph ID
     /// 
     /// Resources are bundled together to ensure they're always created/destroyed atomically.
     pub async fn get_or_create_graph_manager(&self, graph_id: &Uuid) -> Result<()> {
-        let resources = self.graph_resources.read().await;
+        let resources = self.graph_resources.read_or_panic("read graph resources").await;
         
         // Check if resources already exist
         if resources.contains_key(graph_id) {
@@ -315,7 +294,7 @@ impl AppState {
         drop(resources);
         
         // Acquire write lock to create new resources
-        let mut resources = self.graph_resources.write().await;
+        let mut resources = self.graph_resources.write_or_panic("get or create graph manager - write resources").await;
         
         // Double-check pattern - another thread may have created it
         if resources.contains_key(graph_id) {
@@ -347,7 +326,7 @@ impl AppState {
     
     /// Get the transaction coordinator for a specific graph
     pub async fn get_transaction_coordinator(&self, graph_id: &Uuid) -> Option<Arc<TransactionCoordinator>> {
-        let resources = self.graph_resources.read().await;
+        let resources = self.graph_resources.read_or_panic("read graph resources").await;
         resources.get(graph_id).map(|r| r.coordinator.clone())
     }
     
@@ -376,13 +355,8 @@ impl AppState {
         // - Create new empty graph if doesn't exist
         self.get_or_create_graph_manager(graph_id).await?;
         
-        // Debug assertion to fail fast if another thread holds the write lock
-        debug_assert!(
-            self.graph_registry.try_write().is_ok(),
-            "Registry write lock unavailable - another thread may be holding it"
-        );
-        
         // Update registry (single source of truth)
+        // Debug assertion is now built into write_or_panic
         let mut registry = self.graph_registry.write_or_panic("open graph - write registry");
         registry.open_graph(graph_id)
             .map_err(|e| CymbiontError::Other(format!("Failed to open graph: {}", e)))?;
@@ -402,9 +376,9 @@ impl AppState {
         
         // Save graph if transactions were recovered
         if count > 0 {
-            let resources = self.graph_resources.read().await;
+            let resources = self.graph_resources.read_or_panic("read graph resources").await;
             if let Some(graph_resources) = resources.get(graph_id) {
-                let mut manager = graph_resources.manager.write().await;
+                let mut manager = graph_resources.manager.write_or_panic("run graph recovery - write manager").await;
                 transaction::save_graph_after_recovery_helper(&mut *manager, graph_id).await;
             }
         }
@@ -487,7 +461,10 @@ impl AppState {
     ) -> Result<GraphInfo> {
         // Delegate complete workflow to GraphRegistry
         let graph_info = {
-            let (mut graph_registry, mut agent_registry) = self.lock_registries_for_write()?;
+            let (mut graph_registry, mut agent_registry) = lock_registries_for_write(
+                &self.graph_registry,
+                &self.agent_registry
+            )?;
             
             graph_registry.create_new_graph_complete(name, description, &mut agent_registry)
                 .map_err(|e| CymbiontError::Other(format!("Failed to create graph: {}", e)))?
@@ -514,7 +491,7 @@ impl AppState {
         
         // Remove from memory resources (AppState-specific coordination)
         {
-            let mut resources = self.graph_resources.write().await;
+            let mut resources = self.graph_resources.write_or_panic("get or create graph manager - write resources").await;
             resources.remove(graph_id);
         }
         
@@ -527,11 +504,11 @@ impl AppState {
     /// the manager and coordinator atomically, preventing inconsistent state.
     pub async fn close_graph(&self, graph_id: &Uuid) -> Result<()> {
         // Get the resources to save and close
-        let mut resources = self.graph_resources.write().await;
+        let mut resources = self.graph_resources.write_or_panic("get or create graph manager - write resources").await;
         
         if let Some(graph_resources) = resources.get(graph_id) {
             // Save the graph before removing from memory
-            graph_resources.manager.write().await.save_graph()?;
+            graph_resources.manager.write_or_panic("close graph - save").await.save_graph()?;
             
             // Flush and close the transaction coordinator
             if let Err(e) = graph_resources.coordinator.close().await {
@@ -545,13 +522,8 @@ impl AppState {
         drop(resources);
         
         // Step 4: Update registry (single source of truth)
-        // Debug assertion to fail fast if another thread holds the write lock
-        debug_assert!(
-            self.graph_registry.try_write().is_ok(),
-            "Registry write lock unavailable - another thread may be holding it"
-        );
-        
-        let mut registry = self.graph_registry.write_or_panic("open graph - write registry");
+        // Debug assertion is now built into write_or_panic
+        let mut registry = self.graph_registry.write_or_panic("close graph - write registry");
         registry.close_graph(graph_id)
             .map_err(|e| CymbiontError::Other(format!("Failed to close graph: {}", e)))?;
         
@@ -565,7 +537,7 @@ impl AppState {
     /// 
     /// Loads the agent from disk if not already in memory.
     pub async fn get_or_load_agent(&self, agent_id: &Uuid) -> Result<()> {
-        let agents = self.agents.read().await;
+        let agents = self.agents.read_or_panic("get or load agent - read agents").await;
         
         // Check if agent already loaded
         if agents.contains_key(agent_id) {
@@ -576,7 +548,7 @@ impl AppState {
         drop(agents);
         
         // Acquire write lock to load agent
-        let mut agents = self.agents.write().await;
+        let mut agents = self.agents.write_or_panic("get or load agent - write agents").await;
         
         // Double-check pattern - another thread may have loaded it
         if agents.contains_key(agent_id) {
@@ -620,7 +592,7 @@ impl AppState {
     /// Simplified workflow using downstream registry methods.
     pub async fn deactivate_agent(&self, agent_id: &Uuid) -> Result<()> {
         // Save and unload agent from memory (AppState-specific coordination)
-        let mut agents = self.agents.write().await;
+        let mut agents = self.agents.write_or_panic("get or load agent - write agents").await;
         if let Some(mut agent) = agents.remove(agent_id) {
             agent.save()
                 .map_err(|e| CymbiontError::Other(format!("Failed to save agent before deactivation: {:?}", e)))?;
@@ -648,7 +620,7 @@ impl AppState {
     pub async fn cleanup_and_save(&self) {
         // Close all WebSocket connections first
         if let Some(ref connections) = self.ws_connections {
-            let mut conn_map = connections.write().await;
+            let mut conn_map = connections.write_or_panic("cleanup connections").await;
             let connection_count = conn_map.len();
             
             if connection_count > 0 {
@@ -667,11 +639,11 @@ impl AppState {
         }
         
         // Save all loaded graphs and close transaction logs
-        let resources = self.graph_resources.read().await;
+        let resources = self.graph_resources.read_or_panic("read graph resources").await;
         
         for (graph_id, graph_resources) in resources.iter() {
             // Save graph
-            match graph_resources.manager.write().await.save_graph() {
+            match graph_resources.manager.write_or_panic("save graph on cleanup").await.save_graph() {
                 Ok(_) => {
                     info!("✅ Saved graph: {}", graph_id);
                 }
@@ -695,7 +667,7 @@ impl AppState {
         }
         
         // Save all active agents
-        let mut agents = self.agents.write().await;
+        let mut agents = self.agents.write_or_panic("get or load agent - write agents").await;
         for (agent_id, agent) in agents.iter_mut() {
             if let Err(e) = agent.save() {
                 error!("Failed to save agent {}: {:?}", agent_id, e);
@@ -739,7 +711,7 @@ impl AppState {
         }
         
         // Get transaction coordinator from bundled resources
-        let resources = self.graph_resources.read().await;
+        let resources = self.graph_resources.read_or_panic("read graph resources").await;
         let graph_resources = resources.get(graph_id)
             .ok_or_else(|| format!("Graph resources not found for graph '{}'", graph_id))?;
         
@@ -751,15 +723,15 @@ impl AppState {
         let tx_id = coordinator.create_transaction(operation).await?;
         
         // Check freeze state and wait if frozen
-        while *self.operation_freeze.read().await {
+        while *self.operation_freeze.read_or_panic("check freeze state").await {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
         
         // Get graph manager and execute operation
-        let resources = self.graph_resources.read().await;
+        let resources = self.graph_resources.read_or_panic("read graph resources").await;
         let graph_resources = resources.get(graph_id)
             .ok_or_else(|| format!("Graph resources not found for graph '{}'", graph_id))?;
-        let mut manager = graph_resources.manager.write().await;
+        let mut manager = graph_resources.manager.write_or_panic("with graph transaction - write manager").await;
         
         
         // Execute the operation
@@ -783,7 +755,7 @@ impl AppState {
         let mut total_active = 0;
         
         // Initiate shutdown on all transaction coordinators
-        let resources = self.graph_resources.read().await;
+        let resources = self.graph_resources.read_or_panic("read graph resources").await;
         for (_graph_id, graph_resources) in resources.iter() {
             let active_count = graph_resources.coordinator.initiate_shutdown().await;
             if active_count > 0 {
@@ -800,7 +772,7 @@ impl AppState {
     /// Wait for all transactions to complete across all graphs
     /// Returns true if all completed, false if timeout
     pub async fn wait_for_transactions(&self, timeout: Duration) -> bool {
-        let resources = self.graph_resources.read().await;
+        let resources = self.graph_resources.read_or_panic("read graph resources").await;
         
         // Create futures for waiting on each coordinator
         let mut wait_futures = Vec::new();
@@ -819,7 +791,7 @@ impl AppState {
     
     /// Force flush all transaction coordinators for immediate shutdown
     pub async fn force_flush_transactions(&self) {
-        let resources = self.graph_resources.read().await;
+        let resources = self.graph_resources.read_or_panic("read graph resources").await;
         for (graph_id, graph_resources) in resources.iter() {
             if let Err(e) = graph_resources.coordinator.force_shutdown().await {
                 error!("Failed to force flush transaction log for graph {}: {}", graph_id, e);

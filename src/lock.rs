@@ -5,11 +5,60 @@
 //! a thread panicked while holding the lock, data integrity cannot be
 //! guaranteed. For a data-critical application like Cymbiont, we prefer
 //! to panic rather than attempt recovery with potentially corrupted state.
+//!
+//! ## Features
+//!
+//! - **Panic-on-poison**: Immediate panic when encountering poisoned locks
+//! - **Contention detection**: Automatic warnings for lock contention in debug builds
+//! - **Descriptive contexts**: All lock operations include context for debugging
+//! - **Unified API**: Same interface for both sync and async locks
+//! - **Lock ordering**: Helper functions to prevent deadlocks
+//!
+//! ## Usage
+//!
+//! ```rust
+//! use crate::lock::RwLockExt;
+//! use std::sync::RwLock;
+//! 
+//! let data = RwLock::new(42);
+//! 
+//! // Read with panic-on-poison
+//! let value = data.read_or_panic("reading configuration");
+//! 
+//! // Write with contention detection
+//! let mut value = data.write_or_panic("updating configuration");
+//! *value = 100;
+//! ```
+//!
+//! ## Async Locks
+//!
+//! ```rust
+//! use crate::lock::AsyncRwLockExt;
+//! use tokio::sync::RwLock;
+//! 
+//! let data = RwLock::new(42);
+//! 
+//! // Async locks can't be poisoned, but API is consistent
+//! let value = data.read_or_panic("async read").await;
+//! let mut value = data.write_or_panic("async write").await;
+//! ```
+//!
+//! ## Lock Ordering
+//!
+//! To prevent deadlocks when multiple locks are needed:
+//!
+//! ```rust
+//! use crate::lock::lock_registries_for_write;
+//! 
+//! // Always acquires graph_registry before agent_registry
+//! let (graph_reg, agent_reg) = lock_registries_for_write(
+//!     &app_state.graph_registry,
+//!     &app_state.agent_registry
+//! )?;
+//! ```
 
-// TODO: This module was created but not integrated - needs proper integration
-
-use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
-use crate::error::{CymbiontError, LockError};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use tracing::warn;
 
 /// Extension trait for std::sync::RwLock to simplify error handling
 /// 
@@ -46,31 +95,7 @@ pub trait RwLockExt<T> {
     /// Panics if the lock is poisoned, indicating data integrity issues
     fn write_or_panic(&self, context: &str) -> RwLockWriteGuard<T>;
 
-    /// Read the lock or return an error
-    /// 
-    /// This method provides error handling for cases where panic-on-poison
-    /// is not appropriate (e.g., optional features, graceful degradation).
-    /// Most Cymbiont code should use `read_or_panic` instead.
-    fn read_or_error(&self, context: &str) -> Result<RwLockReadGuard<T>, CymbiontError>;
 
-    /// Write to the lock or return an error
-    /// 
-    /// This method provides error handling for cases where panic-on-poison
-    /// is not appropriate (e.g., optional features, graceful degradation).
-    /// Most Cymbiont code should use `write_or_panic` instead.
-    fn write_or_error(&self, context: &str) -> Result<RwLockWriteGuard<T>, CymbiontError>;
-
-    /// Check if lock can be read without blocking (for contention detection)
-    /// 
-    /// This is primarily used during development to detect lock contention
-    /// issues. In production, contention detection may be disabled.
-    fn can_read_without_blocking(&self) -> bool;
-
-    /// Check if lock can be written without blocking (for contention detection)
-    /// 
-    /// This is primarily used during development to detect lock contention
-    /// issues. In production, contention detection may be disabled.
-    fn can_write_without_blocking(&self) -> bool;
 }
 
 impl<T> RwLockExt<T> for RwLock<T> {
@@ -87,6 +112,18 @@ impl<T> RwLockExt<T> for RwLock<T> {
     }
 
     fn write_or_panic(&self, context: &str) -> RwLockWriteGuard<T> {
+        // Check for lock contention in debug builds and warn (not panic)
+        #[cfg(debug_assertions)]
+        {
+            if self.try_write().is_err() {
+                warn!(
+                    "⚠️ Lock contention detected during '{}': another thread is holding the lock. \
+                    This may indicate a performance issue or the freeze mechanism in tests.",
+                    context
+                );
+            }
+        }
+        
         self.write().unwrap_or_else(|poison_error| {
             panic!(
                 "RwLock poisoned during write operation: {}. \
@@ -98,86 +135,10 @@ impl<T> RwLockExt<T> for RwLock<T> {
         })
     }
 
-    fn read_or_error(&self, context: &str) -> Result<RwLockReadGuard<T>, CymbiontError> {
-        self.read().map_err(|poison_error| {
-            CymbiontError::Lock(LockError::poisoned(format!(
-                "Lock poisoned during read operation: {}. Error: {}",
-                context, poison_error
-            )))
-        })
-    }
 
-    fn write_or_error(&self, context: &str) -> Result<RwLockWriteGuard<T>, CymbiontError> {
-        self.write().map_err(|poison_error| {
-            CymbiontError::Lock(LockError::poisoned(format!(
-                "Lock poisoned during write operation: {}. Error: {}",
-                context, poison_error
-            )))
-        })
-    }
-
-    fn can_read_without_blocking(&self) -> bool {
-        self.try_read().is_ok()
-    }
-
-    fn can_write_without_blocking(&self) -> bool {
-        self.try_write().is_ok()
-    }
 }
 
-/// Extension trait for Arc<RwLock<T>> which is commonly used in Cymbiont
-/// 
-/// This provides the same panic-on-poison behavior for Arc-wrapped locks.
-pub trait ArcRwLockExt<T> {
-    /// Read the lock or panic on poison
-    fn read_or_panic(&self, context: &str) -> RwLockReadGuard<T>;
 
-    /// Write to the lock or panic on poison
-    fn write_or_panic(&self, context: &str) -> RwLockWriteGuard<T>;
-
-    /// Read the lock or return an error
-    fn read_or_error(&self, context: &str) -> Result<RwLockReadGuard<T>, CymbiontError>;
-
-    /// Write to the lock or return an error
-    fn write_or_error(&self, context: &str) -> Result<RwLockWriteGuard<T>, CymbiontError>;
-}
-
-impl<T> ArcRwLockExt<T> for std::sync::Arc<RwLock<T>> {
-    fn read_or_panic(&self, context: &str) -> RwLockReadGuard<T> {
-        self.as_ref().read_or_panic(context)
-    }
-
-    fn write_or_panic(&self, context: &str) -> RwLockWriteGuard<T> {
-        self.as_ref().write_or_panic(context)
-    }
-
-    fn read_or_error(&self, context: &str) -> Result<RwLockReadGuard<T>, CymbiontError> {
-        self.as_ref().read_or_error(context)
-    }
-
-    fn write_or_error(&self, context: &str) -> Result<RwLockWriteGuard<T>, CymbiontError> {
-        self.as_ref().write_or_error(context)
-    }
-}
-
-/// Utility function to check for lock contention (development mode)
-/// 
-/// This function can be used to detect potential deadlock scenarios
-/// during development. It should not be used in production code paths.
-pub fn check_lock_contention<T>(
-    locks: &[(&str, &RwLock<T>)],
-    operation_name: &str,
-) -> Result<(), CymbiontError> {
-    for (lock_name, lock) in locks {
-        if !lock.can_read_without_blocking() && !lock.can_write_without_blocking() {
-            return Err(CymbiontError::Lock(LockError::contention(format!(
-                "Lock contention detected for '{}' during '{}' operation",
-                lock_name, operation_name
-            ))));
-        }
-    }
-    Ok(())
-}
 
 /// Macro to acquire multiple locks in a consistent order to prevent deadlocks
 /// 
@@ -201,10 +162,91 @@ macro_rules! acquire_locks_ordered {
     }};
 }
 
+// ============== ASYNC LOCK SUPPORT ==============
+
+use tokio::sync::{RwLock as AsyncRwLock, RwLockReadGuard as AsyncRwLockReadGuard, RwLockWriteGuard as AsyncRwLockWriteGuard};
+
+/// Extension trait for tokio::sync::RwLock
+/// 
+/// Provides consistent API with sync locks, including debug assertions
+/// for write operations. Note that async locks cannot be poisoned.
+pub trait AsyncRwLockExt<T: 'static> {
+    /// Read the lock asynchronously
+    async fn read_or_panic(&self, context: &str) -> AsyncRwLockReadGuard<'_, T>;
+    
+    /// Write to the lock asynchronously with contention detection
+    async fn write_or_panic(&self, context: &str) -> AsyncRwLockWriteGuard<'_, T>;
+}
+
+impl<T: 'static> AsyncRwLockExt<T> for AsyncRwLock<T> {
+    async fn read_or_panic(&self, _context: &str) -> AsyncRwLockReadGuard<'_, T> {
+        // Async locks can't be poisoned, just await
+        self.read().await
+    }
+    
+    async fn write_or_panic(&self, context: &str) -> AsyncRwLockWriteGuard<'_, T> {
+        // Check for lock contention in debug builds and warn (not panic)
+        #[cfg(debug_assertions)]
+        {
+            if self.try_write().is_err() {
+                warn!(
+                    "⚠️ Lock contention detected during '{}': another task is holding the lock. \
+                    This may indicate a performance issue or the freeze mechanism in tests.",
+                    context
+                );
+            }
+        }
+        
+        self.write().await
+    }
+}
+
+impl<T: 'static> AsyncRwLockExt<T> for Arc<AsyncRwLock<T>> {
+    async fn read_or_panic(&self, context: &str) -> AsyncRwLockReadGuard<'_, T> {
+        self.as_ref().read_or_panic(context).await
+    }
+    
+    async fn write_or_panic(&self, context: &str) -> AsyncRwLockWriteGuard<'_, T> {
+        self.as_ref().write_or_panic(context).await
+    }
+}
+
+// ============== LOCK ORDERING ==============
+
+use crate::storage::{GraphRegistry, AgentRegistry};
+use std::sync::RwLock as SyncRwLock;
+use std::sync::RwLockWriteGuard as SyncRwLockWriteGuard;
+
+/// Acquire both registries for write access in the correct order to prevent deadlocks
+/// 
+/// This enforces the canonical lock ordering: graph_registry before agent_registry.
+/// Always use this function when you need write access to both registries.
+/// 
+/// # Example
+/// ```
+/// let (mut graph_registry, mut agent_registry) = lock_registries_for_write(
+///     &app_state.graph_registry,
+///     &app_state.agent_registry
+/// )?;
+/// // Perform operations requiring both registries
+/// agent_registry.authorize_agent_for_graph(&agent_id, &graph_id, &mut graph_registry)?;
+/// ```
+pub fn lock_registries_for_write<'a>(
+    graph_registry: &'a Arc<SyncRwLock<GraphRegistry>>,
+    agent_registry: &'a Arc<SyncRwLock<AgentRegistry>>,
+) -> crate::error::Result<(
+    SyncRwLockWriteGuard<'a, GraphRegistry>,
+    SyncRwLockWriteGuard<'a, AgentRegistry>
+)> {
+    // Always acquire graph_registry first (canonical ordering)
+    let graph_guard = graph_registry.write_or_panic("lock registries for write - graph registry");
+    let agent_guard = agent_registry.write_or_panic("lock registries for write - agent registry");
+    Ok((graph_guard, agent_guard))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     
     
 
@@ -226,55 +268,5 @@ mod tests {
         assert_eq!(*guard, 100);
     }
 
-    #[test]
-    fn test_read_or_error_success() {
-        let lock = RwLock::new(42);
-        let guard = lock.read_or_error("test read").unwrap();
-        assert_eq!(*guard, 42);
-    }
 
-    #[test]
-    fn test_write_or_error_success() {
-        let lock = RwLock::new(42);
-        {
-            let mut guard = lock.write_or_error("test write").unwrap();
-            *guard = 100;
-        }
-        let guard = lock.read_or_error("test read after write").unwrap();
-        assert_eq!(*guard, 100);
-    }
-
-    #[test]
-    fn test_arc_rwlock_ext() {
-        let lock = Arc::new(RwLock::new(42));
-        let guard = lock.read_or_panic("test arc read");
-        assert_eq!(*guard, 42);
-    }
-
-    #[test]
-    fn test_can_read_without_blocking() {
-        let lock = RwLock::new(42);
-        assert!(lock.can_read_without_blocking());
-        
-        let _guard = lock.read().unwrap();
-        assert!(lock.can_read_without_blocking()); // Multiple readers allowed
-    }
-
-    #[test]
-    fn test_can_write_without_blocking() {
-        let lock = RwLock::new(42);
-        assert!(lock.can_write_without_blocking());
-        
-        let _guard = lock.write().unwrap();
-        assert!(!lock.can_write_without_blocking()); // Write lock is exclusive
-    }
-
-    #[test]
-    fn test_check_lock_contention_no_contention() {
-        let lock1 = RwLock::new(1);
-        let lock2 = RwLock::new(2);
-        
-        let locks = vec![("lock1", &lock1), ("lock2", &lock2)];
-        assert!(check_lock_contention(&locks, "test operation").is_ok());
-    }
 }

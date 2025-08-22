@@ -35,6 +35,7 @@ use crate::app_state::AppState;
 use crate::graph_operations::GraphOps;
 use super::logseq;
 use crate::error::*;
+use crate::lock::AsyncRwLockExt;
 
 /// Result of a Logseq import operation
 #[derive(Debug)]
@@ -84,12 +85,12 @@ pub async fn import_logseq_graph(
     
     // Import the data
     let (page_count, block_count, errors) = {
-        let resources = app_state.graph_resources.read().await;
+        let resources = app_state.graph_resources.read_or_panic("apply PKM data - read resources").await;
         
         let graph_resources = resources.get(&graph_id)
             .ok_or_else(|| ImportError::validation(format!("Graph not found for ID: {}", graph_id)))?;
         
-        let mut graph_manager = graph_resources.manager.write().await;
+        let mut graph_manager = graph_resources.manager.write_or_panic("apply PKM data - write manager").await;
         
         // Disable auto-save during bulk import for performance
         graph_manager.disable_auto_save();

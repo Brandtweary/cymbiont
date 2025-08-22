@@ -21,7 +21,6 @@
 
 use std::process::Command;
 use std::fs;
-use std::error::Error;
 use std::net::TcpListener;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -30,6 +29,7 @@ use serde::{Serialize, Deserialize};
 use serde_json;
 use tracing::{error, trace, warn};
 use crate::config::BackendConfig;
+use crate::error::*;
 
 
 // ===== Process Management =====
@@ -156,7 +156,7 @@ pub fn terminate_previous_instance(filename: &str) -> bool {
 }
 
 // Write server info including actual port
-pub fn write_server_info(host: &str, port: u16, filename: &str) -> Result<(), Box<dyn Error>> {
+pub fn write_server_info(host: &str, port: u16, filename: &str) -> Result<()> {
     trace!("[SERVER-INFO-WRITE] Writing server info to: {}", filename);
     let info = ServerInfo {
         pid: std::process::id(),
@@ -170,7 +170,7 @@ pub fn write_server_info(host: &str, port: u16, filename: &str) -> Result<(), Bo
 }
 
 /// Write just a PID file for process management
-pub fn write_pid_file() -> Result<(), Box<dyn Error>> {
+pub fn write_pid_file() -> Result<()> {
     let pid = std::process::id();
     fs::write(".cymbiont.pid", pid.to_string())?;
     Ok(())
@@ -183,7 +183,7 @@ pub fn remove_pid_file() {
 }
 
 // Helper function to find an available port
-pub fn find_available_port(config: &BackendConfig) -> Result<u16, Box<dyn Error>> {
+pub fn find_available_port(config: &BackendConfig) -> Result<u16> {
     let port = config.port;
     
     if is_port_available(port) {
@@ -199,7 +199,7 @@ pub fn find_available_port(config: &BackendConfig) -> Result<u16, Box<dyn Error>
         }
     }
     
-    Err(Box::<dyn Error>::from("Could not find an available port"))
+    Err("Could not find an available port".into())
 }
 
 // ===== DateTime and JSON Utilities =====

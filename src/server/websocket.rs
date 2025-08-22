@@ -81,6 +81,7 @@ use tokio::time::interval;
 use tracing::{error, warn};
 use uuid::Uuid;
 
+use crate::error::*;
 use crate::AppState;
 
 /// WebSocket connection state
@@ -350,7 +351,7 @@ async fn handle_message(
     msg: Message,
     connection_id: &str,
     state: &Arc<AppState>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<()> {
     match msg {
         Message::Text(text) => {
             match serde_json::from_str::<Command>(&text) {
@@ -366,7 +367,7 @@ async fn handle_message(
                     route_command(command, connection_id, state, current_agent_id).await?;
                 }
                 Err(e) => {
-                    return Err(Box::new(e));
+                    return Err(e.into());
                 }
             }
         }
@@ -387,7 +388,7 @@ async fn route_command(
     connection_id: &str,
     state: &Arc<AppState>,
     current_agent_id: Option<Uuid>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<()> {
     
     // Check authentication for non-auth commands
     #[cfg(debug_assertions)]

@@ -27,31 +27,11 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use thiserror::Error;
 
 use crate::agent::schemas::ToolDefinition;
+use crate::error::*;
 
-/// LLM backend errors
-/// 
-/// Error variants for LLM backend operations including network failures,
-/// malformed responses, and configuration issues.
-#[allow(dead_code)]
-#[derive(Error, Debug)]
-pub enum LLMError {
-    #[error("Connection error: {0}")]
-    ConnectionError(String),
-    
-    #[error("Invalid response: {0}")]
-    InvalidResponse(String),
-    
-    #[error("Model error: {0}")]
-    ModelError(String),
-    
-    #[error("Configuration error: {0}")]
-    ConfigError(String),
-}
 
-pub type LLMResult<T> = Result<T, LLMError>;
 
 /// Configuration for different LLM backends
 /// 
@@ -180,14 +160,14 @@ pub trait LLMBackend: Send + Sync {
         &self,
         messages: &[Message],
         tools: &[ToolDefinition],
-    ) -> LLMResult<LLMResponse>;
+    ) -> Result<LLMResponse>;
     
     /// Check if the backend is available and responsive
     /// 
     /// TODO: Will be used to verify LLM connectivity before operations
     /// in Phase 1 when we integrate real LLM backends.
     #[allow(dead_code)]
-    async fn health_check(&self) -> LLMResult<bool>;
+    async fn health_check(&self) -> Result<bool>;
 }
 
 /// Create an LLM backend from configuration
@@ -227,7 +207,7 @@ impl LLMBackend for MockLLM {
         &self,
         messages: &[Message],
         tools: &[ToolDefinition],
-    ) -> LLMResult<LLMResponse> {
+    ) -> Result<LLMResponse> {
         // For testing: look at the last user message
         if let Some(Message::User { content, echo, .. }) = messages.last() {
             // First priority: if echo is provided, use it
@@ -262,7 +242,7 @@ impl LLMBackend for MockLLM {
         })
     }
     
-    async fn health_check(&self) -> LLMResult<bool> {
+    async fn health_check(&self) -> Result<bool> {
         // Mock is always healthy
         Ok(true)
     }

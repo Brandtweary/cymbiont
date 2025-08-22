@@ -75,25 +75,12 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 use tracing::info;
-use thiserror::Error;
 
 // Import shared UUID serialization utilities
 use crate::storage::registry_utils::{uuid_hashmap_serde, uuid_hashset_serde, uuid_vec_serde};
+use crate::error::*;
 
-/// Agent registry errors
-#[derive(Error, Debug)]
-pub enum AgentRegistryError {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    
-    #[error("JSON error: {0}")]
-    Json(#[from] serde_json::Error),
-    
-    #[error("Validation error: {0}")]
-    ValidationError(String),
-}
 
-type Result<T> = std::result::Result<T, AgentRegistryError>;
 
 /// Minimal metadata about a registered agent
 /// 
@@ -192,9 +179,7 @@ impl AgentRegistry {
             fs::write(registry_path, content)?;
             Ok(())
         } else {
-            Err(AgentRegistryError::ValidationError(
-                "No data directory set for registry".to_string()
-            ))
+            Err(StorageError::agent_registry("No data directory set for registry").into())
         }
     }
 
@@ -227,7 +212,7 @@ impl AgentRegistry {
         // Create new agent metadata
         let data_path = self.data_dir
             .as_ref()
-            .ok_or_else(|| AgentRegistryError::ValidationError("No data directory set".to_string()))?
+            .ok_or_else(|| StorageError::agent_registry("No data directory set"))?
             .join("agents")
             .join(agent_id.to_string());
         
@@ -275,9 +260,7 @@ impl AgentRegistry {
     pub fn activate_agent(&mut self, agent_id: &Uuid) -> Result<AgentInfo> {
         // Validate agent exists
         let agent_info = self.agents.get(agent_id)
-            .ok_or_else(|| AgentRegistryError::ValidationError(
-                format!("Agent '{}' not found in registry", agent_id)
-            ))?
+            .ok_or_else(|| StorageError::not_found("agent", "ID", agent_id.to_string()))?
             .clone();
         
         // Add to active set
@@ -300,9 +283,7 @@ impl AgentRegistry {
         if self.active_agents.remove(agent_id) {
             Ok(())
         } else {
-            Err(AgentRegistryError::ValidationError(
-                format!("Agent '{}' was not active", agent_id)
-            ))
+            Err(StorageError::agent_registry(format!("Agent '{}' was not active", agent_id)).into())
         }
     }
 
@@ -335,7 +316,7 @@ impl AgentRegistry {
             
             // Ensure agent directory exists
             std::fs::create_dir_all(&agent_info.data_path)
-                .map_err(|e| AgentRegistryError::Io(e))?;
+                ?;
             
             // Create prime agent with default MockLLM config
             let mut agent = Agent::new(
@@ -348,7 +329,7 @@ impl AgentRegistry {
             
             // Save the agent to disk
             agent.save()
-                .map_err(|e| AgentRegistryError::ValidationError(format!("Failed to save prime agent: {:?}", e)))?;
+                .map_err(|e| StorageError::agent_registry(format!("Failed to save prime agent: {:?}", e)))?;
             
             info!("👑 Created prime agent: {} ({})", agent_info.name, agent_id);
             
@@ -387,28 +368,20 @@ impl AgentRegistry {
             if self.agents.contains_key(id) {
                 Ok(*id)
             } else {
-                Err(AgentRegistryError::ValidationError(
-                    format!("Agent ID not found: {}", id)
-                ))
+                Err(StorageError::not_found("agent", "ID", id.to_string()).into())
             }
         } else if let Some(name) = agent_name {
             // Find agent by name
             self.agents.values()
                 .find(|a| a.name == name)
                 .map(|a| a.id)
-                .ok_or_else(|| AgentRegistryError::ValidationError(
-                    format!("Agent name not found: {}", name)
-                ))
+                .ok_or_else(|| StorageError::not_found("agent", "name", name).into())
         } else if allow_smart_default {
             // Use prime agent as default
             self.prime_agent_id
-                .ok_or_else(|| AgentRegistryError::ValidationError(
-                    "No prime agent exists. Create an agent first".to_string()
-                ))
+                .ok_or_else(|| StorageError::agent_registry("No prime agent exists. Create an agent first").into())
         } else {
-            Err(AgentRegistryError::ValidationError(
-                "Must specify agent_id or agent_name".to_string()
-            ))
+            Err(StorageError::agent_registry("Must specify agent_id or agent_name").into())
         }
     }
     
@@ -442,9 +415,7 @@ impl AgentRegistry {
     ) -> Result<()> {
         // Get the agent
         let agent = self.agents.get_mut(agent_id)
-            .ok_or_else(|| AgentRegistryError::ValidationError(
-                format!("Agent '{}' not found", agent_id)
-            ))?;
+            .ok_or_else(|| StorageError::not_found("agent", "ID", agent_id.to_string()))?;
         
         // Add graph to agent's authorized list if not already there
         if !agent.authorized_graphs.contains(graph_id) {
@@ -518,9 +489,7 @@ impl AgentRegistry {
     pub fn remove_agent(&mut self, agent_id: &Uuid) -> Result<()> {
         // Get the agent info
         let agent_info = self.agents.get(agent_id)
-            .ok_or_else(|| AgentRegistryError::ValidationError(
-                format!("Agent '{}' not found", agent_id)
-            ))?
+            .ok_or_else(|| StorageError::not_found("agent", "ID", agent_id.to_string()))?
             .clone();
         
         // Archive the agent data if it exists

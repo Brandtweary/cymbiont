@@ -28,31 +28,16 @@
  * These helpers maintain the original AppState behavior while reducing code duplication.
  */
 
-use crate::storage::transaction_log::{Operation, Transaction, TransactionLog, TransactionLogError, TransactionState};
+use crate::storage::transaction_log::{Operation, Transaction, TransactionLog, TransactionState};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{RwLock, Notify};
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use tracing::{warn, error, info};
-use thiserror::Error;
+use crate::error::*;
 
-#[derive(Error, Debug)]
-pub enum TransactionError {
-    #[error("Transaction log error: {0}")]
-    LogError(#[from] TransactionLogError),
-    
-    #[error("Duplicate content already being processed: {0}")]
-    DuplicateContent(String),
-    
-    #[error("Operation failed: {0}")]
-    OperationFailed(String),
-    
-    #[error("Shutdown in progress - no new transactions allowed")]
-    ShutdownInProgress,
-}
 
-pub type Result<T> = std::result::Result<T, TransactionError>;
 
 pub struct TransactionCoordinator {
     log: Arc<TransactionLog>,
@@ -75,7 +60,8 @@ impl TransactionCoordinator {
     
     /// Close the underlying transaction log
     pub async fn close(&self) -> Result<()> {
-        self.log.close().await.map_err(|e| e.into())
+        self.log.close().await.map_err(|e| StorageError::transaction(format!("Failed to close transaction log: {:?}", e)))?;
+        Ok(())
     }
     
     pub async fn begin_transaction(&self, operation: Operation) -> Result<String> {
@@ -163,7 +149,7 @@ impl TransactionCoordinator {
         // Check if shutdown is in progress
         if self.shutdown_requested.load(Ordering::Acquire) {
             warn!("Transaction rejected - graceful shutdown in progress");
-            return Err(TransactionError::ShutdownInProgress);
+            return Err(StorageError::transaction("Shutdown in progress - no new transactions allowed").into());
         }
         
         // Check for duplicate content if applicable
@@ -171,7 +157,7 @@ impl TransactionCoordinator {
             let hash = compute_content_hash(content);
             if self.is_content_pending(&hash).await {
                 warn!("Duplicate content detected in pending transactions - potential race condition. Content hash: {}", hash);
-                return Err(TransactionError::DuplicateContent(hash));
+                return Err(StorageError::transaction(format!("Duplicate content already being processed: {}", hash)).into());
             }
         }
         
@@ -183,16 +169,16 @@ impl TransactionCoordinator {
     pub async fn complete_transaction<T>(
         &self,
         tx_id: &str,
-        result: std::result::Result<T, String>,
+        result: Result<T>,
     ) -> Result<T> {
         match result {
             Ok(value) => {
                 self.commit_transaction(tx_id).await?;
                 Ok(value)
             }
-            Err(error_msg) => {
-                self.abort_transaction(tx_id, &error_msg).await?;
-                Err(TransactionError::OperationFailed(error_msg))
+            Err(error) => {
+                self.abort_transaction(tx_id, &error.to_string()).await?;
+                Err(error)
             }
         }
     }
@@ -264,9 +250,9 @@ impl TransactionCoordinator {
     }
     
     /// Force shutdown - immediately flush transaction log
-    pub async fn force_shutdown(&self) -> Result<()> {
+    pub async fn force_shutdown(&self) -> std::result::Result<(), String> {
         error!("Force shutdown requested - flushing transaction log");
-        self.log.close().await.map_err(|e| e.into())
+        self.log.close().await.map_err(|e| e.to_string())
     }
 }
 
@@ -278,14 +264,13 @@ pub async fn run_single_graph_recovery_helper<E>(
     coordinator: &TransactionCoordinator,
     operation_executor: &E,
     graph_id: &uuid::Uuid,
-) -> std::result::Result<usize, Box<dyn std::error::Error + Send + Sync>>
+) -> Result<usize>
 where
     E: crate::storage::OperationExecutor,
 {
     use crate::storage::OperationExecutor;
     
-    let pending_transactions = coordinator.recover_pending_transactions().await
-        .map_err(|e| Box::<dyn std::error::Error + Send + Sync>::from(format!("Failed to recover transactions: {}", e)))?;
+    let pending_transactions = coordinator.recover_pending_transactions().await?;
     
     let count = pending_transactions.len();
     if count > 0 {
@@ -302,12 +287,10 @@ where
             // Update transaction state based on result
             match result {
                 Ok(()) => {
-                    coordinator.commit_transaction(&tx_id).await
-                        .map_err(|e| Box::<dyn std::error::Error + Send + Sync>::from(e.to_string()))?;
+                    coordinator.commit_transaction(&tx_id).await?
                 }
                 Err(e) => {
-                    coordinator.abort_transaction(&tx_id, &e).await
-                        .map_err(|e| Box::<dyn std::error::Error + Send + Sync>::from(e.to_string()))?;
+                    coordinator.abort_transaction(&tx_id, &e.to_string()).await?;
                     error!("❌ Failed to replay transaction {}: {}", tx_id, e);
                 }
             }

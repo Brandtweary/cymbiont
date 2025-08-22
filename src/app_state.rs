@@ -90,12 +90,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock as SyncRwLock, RwLockWriteGuard as SyncRwLockWriteGuard, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::error::Error;
 use std::fs;
 use std::time::Duration;
 use tokio::sync::{oneshot, RwLock};
 use tracing::{info, error, warn};
 use uuid::Uuid;
+use crate::error::*;
 
 use crate::{
     agent::agent::Agent,
@@ -141,16 +141,16 @@ pub struct AppState {
 
 impl AppState {
     /// Create new AppState for CLI usage (no server components)
-    pub async fn new_cli(config_path: Option<String>, data_dir_override: Option<String>) -> Result<Arc<Self>, Box<dyn Error + Send + Sync>> {
+    pub async fn new_cli(config_path: Option<String>, data_dir_override: Option<String>) -> Result<Arc<Self>> {
         Self::new_internal(config_path, data_dir_override, false).await
     }
     
     /// Create new AppState for server usage (with WebSocket components)  
-    pub async fn new_server(config_path: Option<String>, data_dir_override: Option<String>) -> Result<Arc<Self>, Box<dyn Error + Send + Sync>> {
+    pub async fn new_server(config_path: Option<String>, data_dir_override: Option<String>) -> Result<Arc<Self>> {
         Self::new_internal(config_path, data_dir_override, true).await
     }
     
-    async fn new_internal(config_path: Option<String>, data_dir_override: Option<String>, with_server: bool) -> Result<Arc<Self>, Box<dyn Error + Send + Sync>> {
+    async fn new_internal(config_path: Option<String>, data_dir_override: Option<String>, with_server: bool) -> Result<Arc<Self>> {
         // Load configuration
         let mut config = load_config(config_path);
         
@@ -165,36 +165,36 @@ impl AppState {
             PathBuf::from(&config.data_dir)
         } else {
             std::env::current_dir()
-                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to get current directory: {e}")))?
+                .map_err(|e| CymbiontError::Other(format!("Failed to get current directory: {e}")))?
                 .join(&config.data_dir)
         };
         fs::create_dir_all(&data_dir)
-            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to create data directory: {e}")))?;
+            .map_err(|e| CymbiontError::Other(format!("Failed to create data directory: {e}")))?;
         
         // Initialize graph registry
         let registry_path = data_dir.join("graph_registry.json");
         let mut registry = GraphRegistry::load_or_create(&registry_path, &data_dir)
-            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Graph registry error: {e:?}")))?;
+            ?;
         
         // Ensure at least one graph is open
         registry.ensure_graph_open()
-            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to ensure graph open: {e:?}")))?;
+            ?;
         
         let graph_registry = Arc::new(SyncRwLock::new(registry));
         
         // Initialize agent registry
         let agent_registry_path = data_dir.join("agent_registry.json");
         let mut agent_registry = AgentRegistry::load_or_create(&agent_registry_path, &data_dir)
-            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Agent registry error: {e:?}")))?;
+            ?;
         
         // Ensure prime agent exists (creates it on first run)
         agent_registry.ensure_default_agent()
-            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to ensure prime agent: {e:?}")))?;
+            ?;
         
         
         // Save agent registry after potential prime agent creation
         agent_registry.save()
-            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to save agent registry: {e:?}")))?;
+            ?;
         
         let agent_registry = Arc::new(SyncRwLock::new(agent_registry));
         
@@ -214,8 +214,7 @@ impl AppState {
         
         // Get the open graphs from registry
         let initial_open_graphs = {
-            let registry = graph_registry.read()
-                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to read registry: {}", e)))?;
+            let registry = graph_registry.read_or_panic("app state init - read graph registry");
             registry.get_open_graphs()
         };
         
@@ -240,18 +239,17 @@ impl AppState {
         
         // Load all active agents (ensure at least prime agent is active)
         let initial_active_agents = {
-            let mut registry = app_state.agent_registry.write()
-                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to write agent registry: {}", e)))?;
+            let mut registry = app_state.agent_registry.write_or_panic("app state init - write agent registry");
             
             // If no agents are active, activate the prime agent
             let active_agents = registry.get_active_agents();
             if active_agents.is_empty() {
                 if let Some(prime_id) = registry.get_prime_agent_id() {
                     registry.activate_agent(&prime_id)
-                        .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to activate prime agent: {e:?}")))?;
+                        .map_err(|e| CymbiontError::Other(format!("Failed to activate prime agent: {e:?}")))?;
                     // Save after activation
                     registry.save()
-                        .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to save agent registry: {e:?}")))?;
+                        ?;
                 }
             }
             
@@ -294,20 +292,18 @@ impl AppState {
         -> Result<(
             SyncRwLockWriteGuard<GraphRegistry>,
             SyncRwLockWriteGuard<AgentRegistry>
-        ), Box<dyn Error + Send + Sync>> 
+        )> 
     {
         // Always acquire graph_registry first (canonical ordering)
-        let graph_registry = self.graph_registry.write()
-            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to write graph registry: {}", e)))?;
-        let agent_registry = self.agent_registry.write()
-            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to write agent registry: {}", e)))?;
+        let graph_registry = self.graph_registry.write_or_panic("lock registries for write - graph registry");
+        let agent_registry = self.agent_registry.write_or_panic("lock registries for write - agent registry");
         Ok((graph_registry, agent_registry))
     }
     
     /// Get or create graph resources (manager + coordinator) for the given graph ID
     /// 
     /// Resources are bundled together to ensure they're always created/destroyed atomically.
-    pub async fn get_or_create_graph_manager(&self, graph_id: &Uuid) -> Result<(), Box<dyn Error + Send + Sync>> {
+    pub async fn get_or_create_graph_manager(&self, graph_id: &Uuid) -> Result<()> {
         let resources = self.graph_resources.read().await;
         
         // Check if resources already exist
@@ -330,14 +326,13 @@ impl AppState {
         let data_dir = self.data_dir.join("graphs").join(graph_id.to_string());
         fs::create_dir_all(&data_dir)?;
         
-        let graph_manager = GraphManager::new(data_dir.clone())
-            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to create graph manager for {}: {:?}", graph_id, e)))?;
+        let graph_manager = GraphManager::new(data_dir.clone())?;
         
         // Transaction log is inside the graph-specific directory
         let transaction_log_dir = data_dir.join("transaction_log");
         fs::create_dir_all(&transaction_log_dir)?;
         let transaction_log = Arc::new(TransactionLog::new(transaction_log_dir)
-            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to create transaction log for {}: {:?}", graph_id, e)))?);
+            ?);
         
         let transaction_coordinator = Arc::new(TransactionCoordinator::new(transaction_log));
         
@@ -373,7 +368,7 @@ impl AppState {
     /// 
     /// Note: Transaction recovery should be run separately via run_graph_recovery()
     /// if needed after this method completes successfully.
-    pub async fn open_graph(&self, graph_id: &Uuid) -> Result<(), Box<dyn Error + Send + Sync>> {
+    pub async fn open_graph(&self, graph_id: &Uuid) -> Result<()> {
         // First ensure the graph manager and coordinator exist
         // This will either:
         // - Return immediately if already loaded
@@ -388,10 +383,9 @@ impl AppState {
         );
         
         // Update registry (single source of truth)
-        let mut registry = self.graph_registry.write()
-            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to write registry: {}", e)))?;
+        let mut registry = self.graph_registry.write_or_panic("open graph - write registry");
         registry.open_graph(graph_id)
-            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to open graph: {}", e)))?;
+            .map_err(|e| CymbiontError::Other(format!("Failed to open graph: {}", e)))?;
         
         Ok(())
     }
@@ -399,7 +393,7 @@ impl AppState {
     /// Run transaction recovery for a specific graph
     /// 
     /// Simplified using downstream helper functions.
-    pub async fn run_graph_recovery(self: &Arc<Self>, graph_id: &Uuid) -> Result<usize, Box<dyn Error + Send + Sync>> {
+    pub async fn run_graph_recovery(self: &Arc<Self>, graph_id: &Uuid) -> Result<usize> {
         let coordinator = self.get_transaction_coordinator(graph_id).await
             .ok_or_else(|| format!("No transaction coordinator for graph {}", graph_id))?;
         
@@ -422,10 +416,9 @@ impl AppState {
     /// 
     /// This includes both open and closed graphs to ensure no pending transactions are lost.
     /// Closed graphs are temporarily opened for recovery, then closed again.
-    pub async fn run_all_graphs_recovery(self: &Arc<Self>) -> Result<usize, Box<dyn Error + Send + Sync>> {
+    pub async fn run_all_graphs_recovery(self: &Arc<Self>) -> Result<usize> {
         let all_graphs = {
-            let registry_guard = self.graph_registry.read()
-                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to read registry for recovery: {}", e)))?;
+            let registry_guard = self.graph_registry.read_or_panic("recovery - read graph registry");
             registry_guard.get_all_graphs()
         };
         
@@ -438,8 +431,7 @@ impl AppState {
             
             // Check if graph is already open
             let was_open = {
-                let registry_guard = self.graph_registry.read()
-                    .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to read registry: {}", e)))?;
+                let registry_guard = self.graph_registry.read_or_panic("recovery - check open");
                 registry_guard.is_graph_open(&graph_id)
             };
             
@@ -492,13 +484,13 @@ impl AppState {
         &self,
         name: Option<String>,
         description: Option<String>,
-    ) -> Result<GraphInfo, Box<dyn Error + Send + Sync>> {
+    ) -> Result<GraphInfo> {
         // Delegate complete workflow to GraphRegistry
         let graph_info = {
             let (mut graph_registry, mut agent_registry) = self.lock_registries_for_write()?;
             
             graph_registry.create_new_graph_complete(name, description, &mut agent_registry)
-                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to create graph: {}", e)))?
+                .map_err(|e| CymbiontError::Other(format!("Failed to create graph: {}", e)))?
         };
         
         // Create graph manager resources (AppState-specific coordination)
@@ -510,14 +502,14 @@ impl AppState {
     /// Delete a knowledge graph completely
     /// 
     /// Simplified workflow using downstream registry methods.
-    pub async fn delete_graph_completely(&self, graph_id: &Uuid) -> Result<(), Box<dyn Error + Send + Sync>> {
+    pub async fn delete_graph_completely(&self, graph_id: &Uuid) -> Result<()> {
         // Delegate complete workflow to GraphRegistry
         {
             let mut registry = self.graph_registry.write()
-                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to write registry: {}", e)))?;
+                .map_err(|e| CymbiontError::Other(format!("Failed to write registry: {}", e)))?;
             
             registry.delete_graph_complete(graph_id)
-                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to delete graph: {}", e)))?;
+                .map_err(|e| CymbiontError::Other(format!("Failed to delete graph: {}", e)))?;
         }
         
         // Remove from memory resources (AppState-specific coordination)
@@ -533,14 +525,13 @@ impl AppState {
     /// 
     /// Resources are bundled so removing from graph_resources removes BOTH
     /// the manager and coordinator atomically, preventing inconsistent state.
-    pub async fn close_graph(&self, graph_id: &Uuid) -> Result<(), Box<dyn Error + Send + Sync>> {
+    pub async fn close_graph(&self, graph_id: &Uuid) -> Result<()> {
         // Get the resources to save and close
         let mut resources = self.graph_resources.write().await;
         
         if let Some(graph_resources) = resources.get(graph_id) {
             // Save the graph before removing from memory
-            graph_resources.manager.write().await.save_graph()
-                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to save graph before closing: {}", e)))?;
+            graph_resources.manager.write().await.save_graph()?;
             
             // Flush and close the transaction coordinator
             if let Err(e) = graph_resources.coordinator.close().await {
@@ -560,10 +551,9 @@ impl AppState {
             "Registry write lock unavailable - another thread may be holding it"
         );
         
-        let mut registry = self.graph_registry.write()
-            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to write registry: {}", e)))?;
+        let mut registry = self.graph_registry.write_or_panic("open graph - write registry");
         registry.close_graph(graph_id)
-            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to close graph: {}", e)))?;
+            .map_err(|e| CymbiontError::Other(format!("Failed to close graph: {}", e)))?;
         
         
         Ok(())
@@ -574,7 +564,7 @@ impl AppState {
     /// Get or load an agent for the given agent ID
     /// 
     /// Loads the agent from disk if not already in memory.
-    pub async fn get_or_load_agent(&self, agent_id: &Uuid) -> Result<(), Box<dyn Error + Send + Sync>> {
+    pub async fn get_or_load_agent(&self, agent_id: &Uuid) -> Result<()> {
         let agents = self.agents.read().await;
         
         // Check if agent already loaded
@@ -595,8 +585,7 @@ impl AppState {
         
         // Get agent info from registry
         let agent_info = {
-            let registry = self.agent_registry.read()
-                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to read agent registry: {}", e)))?;
+            let registry = self.agent_registry.read_or_panic("get or load agent - read registry");
             registry.get_agent(agent_id)
                 .ok_or_else(|| format!("Agent {} not found in registry", agent_id))?
                 .clone()
@@ -604,7 +593,7 @@ impl AppState {
         
         // Load agent from disk
         let agent = Agent::load(&agent_info.data_path)
-            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to load agent {}: {:?}", agent_id, e)))?;
+            .map_err(|e| CymbiontError::Other(format!("Failed to load agent {}: {:?}", agent_id, e)))?;
         
         agents.insert(*agent_id, agent);
         
@@ -614,15 +603,14 @@ impl AppState {
     /// Activate an agent (load into memory and update registry)
     /// 
     /// Simplified workflow using downstream registry methods.
-    pub async fn activate_agent(&self, agent_id: &Uuid) -> Result<(), Box<dyn Error + Send + Sync>> {
+    pub async fn activate_agent(&self, agent_id: &Uuid) -> Result<()> {
         // First ensure the agent is loaded (AppState-specific coordination)
         self.get_or_load_agent(agent_id).await?;
         
         // Delegate workflow to AgentRegistry
-        let mut registry = self.agent_registry.write()
-            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to write agent registry: {}", e)))?;
+        let mut registry = self.agent_registry.write_or_panic("activate agent - write registry");
         registry.activate_agent_complete(agent_id)
-            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to activate agent: {:?}", e)))?;
+            .map_err(|e| CymbiontError::Other(format!("Failed to activate agent: {:?}", e)))?;
         
         Ok(())
     }
@@ -630,20 +618,19 @@ impl AppState {
     /// Deactivate an agent (save and unload from memory)
     /// 
     /// Simplified workflow using downstream registry methods.
-    pub async fn deactivate_agent(&self, agent_id: &Uuid) -> Result<(), Box<dyn Error + Send + Sync>> {
+    pub async fn deactivate_agent(&self, agent_id: &Uuid) -> Result<()> {
         // Save and unload agent from memory (AppState-specific coordination)
         let mut agents = self.agents.write().await;
         if let Some(mut agent) = agents.remove(agent_id) {
             agent.save()
-                .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to save agent before deactivation: {:?}", e)))?;
+                .map_err(|e| CymbiontError::Other(format!("Failed to save agent before deactivation: {:?}", e)))?;
         }
         drop(agents);
         
         // Delegate workflow to AgentRegistry
-        let mut registry = self.agent_registry.write()
-            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to write agent registry: {}", e)))?;
+        let mut registry = self.agent_registry.write_or_panic("activate agent - write registry");
         registry.deactivate_agent_complete(agent_id)
-            .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to deactivate agent: {:?}", e)))?;
+            .map_err(|e| CymbiontError::Other(format!("Failed to deactivate agent: {:?}", e)))?;
         
         Ok(())
     }
@@ -732,21 +719,21 @@ impl AppState {
         graph_id: &Uuid,
         operation: crate::storage::Operation,
         executor: F,
-    ) -> Result<T, Box<dyn Error + Send + Sync>>
+    ) -> Result<T>
     where
         F: FnOnce(&mut GraphManager) -> std::result::Result<T, String>,
     {
         // Check if shutdown has been initiated
         if self.shutdown_initiated.load(Ordering::Acquire) {
             warn!("Transaction rejected at AppState level - graceful shutdown in progress");
-            return Err(Box::<dyn Error + Send + Sync>::from(
-                "Shutdown in progress - no new transactions allowed"
+            return Err(CymbiontError::Other(
+                "Shutdown in progress - no new transactions allowed".to_string()
             ));
         }
         
         // Verify graph is open
         if !self.is_graph_open(graph_id) {
-            return Err(Box::<dyn Error + Send + Sync>::from(
+            return Err(CymbiontError::Other(
                 format!("Graph '{}' is not open", graph_id)
             ));
         }
@@ -761,8 +748,7 @@ impl AppState {
         drop(resources); // Release lock early
         
         // Create transaction (includes deduplication check)
-        let tx_id = coordinator.create_transaction(operation).await
-            .map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)?;
+        let tx_id = coordinator.create_transaction(operation).await?;
         
         // Check freeze state and wait if frozen
         while *self.operation_freeze.read().await {
@@ -777,7 +763,7 @@ impl AppState {
         
         
         // Execute the operation
-        let result = executor(&mut *manager);
+        let result = executor(&mut *manager).map_err(|e| CymbiontError::Other(e));
         
         
         // Drop locks before updating transaction state
@@ -786,8 +772,7 @@ impl AppState {
         
         // Complete transaction based on result
         coordinator.complete_transaction(&tx_id, result).await
-            .map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)
-    }
+                }
     
     /// Initiate graceful shutdown across all graph transaction coordinators
     /// Returns the total count of active transactions across all graphs

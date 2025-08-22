@@ -149,21 +149,11 @@ use crate::{
 };
 use std::sync::Arc;
 use tracing::{warn, error, info};
-use thiserror::Error;
 use serde_json::json;
 use async_trait::async_trait;
 use uuid::Uuid;
+use crate::error::*;
 
-#[derive(Error, Debug)]
-pub enum GraphOperationError {
-    #[error("Graph error: {0}")]
-    GraphError(String),
-    
-    #[error("Node not found: {0}")]
-    NodeNotFound(String),
-}
-
-pub type Result<T> = std::result::Result<T, GraphOperationError>;
 
 /// Helper to verify agent authorization for a graph operation.
 /// Returns an error if the agent is not authorized.
@@ -173,10 +163,10 @@ fn verify_authorization(
     graph_id: &Uuid,
 ) -> Result<()> {
     if !agent_registry.is_agent_authorized(agent_id, graph_id) {
-        Err(GraphOperationError::GraphError(format!(
+        Err(GraphError::invalid_state(format!(
             "Agent {} is not authorized for graph {} - authorization required for all graph operations",
             agent_id, graph_id
-        )))
+        )).into())
     } else {
         Ok(())
     }
@@ -190,7 +180,7 @@ fn check_authorization(
     graph_id: &Uuid,
 ) -> Result<()> {
     let registry = agent_registry.read()
-        .map_err(|_| GraphOperationError::GraphError("Failed to read agent registry".into()))?;
+        .map_err(|_| GraphError::invalid_state("Failed to read agent registry"))?;
     verify_authorization(&registry, agent_id, graph_id)?;
     Ok(())
 }
@@ -301,8 +291,8 @@ impl GraphOps for Arc<AppState> {
             block_data.apply_to_graph(graph_manager)
                 .map(|_| block_id)
                 .map_err(|e| e.to_string())
-        }).await
-        .map_err(|e| GraphOperationError::GraphError(e.to_string()))
+                        }).await
+        .map_err(|e| GraphError::lifecycle(e.to_string()).into())
     }
     
     async fn update_block(
@@ -326,12 +316,12 @@ impl GraphOps for Arc<AppState> {
             // Delegate to PKMBlockData helper for complex block update logic
             PKMBlockData::update_block_content(&block_id, content, graph_manager)
                 .map_err(|e| e.to_string())
-        }).await
+                        }).await
         .map_err(|e| {
             if e.to_string().contains("Node not found") {
-                GraphOperationError::NodeNotFound(block_id)
+                GraphError::node_not_found(block_id, *graph_id).into()
             } else {
-                GraphOperationError::GraphError(e.to_string())
+                CymbiontError::Other(e.to_string())
             }
         })
     }
@@ -352,15 +342,15 @@ impl GraphOps for Arc<AppState> {
                 graph_manager.archive_nodes(vec![(block_id.clone(), node_idx)])
                     .map(|_| ())
                     .map_err(|e| e.to_string())
-            } else {
+                                } else {
                 Err(format!("Node not found: {}", block_id))
             }
         }).await
         .map_err(|e| {
             if e.to_string().contains("Node not found") {
-                GraphOperationError::NodeNotFound(block_id)
+                GraphError::node_not_found(block_id, *graph_id).into()
             } else {
-                GraphOperationError::GraphError(e.to_string())
+                CymbiontError::Other(e.to_string())
             }
         })
     }
@@ -386,9 +376,9 @@ impl GraphOps for Arc<AppState> {
             // Delegate to PKMPageData helper for complex page creation logic
             PKMPageData::create_or_update_page(page_name, properties, graph_manager)
                 .map_err(|e| e.to_string())
-        }).await;
+                        }).await;
         
-        result.map_err(|e| GraphOperationError::GraphError(e.to_string()))
+        result.map_err(|e| GraphError::lifecycle(e.to_string()).into())
     }
     
     async fn delete_page(&self, agent_id: Uuid, page_name: String, graph_id: &Uuid) -> Result<()> {
@@ -414,15 +404,15 @@ impl GraphOps for Arc<AppState> {
                 graph_manager.archive_nodes(vec![(normalized_name, node_idx)])
                     .map(|_| ())
                     .map_err(|e| e.to_string())
-            } else {
+                                } else {
                 Err(format!("Page not found: {}", page_name))
             }
         }).await
         .map_err(|e| {
             if e.to_string().contains("Page not found") {
-                GraphOperationError::NodeNotFound(page_name)
+                GraphError::node_not_found(page_name, *graph_id).into()
             } else {
-                GraphOperationError::GraphError(e.to_string())
+                CymbiontError::Other(e.to_string())
             }
         })
     }
@@ -432,7 +422,7 @@ impl GraphOps for Arc<AppState> {
         
         let resources = self.graph_resources.read().await;
         let graph_resources = resources.get(graph_id)
-            .ok_or_else(|| GraphOperationError::GraphError("Graph not found".to_string()))?;
+            .ok_or_else(|| GraphError::not_found(format!("graph {}", graph_id)))?;
         let graph_manager = graph_resources.manager.read().await;
         
         if let Some(node_idx) = graph_manager.find_node(node_id) {
@@ -446,10 +436,10 @@ impl GraphOps for Arc<AppState> {
                     "updated_at": node.updated_at.to_rfc3339(),
                 }))
             } else {
-                Err(GraphOperationError::NodeNotFound(node_id.to_string()))
+                Err(GraphError::node_not_found(node_id, *graph_id).into())
             }
         } else {
-            Err(GraphOperationError::NodeNotFound(node_id.to_string()))
+            Err(GraphError::node_not_found(node_id, *graph_id).into())
         }
     }
     
@@ -475,7 +465,7 @@ impl GraphOps for Arc<AppState> {
         
         // Open the graph (handles loading and registry update)
         AppState::open_graph(self, &graph_id).await
-            .map_err(|e| GraphOperationError::GraphError(format!("Failed to open graph: {}", e)))?;
+            .map_err(|e| GraphError::lifecycle(format!("Failed to open graph: {}", e)))?;
         
         // Run recovery on the newly opened graph
         match self.run_graph_recovery(&graph_id).await {
@@ -484,7 +474,7 @@ impl GraphOps for Arc<AppState> {
             }
             Err(e) => {
                 error!("❌ Failed to recover transactions for {}: {}", graph_id, e);
-                return Err(GraphOperationError::GraphError(format!("Transaction recovery failed: {}", e)));
+                return Err(GraphError::lifecycle(format!("Transaction recovery failed: {}", e)).into());
             }
             _ => {} // No pending transactions
         }
@@ -492,9 +482,9 @@ impl GraphOps for Arc<AppState> {
         // Get graph info from registry
         let graph_info = {
             let registry = self.graph_registry.read()
-                .map_err(|_| GraphOperationError::GraphError("Failed to read registry".into()))?;
+                .map_err(|_| GraphError::invalid_state("Failed to read registry"))?;
             registry.get_graph(&graph_id)
-                .ok_or_else(|| GraphOperationError::GraphError(format!("Graph '{}' not found", graph_id)))?
+                .ok_or_else(|| GraphError::not_found(format!("graph {}", graph_id)))?
                 .clone()
         };
         
@@ -511,7 +501,7 @@ impl GraphOps for Arc<AppState> {
     async fn close_graph(&self, graph_id: Uuid) -> Result<()> {
         // Close the graph (handles saving and registry update)
         AppState::close_graph(self, &graph_id).await
-            .map_err(|e| GraphOperationError::GraphError(format!("Failed to close graph: {}", e)))?;
+            .map_err(|e| GraphError::lifecycle(format!("Failed to close graph: {}", e)))?;
         
         Ok(())
     }
@@ -519,7 +509,7 @@ impl GraphOps for Arc<AppState> {
     /// List all open graphs
     async fn list_open_graphs(&self) -> Result<Vec<Uuid>> {
         let registry = self.graph_registry.read()
-            .map_err(|_| GraphOperationError::GraphError("Failed to read registry".into()))?;
+            .map_err(|_| GraphError::invalid_state("Failed to read registry"))?;
         Ok(registry.get_open_graphs())
     }
     
@@ -549,7 +539,7 @@ impl GraphOps for Arc<AppState> {
     ) -> Result<serde_json::Value> {
         // Delegate to AppState which handles the complete workflow
         let graph_info = AppState::create_new_graph(self, name, description).await
-            .map_err(|e| GraphOperationError::GraphError(format!("Failed to create graph: {}", e)))?;
+            .map_err(|e| GraphError::lifecycle(format!("Failed to create graph: {}", e)))?;
         
         Ok(json!({
             "id": graph_info.id,
@@ -567,7 +557,7 @@ impl GraphOps for Arc<AppState> {
     async fn delete_graph(&self, graph_id: &Uuid) -> Result<()> {
         // Delegate to AppState which handles the complete workflow
         AppState::delete_graph_completely(self, graph_id).await
-            .map_err(|e| GraphOperationError::GraphError(format!("Failed to delete graph: {}", e)))?;
+            .map_err(|e| GraphError::lifecycle(format!("Failed to delete graph: {}", e)))?;
         
         Ok(())
     }
@@ -578,34 +568,29 @@ impl GraphOps for Arc<AppState> {
 // This allows the storage layer to execute operations during recovery
 #[async_trait]
 impl OperationExecutor for Arc<AppState> {
-    async fn execute_operation(&self, graph_id: &Uuid, operation: Operation) -> std::result::Result<(), String> {
+    async fn execute_operation(&self, graph_id: &Uuid, operation: Operation) -> Result<()> {
         match operation {
             Operation::CreateBlock { agent_id, content, parent_id, page_name, properties } => {
                 GraphOps::add_block(self, agent_id, content, parent_id, page_name, properties, graph_id)
                     .await
                     .map(|_| ())
-                    .map_err(|e| e.to_string())
-            },
+                                },
             Operation::UpdateBlock { agent_id, block_id, content } => {
                 GraphOps::update_block(self, agent_id, block_id, content, graph_id)
                     .await
-                    .map_err(|e| e.to_string())
-            },
+                                },
             Operation::DeleteBlock { agent_id, block_id } => {
                 GraphOps::delete_block(self, agent_id, block_id, graph_id)
                     .await
-                    .map_err(|e| e.to_string())
-            },
+                                },
             Operation::CreatePage { agent_id, page_name, properties } => {
                 GraphOps::create_page(self, agent_id, page_name, properties, graph_id)
                     .await
-                    .map_err(|e| e.to_string())
-            },
+                                },
             Operation::DeletePage { agent_id, page_name } => {
                 GraphOps::delete_page(self, agent_id, page_name, graph_id)
                     .await
-                    .map_err(|e| e.to_string())
-            },
+                                },
         }
     }
 }
@@ -619,12 +604,13 @@ mod tests {
     #[test]
     fn test_error_types() {
         // Test GraphError creation
-        let graph_err = GraphOperationError::GraphError("Test error".to_string());
-        assert_eq!(graph_err.to_string(), "Graph error: Test error");
+        let graph_err = GraphError::lifecycle("Test error");
+        assert_eq!(graph_err.to_string(), "Graph lifecycle error: Test error");
         
         // Test NodeNotFound creation
-        let node_err = GraphOperationError::NodeNotFound("block-123".to_string());
-        assert_eq!(node_err.to_string(), "Node not found: block-123");
+        let graph_id = uuid::Uuid::new_v4();
+        let node_err = GraphError::node_not_found("block-123", graph_id);
+        assert_eq!(node_err.to_string(), format!("Node not found: block-123 in graph {}", graph_id));
     }
     
     #[test]
@@ -702,24 +688,25 @@ mod tests {
     fn test_result_type_conversions() {
         // Test that our Result type works with error conversions
         fn returns_graph_error() -> Result<String> {
-            Err(GraphOperationError::GraphError("Something went wrong".to_string()))
+            Err(GraphError::lifecycle("Something went wrong").into())
         }
         
         fn returns_node_not_found() -> Result<String> {
-            Err(GraphOperationError::NodeNotFound("node-123".to_string()))
+            let graph_id = uuid::Uuid::new_v4();
+            Err(GraphError::node_not_found("node-123", graph_id).into())
         }
         
         // Test error matching
         match returns_graph_error() {
-            Err(GraphOperationError::GraphError(msg)) => {
-                assert_eq!(msg, "Something went wrong");
+            Err(CymbiontError::Graph(GraphError::Lifecycle { message })) => {
+                assert_eq!(message, "Something went wrong");
             }
             _ => panic!("Expected GraphError"),
         }
         
         match returns_node_not_found() {
-            Err(GraphOperationError::NodeNotFound(id)) => {
-                assert_eq!(id, "node-123");
+            Err(CymbiontError::Graph(GraphError::NodeNotFound { node_id, .. })) => {
+                assert_eq!(node_id, "node-123");
             }
             _ => panic!("Expected NodeNotFound"),
         }
@@ -764,7 +751,7 @@ mod tests {
         let agent_id = uuid::Uuid::new_v4();
         let graph_id = uuid::Uuid::new_v4();
         
-        let error = GraphOperationError::GraphError(format!(
+        let error = GraphError::invalid_state(format!(
             "Agent {} is not authorized for graph {} - authorization required for all graph operations", 
             agent_id, graph_id
         ));

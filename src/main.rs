@@ -61,7 +61,7 @@
  * After graceful cleanup, the process uses std::process::exit(0) due to sled database background threads.
  */
 
-use std::error::Error;
+use crate::error::*;
 use clap::Parser;
 use tracing::{info, error, warn, trace};
 
@@ -70,9 +70,11 @@ mod agent;
 mod app_state;
 mod cli;
 mod config;
+mod error;
 mod graph_manager;
 mod graph_operations;
 mod import;
+mod lock;
 mod server;
 mod storage;
 mod utils;
@@ -81,10 +83,10 @@ use app_state::AppState;
 use cli::{Args, handle_cli_commands};
 use autodebugger::init_logging;
 
-fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
+fn main() -> Result<()> {
     // Create Tokio runtime explicitly for proper shutdown control
     let runtime = tokio::runtime::Runtime::new()
-        .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Failed to create runtime: {}", e)))?;
+        .map_err(|e| CymbiontError::Other(format!("Failed to create runtime: {}", e)))?;
     
     // Run async main logic
     let result = runtime.block_on(async_main());
@@ -95,7 +97,7 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     result
 }
 
-async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
+async fn async_main() -> Result<()> {
     // Parse command line arguments
     let args = Args::parse();
     
@@ -159,7 +161,7 @@ async fn async_main() -> Result<(), Box<dyn Error + Send + Sync>> {
 }
 
 /// Common startup sequence for both server and CLI modes
-async fn run_startup_sequence(app_state: &std::sync::Arc<AppState>) -> Result<(), Box<dyn Error + Send + Sync>> {
+async fn run_startup_sequence(app_state: &std::sync::Arc<AppState>) -> Result<()> {
     info!("🧠 Cymbiont initialized");
     info!("📁 Data directory: {}", app_state.data_dir.display());
     
@@ -204,7 +206,7 @@ async fn check_orphaned_graphs(app_state: &std::sync::Arc<AppState>) {
 async fn run_server_loop(
     app_state: &std::sync::Arc<AppState>,
     args: &Args,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> Result<()> {
     // Start server and get handle
     let (server_handle, server_info_file) = server::start_server(app_state.clone()).await?;
     
@@ -256,7 +258,7 @@ async fn run_server_loop(
 async fn run_cli_loop(
     app_state: &std::sync::Arc<AppState>,
     args: &Args,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> Result<()> {
     // Handle duration for CLI mode
     if let Some(duration) = args.duration.or(app_state.config.development.default_duration) {
         tokio::time::sleep(std::time::Duration::from_secs(duration)).await;
@@ -264,7 +266,7 @@ async fn run_cli_loop(
     } else {
         // Run indefinitely (for future interactive features)
         utils::write_pid_file()
-            .map_err(|e| Box::<dyn Error + Send + Sync>::from(e.to_string()))?;
+            .map_err(|e| CymbiontError::Other(e.to_string()))?;
         
         info!("Running indefinitely. Press Ctrl+C to exit.");
         

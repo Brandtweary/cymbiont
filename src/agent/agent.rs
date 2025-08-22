@@ -180,18 +180,9 @@ use uuid::Uuid;
 
 use crate::storage::agent_persistence;
 use crate::agent::llm::{LLMConfig, LLMBackend, Message, AgentContext, create_llm_backend};
+use crate::error::*;
 
-/// Agent errors
-#[derive(Debug, thiserror::Error)]
-pub enum AgentError {
-    #[error("Persistence error: {0}")]
-    Persistence(#[from] agent_persistence::AgentPersistenceError),
-    
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-}
 
-pub type Result<T> = std::result::Result<T, AgentError>;
 
 /// Main Agent struct containing full state
 /// 
@@ -439,10 +430,7 @@ impl Agent {
         // For now, we're not passing tools - that will come in Phase 2
         let response = llm.complete(&self.conversation_history, &[])
             .await
-            .map_err(|e| AgentError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("LLM error: {}", e)
-            )))?;
+            .map_err(|e| AgentError::llm(format!("LLM backend error: {}", e)))?;
         
         // TODO: In Phase 2, check for tool calls here and execute them
         // if let Some(tool_call) = response.tool_call {

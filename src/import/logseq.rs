@@ -6,7 +6,7 @@ use regex::Regex;
 use serde_json::json;
 use tracing::error;
 use super::pkm_data::{PKMBlockData, PKMPageData, PKMReference};
-use super::{ImportError, Result};
+use crate::error::*;
 use super::reference_resolver::resolve_block_references;
 
 /// A Logseq block with its content and metadata
@@ -22,10 +22,7 @@ struct LogseqBlock {
 /// Import a Logseq graph from a directory
 pub fn import_graph(logseq_dir: &Path) -> Result<(Vec<PKMPageData>, Vec<PKMBlockData>)> {
     if !logseq_dir.exists() {
-        return Err(ImportError::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("Logseq directory not found: {:?}", logseq_dir),
-        )));
+        return Err(ImportError::path(format!("Logseq directory not found: {:?}", logseq_dir)).into());
     }
 
     let mut pages = Vec::new();
@@ -94,7 +91,7 @@ fn import_file(
     let content = fs::read_to_string(path)?;
     let page_name = path.file_stem()
         .and_then(|s| s.to_str())
-        .ok_or_else(|| ImportError::InvalidFormat("Invalid filename".to_string()))?;
+        .ok_or_else(|| ImportError::parse(path.display().to_string(), "Invalid filename"))?;
     
     // Parse the file into blocks
     let logseq_blocks = parse_logseq_file(&content)?;
@@ -145,7 +142,7 @@ fn import_file(
 /// Parse a Logseq file into a tree of blocks
 fn parse_logseq_file(content: &str) -> Result<Vec<LogseqBlock>> {
     if content.trim().is_empty() {
-        return Err(ImportError::Parse("Empty file content".to_string()));
+        return Err(ImportError::validation("Empty file content").into());
     }
     
     let mut all_blocks: Vec<LogseqBlock> = Vec::new();

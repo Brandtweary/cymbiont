@@ -53,6 +53,7 @@ use std::sync::Arc;
 use tracing::{info, warn, error};
 use uuid::Uuid;
 
+use crate::error::*;
 use crate::AppState;
 
 /// Generate a new cryptographically secure auth token
@@ -61,7 +62,7 @@ pub fn generate_auth_token() -> String {
 }
 
 /// Save auth token to file for external access with restricted permissions
-pub async fn save_auth_token(data_dir: &Path, token: &str) -> Result<(), std::io::Error> {
+pub async fn save_auth_token(data_dir: &Path, token: &str) -> std::io::Result<()> {
     let token_path = data_dir.join("auth_token");
     tokio::fs::write(&token_path, token).await?;
     
@@ -79,7 +80,7 @@ pub async fn save_auth_token(data_dir: &Path, token: &str) -> Result<(), std::io
 /// Initialize authentication based on configuration
 pub async fn initialize_auth(
     app_state: &AppState,
-) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<String> {
     // Check if auth is disabled
     if app_state.config.auth.disabled {
         warn!("⚠️  Authentication is DISABLED - all endpoints are open!");
@@ -89,7 +90,8 @@ pub async fn initialize_auth(
     // Check for configured token
     if let Some(configured_token) = &app_state.config.auth.token {
         info!("🔐 Using configured authentication token (token rotation disabled)");
-        save_auth_token(&app_state.data_dir, configured_token).await?;
+        save_auth_token(&app_state.data_dir, configured_token).await
+            .map_err(|e| ServerError::startup(format!("Failed to save configured auth token: {}", e)))?;
         info!("");
         info!("Warning: Token rotation is disabled when using a configured token");
         info!("For better security, remove the 'auth.token' config and use auto-generated tokens");
@@ -99,7 +101,8 @@ pub async fn initialize_auth(
     // Always generate new token on startup for security (token rotation)
     // Only skip if user has explicitly configured a token
     let new_token = generate_auth_token();
-    save_auth_token(&app_state.data_dir, &new_token).await?;
+    save_auth_token(&app_state.data_dir, &new_token).await
+        .map_err(|e| ServerError::startup(format!("Failed to save generated auth token: {}", e)))?;
     
     info!("🔐 Auth token: {} (saved to {}/auth_token)", new_token, app_state.data_dir.display());
     
@@ -111,7 +114,7 @@ pub async fn auth_middleware(
     State(state): State<Arc<AppState>>,
     request: Request,
     next: Next,
-) -> Result<Response, StatusCode> {
+) -> std::result::Result<Response, StatusCode> {
     // Check if auth is disabled
     if state.config.auth.disabled {
         return Ok(next.run(request).await);

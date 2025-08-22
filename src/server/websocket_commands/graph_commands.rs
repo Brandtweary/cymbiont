@@ -53,6 +53,7 @@
 
 use std::sync::Arc;
 use uuid::Uuid;
+use crate::error::*;
 use crate::AppState;
 use crate::graph_operations::GraphOps;
 use crate::server::websocket::Command;
@@ -66,7 +67,7 @@ pub async fn handle(
     connection_id: &str,
     state: &Arc<AppState>,
     current_agent_id: Option<Uuid>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<()> {
     match command {
         Command::CreateBlock { content, parent_id, page_name, temp_id: _, graph_id, graph_name } => {
             // Call kg_api to create the block
@@ -82,12 +83,11 @@ pub async fn handle(
             let agent_id = match current_agent_id {
                 Some(id) => id,
                 None => {
-                    return Err("No agent selected for this operation".into());
+                    return Err(ServerError::websocket("No agent selected for this operation").into());
                 }
             };
             
-            let block_id = state.add_block(agent_id, content, parent_id, page_name, None, &resolved_graph_id).await
-                .map_err(|e| format!("Failed to create block: {}", e))?;
+            let block_id = state.add_block(agent_id, content, parent_id, page_name, None, &resolved_graph_id).await?;
             let data = serde_json::json!({ "block_id": block_id });
             send_success_response(connection_id, state, Some(data)).await?;
         }
@@ -105,12 +105,11 @@ pub async fn handle(
             let agent_id = match current_agent_id {
                 Some(id) => id,
                 None => {
-                    return Err("No agent selected for this operation".into());
+                    return Err(ServerError::websocket("No agent selected for this operation").into());
                 }
             };
             
-            state.update_block(agent_id, block_id.clone(), content, &resolved_graph_id).await
-                .map_err(|e| format!("Failed to update block: {}", e))?;
+            state.update_block(agent_id, block_id.clone(), content, &resolved_graph_id).await?;
             let data = serde_json::json!({ "block_id": block_id });
             send_success_response(connection_id, state, Some(data)).await?;
         }
@@ -128,12 +127,11 @@ pub async fn handle(
             let agent_id = match current_agent_id {
                 Some(id) => id,
                 None => {
-                    return Err("No agent selected for this operation".into());
+                    return Err(ServerError::websocket("No agent selected for this operation").into());
                 }
             };
             
-            state.delete_block(agent_id, block_id.clone(), &resolved_graph_id).await
-                .map_err(|e| format!("Failed to delete block: {}", e))?;
+            state.delete_block(agent_id, block_id.clone(), &resolved_graph_id).await?;
             let data = serde_json::json!({ "block_id": block_id });
             send_success_response(connection_id, state, Some(data)).await?;
         }
@@ -151,7 +149,7 @@ pub async fn handle(
             let agent_id = match current_agent_id {
                 Some(id) => id,
                 None => {
-                    return Err("No agent selected for this operation".into());
+                    return Err(ServerError::websocket("No agent selected for this operation").into());
                 }
             };
             
@@ -164,8 +162,7 @@ pub async fn handle(
                 )
             });
             
-            state.create_page(agent_id, name.clone(), properties_json, &resolved_graph_id).await
-                .map_err(|e| format!("Failed to create page: {}", e))?;
+            state.create_page(agent_id, name.clone(), properties_json, &resolved_graph_id).await?;
             let data = serde_json::json!({ "page_name": name });
             send_success_response(connection_id, state, Some(data)).await?;
         }
@@ -183,12 +180,11 @@ pub async fn handle(
             let agent_id = match current_agent_id {
                 Some(id) => id,
                 None => {
-                    return Err("No agent selected for this operation".into());
+                    return Err(ServerError::websocket("No agent selected for this operation").into());
                 }
             };
             
-            state.delete_page(agent_id, page_name.clone(), &resolved_graph_id).await
-                .map_err(|e| format!("Failed to delete page: {}", e))?;
+            state.delete_page(agent_id, page_name.clone(), &resolved_graph_id).await?;
             let data = serde_json::json!({ "page_name": page_name });
             send_success_response(connection_id, state, Some(data)).await?;
         }
@@ -204,8 +200,7 @@ pub async fn handle(
                 false  // no smart default - must specify which graph to open
             ).await?;
             
-            let graph_info = state.open_graph(resolved_graph_id).await
-                .map_err(|e| format!("Failed to open graph: {}", e))?;
+            let graph_info = state.open_graph(resolved_graph_id).await?;
             send_success_response(connection_id, state, Some(graph_info)).await?;
         }
         Command::CloseGraph { graph_id, graph_name } => {
@@ -220,8 +215,7 @@ pub async fn handle(
                 false  // no smart default - must specify which graph to close
             ).await?;
             
-            state.close_graph(resolved_graph_id).await
-                .map_err(|e| format!("Failed to close graph: {}", e))?;
+            state.close_graph(resolved_graph_id).await?;
             send_success_response(connection_id, state, None).await?;
         }
         Command::CreateGraph { name, description } => {
@@ -229,8 +223,7 @@ pub async fn handle(
             
             use crate::graph_operations::GraphOps;
             
-            let graph_info = state.create_graph(name, description).await
-                .map_err(|e| format!("Failed to create graph: {}", e))?;
+            let graph_info = state.create_graph(name, description).await?;
             send_success_response(connection_id, state, Some(graph_info)).await?;
         }
         Command::DeleteGraph { graph_id, graph_name } => {
@@ -245,8 +238,7 @@ pub async fn handle(
                 false  // no smart default - must specify which graph to delete
             ).await?;
             
-            state.delete_graph(&resolved_graph_id).await
-                .map_err(|e| format!("Failed to delete graph: {}", e))?;
+            state.delete_graph(&resolved_graph_id).await?;
             let data = serde_json::json!({ "deleted_graph_id": resolved_graph_id.to_string() });
             send_success_response(connection_id, state, Some(data)).await?;
         }
@@ -255,14 +247,13 @@ pub async fn handle(
             
             use crate::graph_operations::GraphOps;
             
-            let graphs = state.list_graphs().await
-                .map_err(|e| format!("Failed to list graphs: {}", e))?;
+            let graphs = state.list_graphs().await?;
             let data = serde_json::json!({ "graphs": graphs });
             send_success_response(connection_id, state, Some(data)).await?;
         }
         _ => {
             // This shouldn't happen if routing is correct
-            return Err("Command routed to wrong handler".into());
+            return Err(ServerError::websocket("Command routed to wrong handler").into());
         }
     }
     

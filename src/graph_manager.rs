@@ -125,15 +125,14 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::io;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use petgraph::stable_graph::{StableGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
-use thiserror::Error;
 use tracing::{info, warn, error};
 
 use crate::storage::graph_persistence;
+use crate::error::*;
 
 /// Type alias for our knowledge graph
 pub type KnowledgeGraph = StableGraph<NodeData, EdgeData>;
@@ -141,24 +140,7 @@ pub type KnowledgeGraph = StableGraph<NodeData, EdgeData>;
 /// Type alias for our node index mapping
 pub type NodeMap = HashMap<String, NodeIndex>;
 
-/// Errors that can occur when working with the graph manager
-#[derive(Error, Debug)]
-pub enum GraphError {
-    #[error("IO error: {0}")]
-    Io(#[from] io::Error),
-    
-    #[error("JSON serialization error: {0}")]
-    Serialization(#[from] serde_json::Error),
-    
-    #[error("Reference resolution error: {0}")]
-    ReferenceResolution(String),
-    
-    #[error("Failed to parse datetime: {0}")]
-    DateTimeParseError(#[from] chrono::ParseError),
-}
 
-/// Result type for graph operations
-pub type GraphResult<T> = Result<T, GraphError>;
 
 /// Type of node in the knowledge graph
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -265,11 +247,12 @@ pub struct GraphManager {
 
 impl GraphManager {
     /// Create a new graph manager with the given data directory
-    pub fn new<P: AsRef<Path>>(data_dir: P) -> GraphResult<Self> {
+    pub fn new<P: AsRef<Path>>(data_dir: P) -> Result<Self> {
         let data_dir = data_dir.as_ref().to_path_buf();
         
         // Ensure directories exist
-        graph_persistence::ensure_directories(&data_dir)?;
+        graph_persistence::ensure_directories(&data_dir)
+            .map_err(|e| GraphError::lifecycle(format!("Failed to create directories: {}", e)))?;
         
         // Extract graph ID from data directory path
         let graph_id = data_dir.parent()
@@ -310,12 +293,13 @@ impl GraphManager {
     
     
     /// Save the graph to disk
-    pub fn save_graph(&mut self) -> GraphResult<()> {
+    pub fn save_graph(&mut self) -> Result<()> {
         graph_persistence::save_graph(
             &self.data_dir,
             &self.graph,
             &self.pkm_to_node,
-        )?;
+        )
+        .map_err(|e| GraphError::lifecycle(format!("Failed to save graph: {}", e)))?;
         
         // Reset save tracking
         self.last_save_time = Utc::now();
@@ -393,7 +377,7 @@ impl GraphManager {
         properties: HashMap<String, String>,
         created_at: DateTime<Utc>,
         updated_at: DateTime<Utc>,
-    ) -> GraphResult<NodeIndex> {
+    ) -> Result<NodeIndex> {
         let node_data = NodeData {
             id: internal_id,
             pkm_id: pkm_id.clone(),
@@ -447,7 +431,7 @@ impl GraphManager {
     
     
     /// Archive nodes by their indices
-    pub fn archive_nodes(&mut self, nodes: Vec<(String, NodeIndex)>) -> GraphResult<String> {
+    pub fn archive_nodes(&mut self, nodes: Vec<(String, NodeIndex)>) -> Result<String> {
         if nodes.is_empty() {
             return Ok("No nodes to archive".to_string());
         }
@@ -480,7 +464,8 @@ impl GraphManager {
             &self.data_dir,
             self.graph_id.as_deref(),
             &archive_data,
-        )?;
+        )
+        .map_err(|e| GraphError::lifecycle(format!("Failed to archive nodes: {}", e)))?;
         
         // Remove nodes from graph
         for (pkm_id, node_idx) in &nodes {

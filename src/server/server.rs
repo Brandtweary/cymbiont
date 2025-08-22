@@ -50,9 +50,9 @@
  */
 
 use std::net::SocketAddr;
-use std::error::Error;
 use tracing::info;
 
+use crate::error::*;
 use crate::{
     AppState,
     utils::{write_server_info, find_available_port, terminate_previous_instance},
@@ -63,7 +63,7 @@ use crate::{
 /// The caller is responsible for handling shutdown signals and cleanup
 pub async fn start_server(
     app_state: std::sync::Arc<AppState>,
-) -> Result<(tokio::task::JoinHandle<Result<(), std::io::Error>>, String), Box<dyn Error + Send + Sync>> {
+) -> Result<(tokio::task::JoinHandle<std::result::Result<(), std::io::Error>>, String)> {
     let server_info_file = &app_state.config.backend.server_info_file;
     
     // Terminate any previous instance
@@ -75,14 +75,14 @@ pub async fn start_server(
     // Create and start server
     let app = create_router(app_state.clone());
     let port = find_available_port(&app_state.config.backend)
-        .map_err(|e| Box::<dyn Error + Send + Sync>::from(e.to_string()))?;
+        .map_err(|e| ServerError::port_binding(e.to_string()))?;
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     
     write_server_info("127.0.0.1", port, server_info_file)
-        .map_err(|e| Box::<dyn Error + Send + Sync>::from(e.to_string()))?;
+        .map_err(|e| ServerError::startup(format!("Failed to write server info: {}", e)))?;
     
     let listener = tokio::net::TcpListener::bind(addr).await
-        .map_err(|e| Box::<dyn Error + Send + Sync>::from(format!("Listener error: {e}")))?;
+        .map_err(|e| ServerError::port_binding(format!("Failed to bind to port {}: {}", port, e)))?;
     
     info!("🚀 Cymbiont Server listening on {}", addr);
     

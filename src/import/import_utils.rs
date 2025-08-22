@@ -29,12 +29,12 @@
  */
 
 use std::path::Path;
-use std::error::Error;
 use std::sync::Arc;
 use tracing::{info, error};
 use crate::app_state::AppState;
 use crate::graph_operations::GraphOps;
 use super::logseq;
+use crate::error::*;
 
 /// Result of a Logseq import operation
 #[derive(Debug)]
@@ -51,7 +51,7 @@ pub async fn import_logseq_graph(
     app_state: &Arc<AppState>,
     logseq_path: &Path,
     custom_name: Option<String>,
-) -> Result<ImportResult, Box<dyn Error + Send + Sync>> {
+) -> Result<ImportResult> {
     info!("📥 Importing Logseq graph from: {:?}", logseq_path);
     
     // Parse the Logseq graph
@@ -77,8 +77,8 @@ pub async fn import_logseq_graph(
     
     let graph_id = uuid::Uuid::parse_str(
         graph_info["id"].as_str()
-            .ok_or_else(|| "Graph ID not found in response")?
-    ).map_err(|e| format!("Invalid graph ID: {}", e))?;
+            .ok_or_else(|| ImportError::validation("Graph ID not found in response"))?
+    ).map_err(|e| ImportError::validation(format!("Invalid graph ID: {}", e)))?;
     
     info!("📊 Using graph: {} ({})", graph_name, graph_id);
     
@@ -87,7 +87,7 @@ pub async fn import_logseq_graph(
         let resources = app_state.graph_resources.read().await;
         
         let graph_resources = resources.get(&graph_id)
-            .ok_or_else(|| format!("Graph not found for ID: {}", graph_id))?;
+            .ok_or_else(|| ImportError::validation(format!("Graph not found for ID: {}", graph_id)))?;
         
         let mut graph_manager = graph_resources.manager.write().await;
         
@@ -123,8 +123,7 @@ pub async fn import_logseq_graph(
         // Re-enable auto-save and force save
         graph_manager.enable_auto_save();
         
-        graph_manager.save_graph()
-            .map_err(|e| format!("Failed to save imported graph: {}", e))?;
+        graph_manager.save_graph()?;
         
         // Return the collected data
         (page_count, block_count, errors)

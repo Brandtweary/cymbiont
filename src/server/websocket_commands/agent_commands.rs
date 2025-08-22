@@ -56,6 +56,7 @@
 
 use std::sync::Arc;
 use uuid::Uuid;
+use crate::error::*;
 use crate::AppState;
 use crate::server::websocket::Command;
 use crate::server::websocket_utils::{send_success_response, send_error_response};
@@ -65,7 +66,7 @@ pub async fn handle(
     command: Command,
     connection_id: &str,
     state: &Arc<AppState>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<()> {
     match command {
         // Agent Commands
         Command::AgentChat { message, echo } => {
@@ -89,14 +90,13 @@ pub async fn handle(
             };
             
             // Ensure we have an agent ID
-            let agent_id = agent_id.ok_or_else(|| "No agent available for chat".to_string())?;
+            let agent_id = agent_id.ok_or_else(|| ServerError::websocket("No agent available for chat"))?;
             
             // Get the agent and process the message
             let response = {
                 let mut agents = state.agents.write().await;
                 if let Some(agent) = agents.get_mut(&agent_id) {
-                    agent.process_message(message, echo).await
-                        .map_err(|e| format!("Failed to process message: {:?}", e))?
+                    agent.process_message(message, echo).await?
                 } else {
                     send_error_response(connection_id, state, &format!("Agent {} not found", agent_id)).await?;
                     return Ok(());
@@ -116,28 +116,26 @@ pub async fn handle(
             
             // Resolve the agent using the registry's resolution function
             let selected_id = {
-                let registry = state.agent_registry.read()
-                    .map_err(|e| format!("Failed to read agent registry: {}", e))?;
+                let registry = state.agent_registry.read_or_panic("read agent registry");
                 
                 // Parse UUID if provided
                 let agent_uuid = agent_id.as_ref()
                     .map(|id| Uuid::parse_str(id))
                     .transpose()
-                    .map_err(|e| format!("Invalid agent ID: {}", e))?;
+                    .map_err(|e| ServerError::invalid_request(format!("Invalid agent ID: {}", e)))?;
                 
                 // Use resolution with smart default (prime agent)
                 registry.resolve_agent_target(
                     agent_uuid.as_ref(),
                     agent_name.as_deref(),
                     true  // Allow smart default to prime agent
-                ).map_err(|e| format!("Failed to resolve agent: {:?}", e))?
+                )?
             };
             
             // Verify the agent exists and is active
             if !state.is_agent_active(&selected_id) {
                 // Try to activate the agent
-                state.activate_agent(&selected_id).await
-                    .map_err(|e| format!("Failed to activate agent: {}", e))?;
+                state.activate_agent(&selected_id).await?;
             }
             
             // Update the connection's current agent
@@ -150,10 +148,9 @@ pub async fn handle(
             
             // Get agent info for response
             let agent_info = {
-                let registry = state.agent_registry.read()
-                    .map_err(|e| format!("Failed to read agent registry: {}", e))?;
+                let registry = state.agent_registry.read_or_panic("read agent registry");
                 let agent = registry.get_agent(&selected_id)
-                    .ok_or_else(|| format!("Agent {} not found", selected_id))?;
+                    .ok_or_else(|| ServerError::websocket(format!("Agent {} not found", selected_id)))?;
                 serde_json::json!({
                     "agent_id": selected_id.to_string(),
                     "agent_name": agent.name
@@ -166,8 +163,7 @@ pub async fn handle(
         Command::AgentList => {
             
             let agents_list = {
-                let registry = state.agent_registry.read()
-                    .map_err(|e| format!("Failed to read agent registry: {}", e))?;
+                let registry = state.agent_registry.read_or_panic("read agent registry");
                 let agents = registry.get_all_agents();
                 let prime_id = registry.get_prime_agent_id();
                 
@@ -190,19 +186,18 @@ pub async fn handle(
             // Resolve the agent - if none specified, use current connection's agent or prime
             let resolved_id = if agent_id.is_some() || agent_name.is_some() {
                 // Explicit agent specified
-                let registry = state.agent_registry.read()
-                    .map_err(|e| format!("Failed to read agent registry: {}", e))?;
+                let registry = state.agent_registry.read_or_panic("read agent registry");
                 
                 let agent_uuid = agent_id.as_ref()
                     .map(|id| Uuid::parse_str(id))
                     .transpose()
-                    .map_err(|e| format!("Invalid agent ID: {}", e))?;
+                    .map_err(|e| ServerError::invalid_request(format!("Invalid agent ID: {}", e)))?;
                 
                 registry.resolve_agent_target(
                     agent_uuid.as_ref(),
                     agent_name.as_deref(),
                     false  // No smart default when explicitly specified
-                ).map_err(|e| format!("Failed to resolve agent: {:?}", e))?
+                )?
             } else {
                 // No agent specified, use current connection's agent or prime
                 if let Some(ref connections) = state.ws_connections {
@@ -218,7 +213,7 @@ pub async fn handle(
                     }
                 } else {
                     None
-                }.ok_or_else(|| "No agent available".to_string())?
+                }.ok_or_else(|| ServerError::websocket("No agent available"))?
             };
             
             // Get conversation history
@@ -277,19 +272,18 @@ pub async fn handle(
             // Resolve the agent - if none specified, use current connection's agent or prime
             let resolved_id = if agent_id.is_some() || agent_name.is_some() {
                 // Explicit agent specified
-                let registry = state.agent_registry.read()
-                    .map_err(|e| format!("Failed to read agent registry: {}", e))?;
+                let registry = state.agent_registry.read_or_panic("read agent registry");
                 
                 let agent_uuid = agent_id.as_ref()
                     .map(|id| Uuid::parse_str(id))
                     .transpose()
-                    .map_err(|e| format!("Invalid agent ID: {}", e))?;
+                    .map_err(|e| ServerError::invalid_request(format!("Invalid agent ID: {}", e)))?;
                 
                 registry.resolve_agent_target(
                     agent_uuid.as_ref(),
                     agent_name.as_deref(),
                     false  // No smart default when explicitly specified
-                ).map_err(|e| format!("Failed to resolve agent: {:?}", e))?
+                )?
             } else {
                 // No agent specified, use current connection's agent or prime
                 if let Some(ref connections) = state.ws_connections {
@@ -305,7 +299,7 @@ pub async fn handle(
                     }
                 } else {
                     None
-                }.ok_or_else(|| "No agent selected".to_string())?
+                }.ok_or_else(|| ServerError::websocket("No agent selected"))?
             };
             
             // Clear the agent's conversation history
@@ -314,8 +308,7 @@ pub async fn handle(
                 if let Some(agent) = agents.get_mut(&resolved_id) {
                     agent.clear_history();
                     // Save after clearing
-                    agent.save()
-                        .map_err(|e| format!("Failed to save agent after reset: {:?}", e))?;
+                    agent.save()?;
                 } else {
                     send_error_response(connection_id, state, &format!("Agent {} not found", resolved_id)).await?;
                     return Ok(());
@@ -334,14 +327,13 @@ pub async fn handle(
         Command::CreateAgent { name, description } => {
             
             let agent_info = {
-                let mut registry = state.agent_registry.write()
-                    .map_err(|e| format!("Failed to write agent registry: {}", e))?;
+                let mut registry = state.agent_registry.write_or_panic("write agent registry");
                 
                 registry.register_agent(
                     None,  // Let it generate a new UUID
                     Some(name.clone()),
                     description.clone(),
-                ).map_err(|e| format!("Failed to create agent: {:?}", e))?
+                )?
             };
             
             // Create the actual Agent instance
@@ -350,8 +342,7 @@ pub async fn handle(
                 use crate::agent::llm::LLMConfig;
                 
                 // Ensure agent directory exists
-                std::fs::create_dir_all(&agent_info.data_path)
-                    .map_err(|e| format!("Failed to create agent directory: {}", e))?;
+                std::fs::create_dir_all(&agent_info.data_path)?;
                 
                 // Create agent with default MockLLM config
                 let mut agent = Agent::new(
@@ -363,8 +354,7 @@ pub async fn handle(
                 );
                 
                 // Save the agent to disk
-                agent.save()
-                    .map_err(|e| format!("Failed to save agent: {:?}", e))?;
+                agent.save()?;
                 
                 // Add to active agents map
                 let mut agents = state.agents.write().await;
@@ -373,10 +363,8 @@ pub async fn handle(
             
             // Save the registry after creating agent
             {
-                let registry = state.agent_registry.read()
-                    .map_err(|e| format!("Failed to read agent registry: {}", e))?;
-                registry.save()
-                    .map_err(|e| format!("Failed to save agent registry: {:?}", e))?;
+                let registry = state.agent_registry.read_or_panic("read agent registry");
+                registry.save()?;
             }
             
             let data = serde_json::json!({
@@ -394,26 +382,24 @@ pub async fn handle(
             
             // Resolve agent (no smart default for destructive operations)
             let resolved_id = {
-                let registry = state.agent_registry.read()
-                    .map_err(|e| format!("Failed to read agent registry: {}", e))?;
+                let registry = state.agent_registry.read_or_panic("read agent registry");
                 
                 let agent_uuid = agent_id.as_ref()
                     .map(|id| Uuid::parse_str(id))
                     .transpose()
-                    .map_err(|e| format!("Invalid agent ID: {}", e))?;
+                    .map_err(|e| ServerError::invalid_request(format!("Invalid agent ID: {}", e)))?;
                 
                 registry.resolve_agent_target(
                     agent_uuid.as_ref(),
                     agent_name.as_deref(),
                     false  // No smart default for delete
-                ).map_err(|e| format!("Failed to resolve agent: {:?}", e))?
+                )?
             };
             
             // Don't allow deleting the prime agent
             {
                 let is_prime = {
-                    let registry = state.agent_registry.read()
-                        .map_err(|e| format!("Failed to read agent registry: {}", e))?;
+                    let registry = state.agent_registry.read_or_panic("read agent registry");
                     Some(resolved_id) == registry.get_prime_agent_id()
                 };
                 
@@ -425,22 +411,19 @@ pub async fn handle(
             
             // Remove agent from memory if loaded
             state.deactivate_agent(&resolved_id).await
-                .map_err(|e| format!("Failed to deactivate agent: {:?}", e))?;
+                ?;
             
             // Remove from registry and archive data
             {
-                let mut registry = state.agent_registry.write()
-                    .map_err(|e| format!("Failed to write agent registry: {}", e))?;
+                let mut registry = state.agent_registry.write_or_panic("write agent registry");
                 registry.remove_agent(&resolved_id)
-                    .map_err(|e| format!("Failed to remove agent: {:?}", e))?;
+                    ?;
             }
             
             // Save registry after deletion
             {
-                let registry = state.agent_registry.read()
-                    .map_err(|e| format!("Failed to read agent registry: {}", e))?;
-                registry.save()
-                    .map_err(|e| format!("Failed to save agent registry: {:?}", e))?;
+                let registry = state.agent_registry.read_or_panic("read agent registry");
+                registry.save()?;
             }
             
             let data = serde_json::json!({
@@ -455,24 +438,23 @@ pub async fn handle(
             
             // Resolve agent (no smart default for explicit operations)
             let resolved_id = {
-                let registry = state.agent_registry.read()
-                    .map_err(|e| format!("Failed to read agent registry: {}", e))?;
+                let registry = state.agent_registry.read_or_panic("read agent registry");
                 
                 let agent_uuid = agent_id.as_ref()
                     .map(|id| Uuid::parse_str(id))
                     .transpose()
-                    .map_err(|e| format!("Invalid agent ID: {}", e))?;
+                    .map_err(|e| ServerError::invalid_request(format!("Invalid agent ID: {}", e)))?;
                 
                 registry.resolve_agent_target(
                     agent_uuid.as_ref(),
                     agent_name.as_deref(),
                     false  // No smart default for activate
-                ).map_err(|e| format!("Failed to resolve agent: {:?}", e))?
+                )?
             };
             
             // Activate the agent
             state.activate_agent(&resolved_id).await
-                .map_err(|e| format!("Failed to activate agent: {:?}", e))?;
+                ?;
             
             let data = serde_json::json!({
                 "agent_id": resolved_id.to_string(),
@@ -486,24 +468,23 @@ pub async fn handle(
             
             // Resolve agent (no smart default for explicit operations)
             let resolved_id = {
-                let registry = state.agent_registry.read()
-                    .map_err(|e| format!("Failed to read agent registry: {}", e))?;
+                let registry = state.agent_registry.read_or_panic("read agent registry");
                 
                 let agent_uuid = agent_id.as_ref()
                     .map(|id| Uuid::parse_str(id))
                     .transpose()
-                    .map_err(|e| format!("Invalid agent ID: {}", e))?;
+                    .map_err(|e| ServerError::invalid_request(format!("Invalid agent ID: {}", e)))?;
                 
                 registry.resolve_agent_target(
                     agent_uuid.as_ref(),
                     agent_name.as_deref(),
                     false  // No smart default for deactivate
-                ).map_err(|e| format!("Failed to resolve agent: {:?}", e))?
+                )?
             };
             
             // Deactivate the agent
             state.deactivate_agent(&resolved_id).await
-                .map_err(|e| format!("Failed to deactivate agent: {:?}", e))?;
+                ?;
             
             let data = serde_json::json!({
                 "agent_id": resolved_id.to_string(),
@@ -517,62 +498,56 @@ pub async fn handle(
             
             // Resolve agent (must be explicitly specified)
             let resolved_agent_id = {
-                let registry = state.agent_registry.read()
-                    .map_err(|e| format!("Failed to read agent registry: {}", e))?;
+                let registry = state.agent_registry.read_or_panic("read agent registry");
                 
                 let agent_uuid = agent_id.as_ref()
                     .map(|id| Uuid::parse_str(id))
                     .transpose()
-                    .map_err(|e| format!("Invalid agent ID: {}", e))?;
+                    .map_err(|e| ServerError::invalid_request(format!("Invalid agent ID: {}", e)))?;
                 
                 registry.resolve_agent_target(
                     agent_uuid.as_ref(),
                     agent_name.as_deref(),
                     false  // No smart default for authorization
-                ).map_err(|e| format!("Failed to resolve agent: {:?}", e))?
+                )?
             };
             
             // Resolve graph (must be explicitly specified)
             let resolved_graph_id = {
-                let registry = state.graph_registry.read()
-                    .map_err(|e| format!("Failed to read graph registry: {}", e))?;
+                let registry = state.graph_registry.read_or_panic("read graph registry");
                 
                 let graph_uuid = graph_id.as_ref()
                     .map(|id| Uuid::parse_str(id))
                     .transpose()
-                    .map_err(|e| format!("Invalid graph ID: {}", e))?;
+                    .map_err(|e| ServerError::invalid_request(format!("Invalid graph ID: {}", e)))?;
                 
                 registry.resolve_graph_target(
                     graph_uuid.as_ref(),
                     graph_name.as_deref(),
                     false  // No smart default for authorization
-                ).map_err(|e| format!("Failed to resolve graph: {:?}", e))?
+                )?
             };
             
             // Authorize agent for graph
             {
                 let (mut graph_registry, mut agent_registry) = state.lock_registries_for_write()
-                    .map_err(|e| format!("Failed to lock registries: {}", e))?;
+                    ?;
                 
                 agent_registry.authorize_agent_for_graph(
                     &resolved_agent_id,
                     &resolved_graph_id,
                     &mut graph_registry,
-                ).map_err(|e| format!("Failed to authorize agent: {:?}", e))?;
+                )?;
             }
             
             // Save both registries
             {
-                let registry = state.agent_registry.read()
-                    .map_err(|e| format!("Failed to read agent registry: {}", e))?;
-                registry.save()
-                    .map_err(|e| format!("Failed to save agent registry: {:?}", e))?;
+                let registry = state.agent_registry.read_or_panic("read agent registry");
+                registry.save()?;
             }
             {
-                let registry = state.graph_registry.read()
-                    .map_err(|e| format!("Failed to read graph registry: {}", e))?;
-                registry.save()
-                    .map_err(|e| format!("Failed to save graph registry: {:?}", e))?;
+                let registry = state.graph_registry.read_or_panic("read graph registry");
+                registry.save()?;
             }
             
             let data = serde_json::json!({
@@ -588,62 +563,56 @@ pub async fn handle(
             
             // Resolve agent (must be explicitly specified)
             let resolved_agent_id = {
-                let registry = state.agent_registry.read()
-                    .map_err(|e| format!("Failed to read agent registry: {}", e))?;
+                let registry = state.agent_registry.read_or_panic("read agent registry");
                 
                 let agent_uuid = agent_id.as_ref()
                     .map(|id| Uuid::parse_str(id))
                     .transpose()
-                    .map_err(|e| format!("Invalid agent ID: {}", e))?;
+                    .map_err(|e| ServerError::invalid_request(format!("Invalid agent ID: {}", e)))?;
                 
                 registry.resolve_agent_target(
                     agent_uuid.as_ref(),
                     agent_name.as_deref(),
                     false  // No smart default for deauthorization
-                ).map_err(|e| format!("Failed to resolve agent: {:?}", e))?
+                )?
             };
             
             // Resolve graph (must be explicitly specified)
             let resolved_graph_id = {
-                let registry = state.graph_registry.read()
-                    .map_err(|e| format!("Failed to read graph registry: {}", e))?;
+                let registry = state.graph_registry.read_or_panic("read graph registry");
                 
                 let graph_uuid = graph_id.as_ref()
                     .map(|id| Uuid::parse_str(id))
                     .transpose()
-                    .map_err(|e| format!("Invalid graph ID: {}", e))?;
+                    .map_err(|e| ServerError::invalid_request(format!("Invalid graph ID: {}", e)))?;
                 
                 registry.resolve_graph_target(
                     graph_uuid.as_ref(),
                     graph_name.as_deref(),
                     false  // No smart default for deauthorization
-                ).map_err(|e| format!("Failed to resolve graph: {:?}", e))?
+                )?
             };
             
             // Deauthorize agent from graph
             {
                 let (mut graph_registry, mut agent_registry) = state.lock_registries_for_write()
-                    .map_err(|e| format!("Failed to lock registries: {}", e))?;
+                    ?;
                 
                 agent_registry.deauthorize_agent_from_graph(
                     &resolved_agent_id,
                     &resolved_graph_id,
                     &mut graph_registry,
-                ).map_err(|e| format!("Failed to deauthorize agent: {:?}", e))?;
+                )?;
             }
             
             // Save both registries
             {
-                let registry = state.agent_registry.read()
-                    .map_err(|e| format!("Failed to read agent registry: {}", e))?;
-                registry.save()
-                    .map_err(|e| format!("Failed to save agent registry: {:?}", e))?;
+                let registry = state.agent_registry.read_or_panic("read agent registry");
+                registry.save()?;
             }
             {
-                let registry = state.graph_registry.read()
-                    .map_err(|e| format!("Failed to read graph registry: {}", e))?;
-                registry.save()
-                    .map_err(|e| format!("Failed to save graph registry: {:?}", e))?;
+                let registry = state.graph_registry.read_or_panic("read graph registry");
+                registry.save()?;
             }
             
             let data = serde_json::json!({
@@ -659,28 +628,26 @@ pub async fn handle(
             
             // Resolve agent (defaults to prime if not specified)
             let resolved_id = {
-                let registry = state.agent_registry.read()
-                    .map_err(|e| format!("Failed to read agent registry: {}", e))?;
+                let registry = state.agent_registry.read_or_panic("read agent registry");
                 
                 let agent_uuid = agent_id.as_ref()
                     .map(|id| Uuid::parse_str(id))
                     .transpose()
-                    .map_err(|e| format!("Invalid agent ID: {}", e))?;
+                    .map_err(|e| ServerError::invalid_request(format!("Invalid agent ID: {}", e)))?;
                 
                 registry.resolve_agent_target(
                     agent_uuid.as_ref(),
                     agent_name.as_deref(),
                     true  // Allow smart default (prime agent) for info command
-                ).map_err(|e| format!("Failed to resolve agent: {:?}", e))?
+                )?
             };
             
             // Get agent info from registry
             let (agent_info, is_active) = {
-                let registry = state.agent_registry.read()
-                    .map_err(|e| format!("Failed to read agent registry: {}", e))?;
+                let registry = state.agent_registry.read_or_panic("read agent registry");
                 
                 let info = registry.get_agent(&resolved_id)
-                    .ok_or_else(|| format!("Agent {} not found", resolved_id))?
+                    .ok_or_else(|| ServerError::websocket(format!("Agent {} not found", resolved_id)))?
                     .clone();
                 let active = registry.is_agent_active(&resolved_id);
                 (info, active)
@@ -701,8 +668,7 @@ pub async fn handle(
             
             // Get authorized graph names
             let authorized_graph_names = {
-                let graph_registry = state.graph_registry.read()
-                    .map_err(|e| format!("Failed to read graph registry: {}", e))?;
+                let graph_registry = state.graph_registry.read_or_panic("read graph registry");
                 
                 agent_info.authorized_graphs.iter()
                     .filter_map(|graph_id| {
@@ -732,7 +698,7 @@ pub async fn handle(
         
         _ => {
             // This shouldn't happen if routing is correct
-            return Err("Command routed to wrong handler".into());
+            return Err(ServerError::websocket("Command routed to wrong handler").into());
         }
     }
     

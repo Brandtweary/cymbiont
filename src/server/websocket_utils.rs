@@ -8,6 +8,7 @@
 
 use axum::extract::ws::Message;
 use std::sync::Arc;
+use crate::error::*;
 use crate::AppState;
 use crate::server::websocket::Response;
 
@@ -17,13 +18,12 @@ pub async fn resolve_graph_for_command(
     graph_id: Option<&str>,
     graph_name: Option<&str>,
     allow_smart_default: bool,
-) -> Result<uuid::Uuid, Box<dyn std::error::Error + Send + Sync>> {
-    let registry = state.graph_registry.read()
-        .map_err(|e| format!("Failed to read registry: {}", e))?;
+) -> Result<uuid::Uuid> {
+    let registry = state.graph_registry.read_or_panic("read graph registry");
     
     let graph_uuid = if let Some(id_str) = graph_id {
         Some(uuid::Uuid::parse_str(id_str)
-            .map_err(|_| format!("Invalid UUID: {}", id_str))?)
+            .map_err(|_| ServerError::invalid_request(format!("Invalid graph UUID: {}", id_str)))?)
     } else {
         None
     };
@@ -53,7 +53,7 @@ pub async fn is_authenticated(
 pub async fn set_authenticated(
     connection_id: &str,
     state: &Arc<AppState>,
-) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<bool> {
     if let Some(ref connections) = state.ws_connections {
         let mut conns = connections.write().await;
         if let Some(conn) = conns.get_mut(connection_id) {
@@ -61,10 +61,10 @@ pub async fn set_authenticated(
             // Return true if this is the first authenticated connection
             Ok(conns.values().filter(|c| c.authenticated).count() == 1)
         } else {
-            Err("Connection not found".into())
+            Err(ServerError::websocket("Connection not found").into())
         }
     } else {
-        Err("No connection tracking".into())
+        Err(ServerError::websocket("No connection tracking").into())
     }
 }
 
@@ -87,7 +87,7 @@ pub async fn send_response(
     connection_id: &str,
     state: &Arc<AppState>,
     response: Response,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<()> {
     // Get the sender without holding lock
     let sender = if let Some(ref connections) = state.ws_connections {
         let conns = connections.read().await;
@@ -103,7 +103,8 @@ pub async fn send_response(
     
     // Now send without holding any lock
     let msg = serde_json::to_string(&response)?;
-    sender.send(Message::Text(msg))?;
+    sender.send(Message::Text(msg))
+        .map_err(|_| ServerError::websocket("Failed to send message on channel"))?;
     Ok(())
 }
 
@@ -112,7 +113,7 @@ pub async fn send_success_response(
     connection_id: &str,
     state: &Arc<AppState>,
     data: Option<serde_json::Value>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<()> {
     let response = Response::Success {
         data,
     };
@@ -124,7 +125,7 @@ pub async fn send_error_response(
     connection_id: &str,
     state: &Arc<AppState>,
     message: &str,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<()> {
     let response = Response::Error {
         message: message.to_string(),
     };

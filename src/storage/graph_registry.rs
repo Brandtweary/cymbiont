@@ -44,7 +44,7 @@
 //! The GraphRegistry is accessed through `Arc<RwLock<GraphRegistry>>` with development-time
 //! contention detection:
 //! 
-//! - **Write Pattern**: Use `debug_assert!(registry.try_write().is_ok())` before acquiring write locks
+//! - **Write Pattern**: Use `debug_assert!(registry.try_write().is_ok()` before acquiring write locks
 //! - **Purpose**: Acts as a tripwire to detect lock contention during development, causing fast failure instead of mysterious hangs
 //! - **Scope Management**: Keep lock scopes minimal and never hold both registry and graph_resources locks simultaneously
 //! 
@@ -81,26 +81,13 @@ use std::fs;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
-use tracing::{info, error};
-use thiserror::Error;
+use tracing::info;
 
 // Import shared UUID serialization utilities
 use crate::storage::registry_utils::{uuid_hashmap_serde, uuid_hashset_serde, uuid_vec_serde};
+use crate::error::*;
 
-/// Graph registry errors
-#[derive(Error, Debug)]
-pub enum GraphRegistryError {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    
-    #[error("JSON error: {0}")]
-    Json(#[from] serde_json::Error),
-    
-    #[error("Validation error: {0}")]
-    ValidationError(String),
-}
 
-type Result<T> = std::result::Result<T, GraphRegistryError>;
 
 /// Information about a registered graph
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,9 +168,7 @@ impl GraphRegistry {
             fs::write(registry_path, content)?;
             Ok(())
         } else {
-            Err(GraphRegistryError::ValidationError(
-                "No data directory set for registry".to_string()
-            ))
+            Err(StorageError::graph_registry("No data directory set for registry").into())
         }
     }
     
@@ -265,9 +250,7 @@ impl GraphRegistry {
     pub fn open_graph(&mut self, graph_id: &Uuid) -> Result<GraphInfo> {
         // Validate graph exists
         let graph_info = self.graphs.get(graph_id)
-            .ok_or_else(|| GraphRegistryError::ValidationError(
-                format!("Graph '{}' not found in registry", graph_id)
-            ))?
+            .ok_or_else(|| StorageError::not_found("graph", "ID", graph_id.to_string()))?
             .clone();
         
         // Add to open set
@@ -287,9 +270,7 @@ impl GraphRegistry {
         if self.open_graphs.remove(graph_id) {
             Ok(())
         } else {
-            Err(GraphRegistryError::ValidationError(
-                format!("Graph '{}' was not open", graph_id)
-            ))
+            Err(StorageError::graph_registry(format!("Graph '{}' was not open", graph_id)).into())
         }
     }
     
@@ -311,33 +292,23 @@ impl GraphRegistry {
             if self.graphs.contains_key(id) {
                 Ok(*id)
             } else {
-                Err(GraphRegistryError::ValidationError(
-                    format!("Graph ID not found: {}", id)
-                ))
+                Err(StorageError::not_found("graph", "ID", id.to_string()).into())
             }
         } else if let Some(name) = graph_name {
             // Find graph by name
             self.graphs.values()
                 .find(|g| g.name == name)
                 .map(|g| g.id)
-                .ok_or_else(|| GraphRegistryError::ValidationError(
-                    format!("Graph name not found: {}", name)
-                ))
+                .ok_or_else(|| StorageError::not_found("graph", "name", name).into())
         } else if allow_smart_default {
             let open_graphs = self.get_open_graphs();
             match open_graphs.len() {
-                0 => Err(GraphRegistryError::ValidationError(
-                    "No graphs are open".to_string()
-                )),
+                0 => Err(StorageError::graph_registry("No graphs are open").into()),
                 1 => Ok(open_graphs[0]),
-                _ => Err(GraphRegistryError::ValidationError(
-                    "Multiple graphs open, must specify target".to_string()
-                )),
+                _ => Err(StorageError::graph_registry("Multiple graphs open, must specify target").into()),
             }
         } else {
-            Err(GraphRegistryError::ValidationError(
-                "Must specify graph_id or graph_name".to_string()
-            ))
+            Err(StorageError::graph_registry("Must specify graph_id or graph_name").into())
         }
     }
     
@@ -360,9 +331,7 @@ impl GraphRegistry {
     pub fn remove_graph(&mut self, graph_id: &Uuid) -> Result<()> {
         // Get the graph info
         let graph_info = self.graphs.get(graph_id)
-            .ok_or_else(|| GraphRegistryError::ValidationError(
-                format!("Graph '{}' not found", graph_id)
-            ))?
+            .ok_or_else(|| StorageError::not_found("graph", "ID", graph_id.to_string()))?
             .clone();
         
         // Archive the graph data if we have a data directory
@@ -407,19 +376,17 @@ impl GraphRegistry {
         agent_registry: &mut crate::storage::AgentRegistry,
     ) -> Result<GraphInfo> {
         let data_dir = self.data_dir.as_ref()
-            .ok_or_else(|| GraphRegistryError::ValidationError("No data directory set".to_string()))?
+            .ok_or_else(|| StorageError::graph_registry("No data directory set"))?
             .clone();
         
         // Register the graph
         let graph_info = self.register_graph(None, name, description, &data_dir)?;
         
         // Authorize prime agent for the new graph
-        agent_registry.authorize_prime_for_new_graph(&graph_info.id, self)
-            .map_err(|e| GraphRegistryError::ValidationError(format!("Failed to authorize prime agent: {:?}", e)))?;
+        agent_registry.authorize_prime_for_new_graph(&graph_info.id, self)?;
         
         // Save both registries
-        agent_registry.save()
-            .map_err(|e| GraphRegistryError::ValidationError(format!("Failed to save agent registry: {:?}", e)))?;
+        agent_registry.save()?;
         self.save()?;
         
         info!("✅ Created graph: {} ({})", graph_info.name, graph_info.id);
@@ -715,12 +682,12 @@ mod tests {
         let invalid_uuid = Uuid::new_v4();
         let result = registry.resolve_graph_target(Some(&invalid_uuid), None, false);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Graph ID not found"));
+        assert!(result.unwrap_err().to_string().contains("Not found: graph with ID"));
         
         // Test 8: Invalid name should fail
         let result = registry.resolve_graph_target(None, Some("Non-existent Graph"), false);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Graph name not found"));
+        assert!(result.unwrap_err().to_string().contains("Not found: graph with name"));
         
         // Test 9: No parameters without smart default should fail
         let result = registry.resolve_graph_target(None, None, false);

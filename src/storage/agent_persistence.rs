@@ -43,25 +43,15 @@
 
 use std::path::Path;
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{Read, Write};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::agent::llm::{LLMConfig, Message};
+use crate::error::*;
 
-/// Errors that can occur during agent persistence operations
-#[derive(Debug, thiserror::Error)]
-pub enum AgentPersistenceError {
-    #[error("IO error: {0}")]
-    Io(#[from] io::Error),
-    
-    #[error("JSON serialization error: {0}")]
-    Json(#[from] serde_json::Error),
-}
-
-pub type Result<T> = std::result::Result<T, AgentPersistenceError>;
 
 /// Full agent state structure for persistence
 /// 
@@ -106,10 +96,7 @@ pub fn load_agent(agent_dir: &Path) -> Result<LoadedAgentData> {
     let agent_path = agent_dir.join("agent.json");
     
     if !agent_path.exists() {
-        return Err(AgentPersistenceError::Io(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("Agent file not found at {:?}", agent_path)
-        )));
+        return Err(StorageError::agent_persistence(format!("Agent file not found at {:?}", agent_path)).into());
     }
     
     let mut file = File::open(&agent_path)?;

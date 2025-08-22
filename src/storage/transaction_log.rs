@@ -64,27 +64,11 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
-use thiserror::Error;
-use tracing::error;
 use uuid::Uuid;
 use async_trait::async_trait;
+use crate::error::*;
 
-#[derive(Error, Debug)]
-pub enum TransactionLogError {
-    #[error("Sled database error: {0}")]
-    SledError(#[from] sled::Error),
-    
-    #[error("Serialization error: {0}")]
-    SerializationError(#[from] serde_json::Error),
-    
-    #[error("Transaction not found: {0}")]
-    TransactionNotFound(String),
-    
-    #[error("Invalid state transition: {0}")]
-    InvalidStateTransition(String),
-}
 
-pub type Result<T> = std::result::Result<T, TransactionLogError>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum TransactionState {
@@ -130,7 +114,7 @@ pub enum Operation {
 #[async_trait]
 pub trait OperationExecutor: Send + Sync {
     /// Execute an operation and return success/failure
-    async fn execute_operation(&self, graph_id: &uuid::Uuid, operation: Operation) -> std::result::Result<(), String>;
+    async fn execute_operation(&self, graph_id: &uuid::Uuid, operation: Operation) -> Result<()>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -246,7 +230,7 @@ impl TransactionLog {
     pub fn get_transaction(&self, id: &str) -> Result<Transaction> {
         match self.transactions_tree.get(id.as_bytes())? {
             Some(bytes) => Ok(serde_json::from_slice(&bytes)?),
-            None => Err(TransactionLogError::TransactionNotFound(id.to_string())),
+            None => Err(StorageError::not_found("transaction", "ID", id).into()),
         }
     }
     
@@ -257,9 +241,7 @@ impl TransactionLog {
         match (&transaction.state, &new_state) {
             (TransactionState::Active, _) => {}, // Active can transition to any state
             (from, to) => {
-                return Err(TransactionLogError::InvalidStateTransition(
-                    format!("Cannot transition from {:?} to {:?}", from, to)
-                ));
+                return Err(StorageError::transaction_log(format!("Cannot transition from {:?} to {:?}", from, to)).into());
             }
         }
         

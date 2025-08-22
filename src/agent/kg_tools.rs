@@ -47,21 +47,9 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 use crate::app_state::AppState;
 use crate::graph_operations::GraphOps;
-use thiserror::Error;
+use crate::error::*;
 
-#[derive(Error, Debug)]
-pub enum ToolError {
-    #[error("Tool not found: {0}")]
-    ToolNotFound(String),
-    
-    #[error("Missing required parameter: {0}")]
-    MissingParameter(String),
-    
-    #[error("Invalid parameter: {0}")]
-    InvalidParameter(String),
-}
 
-type Result<T> = std::result::Result<T, ToolError>;
 
 /// Type alias for async tool functions
 /// Takes agent_id as first parameter (system-provided), then args from LLM, then AppState
@@ -92,7 +80,7 @@ impl ToolRegistry {
     /// Execute a tool by name with the given agent_id and arguments
     pub async fn execute(&self, agent_id: Uuid, tool_name: &str, args: Value) -> Result<Value> {
         let tool = self.tools.get(tool_name)
-            .ok_or_else(|| ToolError::ToolNotFound(tool_name.to_string()))?;
+            .ok_or_else(|| AgentError::tool(format!("Tool not found: {}", tool_name)))?;
         
         tool(agent_id, args, self.app_state.clone()).await
     }
@@ -113,7 +101,7 @@ impl ToolRegistry {
             Box::pin(async move {
                 let content = args.get("content")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| ToolError::MissingParameter("content".to_string()))?
+                    .ok_or_else(|| AgentError::tool("Missing required parameter: content"))?
                     .to_string();
                 
                 let parent_id = args.get("parent_id")
@@ -146,12 +134,12 @@ impl ToolRegistry {
             Box::pin(async move {
                 let block_id = args.get("block_id")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| ToolError::MissingParameter("block_id".to_string()))?
+                    .ok_or_else(|| AgentError::tool("Missing required parameter: block_id"))?
                     .to_string();
                 
                 let content = args.get("content")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| ToolError::MissingParameter("content".to_string()))?
+                    .ok_or_else(|| AgentError::tool("Missing required parameter: content"))?
                     .to_string();
                 
                 let graph_id = parse_graph_id(&args)?;
@@ -173,7 +161,7 @@ impl ToolRegistry {
             Box::pin(async move {
                 let block_id = args.get("block_id")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| ToolError::MissingParameter("block_id".to_string()))?
+                    .ok_or_else(|| AgentError::tool("Missing required parameter: block_id"))?
                     .to_string();
                 
                 let graph_id = parse_graph_id(&args)?;
@@ -197,7 +185,7 @@ impl ToolRegistry {
             Box::pin(async move {
                 let page_name = args.get("page_name")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| ToolError::MissingParameter("page_name".to_string()))?
+                    .ok_or_else(|| AgentError::tool("Missing required parameter: page_name"))?
                     .to_string();
                 
                 let properties = args.get("properties").cloned();
@@ -221,7 +209,7 @@ impl ToolRegistry {
             Box::pin(async move {
                 let page_name = args.get("page_name")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| ToolError::MissingParameter("page_name".to_string()))?
+                    .ok_or_else(|| AgentError::tool("Missing required parameter: page_name"))?
                     .to_string();
                 
                 let graph_id = parse_graph_id(&args)?;
@@ -245,7 +233,7 @@ impl ToolRegistry {
             Box::pin(async move {
                 let node_id = args.get("node_id")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| ToolError::MissingParameter("node_id".to_string()))?;
+                    .ok_or_else(|| AgentError::tool("Missing required parameter: node_id"))?;
                 
                 let graph_id = parse_graph_id(&args)?;
                 
@@ -264,7 +252,7 @@ impl ToolRegistry {
             Box::pin(async move {
                 let start_id = args.get("start_id")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| ToolError::MissingParameter("start_id".to_string()))?;
+                    .ok_or_else(|| AgentError::tool("Missing required parameter: start_id"))?;
                 
                 let max_depth = args.get("max_depth")
                     .and_then(|v| v.as_u64())
@@ -396,10 +384,10 @@ impl ToolRegistry {
 fn parse_graph_id(args: &Value) -> Result<Uuid> {
     let graph_id_str = args.get("graph_id")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| ToolError::MissingParameter("graph_id".to_string()))?;
+        .ok_or_else(|| AgentError::tool("Missing required parameter: graph_id"))?;
     
     Uuid::parse_str(graph_id_str)
-        .map_err(|e| ToolError::InvalidParameter(format!("Invalid graph_id format: {}", e)))
+        .map_err(|e| AgentError::tool(format!("Invalid graph_id format: {}", e)).into())
 }
 
 #[cfg(test)]

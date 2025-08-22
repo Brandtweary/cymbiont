@@ -40,10 +40,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use chrono::Utc;
 use petgraph::stable_graph::NodeIndex;
-use crate::graph_manager::{GraphManager, NodeType, EdgeType, GraphError, GraphResult};
+use crate::graph_manager::{GraphManager, NodeType, EdgeType};
 use crate::utils::{parse_datetime, parse_properties};
 use crate::import::reference_resolver::resolve_block_references;
 use crate::import::logseq::extract_references;
+use crate::error::*;
 use serde_json::json;
 
 /// PKM block data received from the frontend
@@ -99,7 +100,7 @@ pub struct PKMReference {
 }
 
 /// Custom deserializer for timestamps that can be either strings or integers
-fn deserialize_timestamp<'de, D>(deserializer: D) -> Result<String, D::Error>
+fn deserialize_timestamp<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -112,28 +113,28 @@ where
             formatter.write_str("a string or an integer")
         }
 
-        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
         where
             E: serde::de::Error,
         {
             Ok(value.to_string())
         }
 
-        fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+        fn visit_string<E>(self, value: String) -> std::result::Result<Self::Value, E>
         where
             E: serde::de::Error,
         {
             Ok(value)
         }
 
-        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+        fn visit_i64<E>(self, value: i64) -> std::result::Result<Self::Value, E>
         where
             E: serde::de::Error,
         {
             Ok(value.to_string())
         }
 
-        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+        fn visit_u64<E>(self, value: u64) -> std::result::Result<Self::Value, E>
         where
             E: serde::de::Error,
         {
@@ -176,7 +177,7 @@ impl PKMBlockData {
         block_id: &str,
         new_content: String,
         graph_manager: &mut GraphManager,
-    ) -> GraphResult<()> {
+    ) -> Result<()> {
         // Find the node
         if let Some(node_idx) = graph_manager.find_node(block_id) {
             // Get existing node data to preserve all fields
@@ -213,14 +214,14 @@ impl PKMBlockData {
                 
                 Ok(())
             } else {
-                Err(GraphError::ReferenceResolution(format!("Node not found: {}", block_id)))
+                Err(GraphError::node_operation(format!("Node not found: {}", block_id)).into())
             }
         } else {
-            Err(GraphError::ReferenceResolution(format!("Node not found: {}", block_id)))
+            Err(GraphError::node_operation(format!("Node not found: {}", block_id)).into())
         }
     }
     /// Apply this block to the graph, creating/updating the node and edges
-    pub fn apply_to_graph(&self, graph: &mut GraphManager) -> GraphResult<NodeIndex> {
+    pub fn apply_to_graph(&self, graph: &mut GraphManager) -> Result<NodeIndex> {
         // Generate internal ID
         let internal_id = if let Some(existing_idx) = graph.find_node(&self.id) {
             // Node exists, get its internal ID
@@ -301,7 +302,7 @@ impl PKMPageData {
         page_name: String,
         properties: Option<serde_json::Value>,
         graph_manager: &mut GraphManager,
-    ) -> GraphResult<()> {
+    ) -> Result<()> {
         let normalized_name = page_name.to_lowercase();
         
         // Check if page already exists
@@ -330,7 +331,7 @@ impl PKMPageData {
                 // Page exists and no properties to update
                 Ok(())
             } else {
-                Err(GraphError::ReferenceResolution("Failed to get existing page node".to_string()))
+                Err(GraphError::node_operation("Failed to get existing page node").into())
             }
         } else {
             // Page doesn't exist - create it using factory method
@@ -342,7 +343,7 @@ impl PKMPageData {
         }
     }
     /// Apply this page to the graph, creating/updating the node and edges
-    pub fn apply_to_graph(&self, graph: &mut GraphManager) -> GraphResult<NodeIndex> {
+    pub fn apply_to_graph(&self, graph: &mut GraphManager) -> Result<NodeIndex> {
         let normalized_name_owned = self.name.to_lowercase();
         let normalized_name = self.normalized_name.as_ref()
             .unwrap_or(&normalized_name_owned);
@@ -398,7 +399,7 @@ fn build_block_content_map(graph: &GraphManager) -> HashMap<String, String> {
 }
 
 /// Ensure a page exists in the graph, creating a placeholder if necessary
-fn ensure_page_exists(graph: &mut GraphManager, page_name: &str) -> GraphResult<NodeIndex> {
+fn ensure_page_exists(graph: &mut GraphManager, page_name: &str) -> Result<NodeIndex> {
     
     let normalized_name = page_name.to_lowercase();
     
@@ -427,7 +428,7 @@ fn process_reference(
     graph: &mut GraphManager,
     source_idx: NodeIndex,
     reference: &PKMReference,
-) -> GraphResult<()> {
+) -> Result<()> {
     match reference.r#type.as_str() {
         "page" => {
             let target_idx = ensure_page_exists(graph, &reference.name)?;
@@ -460,9 +461,9 @@ fn process_reference(
             // So we don't need to do anything here
         }
         _ => {
-            return Err(GraphError::ReferenceResolution(
+            return Err(ImportError::reference_resolution(
                 format!("Unknown reference type: {}", reference.r#type)
-            ));
+            ).into());
         }
     }
     Ok(())

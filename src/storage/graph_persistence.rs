@@ -7,7 +7,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn, trace};
 
-use crate::graph_manager::{KnowledgeGraph, NodeMap, NodeData, GraphError, GraphResult, NodeType};
+use crate::graph_manager::{KnowledgeGraph, NodeMap, NodeData, NodeType};
+use crate::error::*;
 
 /// Data returned when loading a graph from disk
 #[derive(Debug)]
@@ -17,14 +18,11 @@ pub struct LoadedGraphData {
 }
 
 /// Load a graph from the given directory
-pub fn load_graph(data_dir: &Path) -> GraphResult<LoadedGraphData> {
+pub fn load_graph(data_dir: &Path) -> Result<LoadedGraphData> {
     let graph_path = data_dir.join("knowledge_graph.json");
     
     if !graph_path.exists() {
-        return Err(GraphError::Io(io::Error::new(
-            io::ErrorKind::NotFound,
-            "Graph file not found"
-        )));
+        return Err(StorageError::graph_persistence("Graph file not found").into());
     }
     
     let mut file = File::open(graph_path)?;
@@ -59,7 +57,7 @@ pub fn save_graph(
     data_dir: &Path,
     graph: &KnowledgeGraph,
     pkm_to_node: &NodeMap,
-) -> GraphResult<()> {
+) -> Result<()> {
     let graph_path = data_dir.join("knowledge_graph.json");
     
     #[derive(Serialize)]
@@ -87,7 +85,7 @@ pub fn archive_nodes(
     data_dir: &Path,
     graph_id: Option<&str>,
     nodes: &[(String, NodeData, Vec<serde_json::Value>, Vec<serde_json::Value>)],
-) -> GraphResult<String> {
+) -> Result<String> {
     if nodes.is_empty() {
         return Ok("No nodes to archive".to_string());
     }

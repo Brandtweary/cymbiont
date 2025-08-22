@@ -52,6 +52,7 @@
 
 use std::sync::Arc;
 use tracing::{info, warn, error};
+use crate::error::*;
 use crate::AppState;
 use crate::server::websocket::Command;
 use crate::server::websocket_utils::{
@@ -63,7 +64,7 @@ pub async fn handle(
     command: Command,
     connection_id: &str,
     state: &Arc<AppState>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<()> {
     match command {
         Command::Auth { token } => {
             // Validate token against configured auth token
@@ -71,7 +72,7 @@ pub async fn handle(
             
             if !validate_token(state, &token).await {
                 warn!("🔐 WebSocket authentication failed for {}: invalid token", connection_id);
-                return Err("Failed to authenticate: invalid token".into());
+                return Err(ServerError::authentication("Failed to authenticate: invalid token").into());
             }
             
             // Set authenticated (atomic operation)
@@ -80,8 +81,7 @@ pub async fn handle(
                     // Set the prime agent as the default for this connection
                     if let Some(ref connections) = state.ws_connections {
                         let prime_agent_id = {
-                            let registry = state.agent_registry.read()
-                                .map_err(|e| format!("Failed to read agent registry: {}", e))?;
+                            let registry = state.agent_registry.read_or_panic("read agent registry for auth");
                             registry.get_prime_agent_id()
                         };
                         
@@ -112,7 +112,7 @@ pub async fn handle(
                 }
                 Err(e) => {
                     error!("Failed to authenticate connection {}: {}", connection_id, e);
-                    return Err(format!("Failed to authenticate: {}", e).into());
+                    return Err(ServerError::authentication(format!("Failed to authenticate: {}", e)).into());
                 }
             }
         }
@@ -173,7 +173,7 @@ pub async fn handle(
                 }
                 Err(e) => {
                     error!("CLI command failed: {}", e);
-                    return Err(format!("CLI command failed: {}", e).into());
+                    return Err(ServerError::websocket(format!("CLI command failed: {}", e)).into());
                 }
             };
             
@@ -188,7 +188,7 @@ pub async fn handle(
         
         _ => {
             // This shouldn't happen if routing is correct
-            return Err("Command routed to wrong handler".into());
+            return Err(ServerError::websocket("Command routed to wrong handler").into());
         }
     }
     

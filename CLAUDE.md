@@ -8,6 +8,10 @@ cargo build                      # Build cymbiont
 cargo test                       # Run full test suite (preferred - only filter by test during active troubleshooting)
 RUST_LOG=debug cargo run         # Run cymbiont with debug logging (do not change duration or set a timeout unless user requests it)
 # NEVER: cargo run 2>&1 | tail   # WRONG: '2' becomes an argument to cargo! And you shouldn't be filtering cargo commands anyway
+
+# Log capture scripts (executable scripts in project root)
+./cyrun [args]                   # Run cargo run with output captured to logs/run.log
+./cytest [args]                  # Run cargo test with output captured to logs/test.log
 ```
 
 ## CLI Flags

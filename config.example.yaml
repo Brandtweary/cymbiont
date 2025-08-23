@@ -41,3 +41,16 @@ transaction_log:
   # Data integrity settings
   redundant_copies: 10  # Number of redundant log copies for consensus
   integrity_check_on_startup: true  # Run integrity checks and auto-repair at startup
+
+# Logging configuration (rotating file logger)
+logging:
+  directory: logs  # Directory for log files (relative or absolute path)
+  filename: cymbiont.log  # Base filename (timestamp will be appended)
+  max_files: 10  # Maximum number of log files to keep
+  max_size_mb: 500  # Maximum size per log file before rotation (megabytes)
+
+# Verbosity monitoring (warns when log volume exceeds thresholds)
+verbosity:
+  info_threshold: 50  # Maximum INFO logs before warning
+  debug_threshold: 100  # Maximum DEBUG logs before warning
+  trace_threshold: 200  # Maximum TRACE logs before warning

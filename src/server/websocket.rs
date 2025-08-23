@@ -1,67 +1,65 @@
-/**
- * @module websocket
- * @description Core WebSocket protocol types and connection handling
- * 
- * This module defines the WebSocket protocol infrastructure for Cymbiont's real-time
- * communication layer. It handles connection lifecycle, message routing, and protocol
- * definitions while delegating command implementation to domain-specific handlers.
- * 
- * ## Architecture
- * 
- * The WebSocket server follows a layered architecture:
- * - **Protocol Layer** (this module): Connection handling, message parsing, command routing
- * - **Utility Layer** (websocket_utils): Shared helpers for auth, responses, resolution
- * - **Handler Layer** (websocket_commands/): Domain-specific command implementations
- * 
- * ## Connection Lifecycle
- * 
- * 1. **Upgrade**: HTTP connection upgraded to WebSocket at `/ws` endpoint
- * 2. **Authentication**: Client sends `Auth { token }` command to authenticate
- * 3. **Agent Selection**: Prime agent automatically set as current on auth success
- * 4. **Command Processing**: Commands routed to appropriate handlers
- * 5. **Cleanup**: Graceful disconnection with task cancellation
- * 
- * ## Protocol Design
- * 
- * ### Command Structure
- * All commands are JSON objects with a `type` field identifying the command.
- * Commands are routed to handlers based on their domain (agent/graph/misc).
- * 
- * ### Response Types
- * - `Success { data? }`: Command succeeded with optional data
- * - `Error { message }`: Command failed with descriptive error
- * - `Heartbeat`: Keep-alive pulse from server (30s intervals)
- * 
- * ### Concurrency Model
- * Each incoming message spawns as an independent async task, enabling
- * high-throughput concurrent command processing without blocking.
- * 
- * ## Security
- * 
- * - WebSocket upgrade is public (no auth required at upgrade time)
- * - Authentication happens post-connection via Auth command
- * - All commands except Auth/Test/Heartbeat require authentication
- * - Agent authorization enforced at GraphOps layer for all graph operations
- * 
- * ## Key Types
- * 
- * - `WsConnection`: Connection state including auth status and current agent
- * - `Command`: Comprehensive enum of all supported WebSocket commands
- * - `Response`: Success/Error/Heartbeat response types
- * 
- * ## Error Handling
- * 
- * Commands use idiomatic Rust error propagation with the `?` operator.
- * Handlers return errors that bubble up to handle_message() where they're
- * sent to clients as error responses. This provides clean, consistent error
- * handling without explicit error response calls in most handlers.
- * 
- * ## Integration Points
- * 
- * - **AppState**: Central state coordination
- * - **GraphOps**: Agent authorization for graph operations
- * - **Command Handlers**: Domain-specific implementations in websocket_commands/
- */
+//! @module websocket
+//! @description Core WebSocket protocol types and connection handling
+//! 
+//! This module defines the WebSocket protocol infrastructure for Cymbiont's real-time
+//! communication layer. It handles connection lifecycle, message routing, and protocol
+//! definitions while delegating command implementation to domain-specific handlers.
+//! 
+//! ## Architecture
+//! 
+//! The WebSocket server follows a layered architecture:
+//! - **Protocol Layer** (this module): Connection handling, message parsing, command routing
+//! - **Utility Layer** (websocket_utils): Shared helpers for auth, responses, resolution
+//! - **Handler Layer** (websocket_commands/): Domain-specific command implementations
+//! 
+//! ## Connection Lifecycle
+//! 
+//! 1. **Upgrade**: HTTP connection upgraded to WebSocket at `/ws` endpoint
+//! 2. **Authentication**: Client sends `Auth { token }` command to authenticate
+//! 3. **Agent Selection**: Prime agent automatically set as current on auth success
+//! 4. **Command Processing**: Commands routed to appropriate handlers
+//! 5. **Cleanup**: Graceful disconnection with task cancellation
+//! 
+//! ## Protocol Design
+//! 
+//! ### Command Structure
+//! All commands are JSON objects with a `type` field identifying the command.
+//! Commands are routed to handlers based on their domain (agent/graph/misc).
+//! 
+//! ### Response Types
+//! - `Success { data? }`: Command succeeded with optional data
+//! - `Error { message }`: Command failed with descriptive error
+//! - `Heartbeat`: Keep-alive pulse from server (30s intervals)
+//! 
+//! ### Concurrency Model
+//! Each incoming message spawns as an independent async task, enabling
+//! high-throughput concurrent command processing without blocking.
+//! 
+//! ## Security
+//! 
+//! - WebSocket upgrade is public (no auth required at upgrade time)
+//! - Authentication happens post-connection via Auth command
+//! - All commands except Auth/Test/Heartbeat require authentication
+//! - Agent authorization enforced at GraphOps layer for all graph operations
+//! 
+//! ## Key Types
+//! 
+//! - `WsConnection`: Connection state including auth status and current agent
+//! - `Command`: Comprehensive enum of all supported WebSocket commands
+//! - `Response`: Success/Error/Heartbeat response types
+//! 
+//! ## Error Handling
+//! 
+//! Commands use idiomatic Rust error propagation with the `?` operator.
+//! Handlers return errors that bubble up to handle_message() where they're
+//! sent to clients as error responses. This provides clean, consistent error
+//! handling without explicit error response calls in most handlers.
+//! 
+//! ## Integration Points
+//! 
+//! - **AppState**: Central state coordination
+//! - **GraphOps**: Agent authorization for graph operations
+//! - **Command Handlers**: Domain-specific implementations in websocket_commands/
 
 use axum::{
     extract::{

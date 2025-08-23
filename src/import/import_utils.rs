@@ -1,32 +1,30 @@
-/**
- * @module import_utils
- * @description High-level import coordination for knowledge graphs
- * 
- * This module provides the main entry point for importing external knowledge graphs
- * into Cymbiont. It coordinates the entire import process from source parsing to
- * graph creation, registry management, and error collection.
- * 
- * ## Key Functions
- * 
- * - `import_logseq_graph()`: Complete Logseq import workflow with error handling
- * 
- * ## Import Process
- * 
- * 1. **Source Parsing**: Delegate to format-specific parsers (logseq.rs)
- * 2. **Graph Registration**: Create or update graph in registry
- * 3. **Data Import**: Process pages and blocks with reference resolution
- * 4. **Error Collection**: Aggregate non-fatal errors for reporting
- * 5. **Result Reporting**: Return comprehensive import statistics
- * 
- * ## Error Handling
- * 
- * The import process is designed to be resilient:
- * - Parse errors for individual files are collected but don't stop the import
- * - Reference resolution failures are reported but don't break the graph
- * - Only fatal errors (registry issues, I/O failures) abort the import
- * 
- * This approach ensures maximum data recovery from potentially corrupted sources.
- */
+//! @module import_utils
+//! @description High-level import coordination for knowledge graphs
+//! 
+//! This module provides the main entry point for importing external knowledge graphs
+//! into Cymbiont. It coordinates the entire import process from source parsing to
+//! graph creation, registry management, and error collection.
+//! 
+//! ## Key Functions
+//! 
+//! - `import_logseq_graph()`: Complete Logseq import workflow with error handling
+//! 
+//! ## Import Process
+//! 
+//! 1. **Source Parsing**: Delegate to format-specific parsers (logseq.rs)
+//! 2. **Graph Registration**: Create or update graph in registry
+//! 3. **Data Import**: Process pages and blocks with reference resolution
+//! 4. **Error Collection**: Aggregate non-fatal errors for reporting
+//! 5. **Result Reporting**: Return comprehensive import statistics
+//! 
+//! ## Error Handling
+//! 
+//! The import process is designed to be resilient:
+//! - Parse errors for individual files are collected but don't stop the import
+//! - Reference resolution failures are reported but don't break the graph
+//! - Only fatal errors (registry issues, I/O failures) abort the import
+//! 
+//! This approach ensures maximum data recovery from potentially corrupted sources.
 
 use std::path::Path;
 use std::sync::Arc;

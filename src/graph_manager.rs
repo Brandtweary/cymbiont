@@ -1,127 +1,124 @@
-/**
- * @module graph_manager
- * @description Core knowledge graph storage engine using petgraph
- * 
- * This module provides the foundational graph storage and manipulation capabilities
- * for Cymbiont's knowledge graph system. It implements a generic, high-performance
- * graph engine using petgraph's StableGraph structure, supporting arbitrary node
- * and edge types with automatic persistence.
- * 
- * ## Architecture Overview
- * 
- * The GraphManager maintains two critical data structures:
- * 1. `graph: StableGraph<NodeData, EdgeData>` - The actual graph structure
- * 2. `pkm_to_node: HashMap<String, NodeIndex>` - O(1) external ID → graph node lookup
- * 
- * ## Key Design Decisions
- * 
- * ### StableGraph Selection
- * Petgraph's StableGraph maintains consistent NodeIndex values even after node removals.
- * This is critical for our HashMap-based ID mapping system, preventing index invalidation
- * and ensuring reliable node references throughout the application lifetime.
- * 
- * ### Dual ID System
- * - **External ID (pkm_id)**: Application-provided identifier (e.g., UUID, name)
- * - **Internal ID**: System-generated UUID for graph serialization
- * This separation allows the graph to be self-contained while maintaining stable
- * external references.
- * 
- * ### Generic Design
- * GraphManager is domain-agnostic and accepts any node/edge data that conforms to
- * the NodeData/EdgeData structures. Domain-specific logic (e.g., PKM operations)
- * is implemented in separate modules that use GraphManager's generic API.
- * 
- * ### Auto-Save Mechanism
- * Dual-trigger persistence strategy optimizes for both data safety and performance:
- * - **Time-based**: Every 5 minutes (protects against data loss during low activity)
- * - **Operation-based**: Every 10 operations (captures bursts of activity)
- * - **Batch control**: `disable_auto_save()` / `enable_auto_save()` for bulk imports
- * 
- * ## Data Structures
- * 
- * ### NodeData
- * - `id`: Internal UUID for serialization
- * - `pkm_id`: External identifier provided by application
- * - `node_type`: Enum discriminator (Page or Block)
- * - `content`: Primary node content
- * - `reference_content`: Optional expanded/resolved content
- * - `properties`: Key-value metadata store
- * - `created_at` / `updated_at`: Audit timestamps
- * 
- * ### EdgeData
- * - `edge_type`: Enum discriminator for edge semantics
- * - `weight`: Float weight for graph algorithms (default: 1.0)
- * 
- * ### Edge Types
- * - **PageRef**: Reference to a page node
- * - **BlockRef**: Reference to a block node
- * - **Tag**: Tag association
- * - **Property**: Property reference (rarely used as edges)
- * - **ParentChild**: Hierarchical relationship
- * - **PageToBlock**: Page ownership relationship
- * 
- * ## Core API
- * 
- * ### Node Operations
- * - `create_node()`: Create new node with full attribute specification
- * - `create_or_update_node()`: Upsert operation with automatic update detection
- * - `find_node()`: O(1) lookup by external ID
- * - `get_node()`: Retrieve node data by graph index
- * - `archive_nodes()`: Soft delete with archival to timestamped JSON
- * 
- * ### Edge Operations
- * - `add_edge()`: Create edge with automatic duplicate prevention
- * - `has_edge()`: Check edge existence by type
- * 
- * ### Persistence Operations
- * - `new()`: Initialize manager, auto-load existing graph from disk
- * - `save_graph()`: Explicit full serialization to JSON
- * - `save_if_needed()`: Conditional save based on configured thresholds
- * 
- * ### Utility Operations
- * - `disable_auto_save()` / `enable_auto_save()`: Batch operation support
- * 
- * ## Performance Characteristics
- * 
- * - **Node lookup**: O(1) via HashMap index
- * - **Node creation**: O(1) amortized
- * - **Edge creation**: O(1) with duplicate check
- * - **Full serialization**: O(V + E) where V = vertices, E = edges
- * - **Memory usage**: O(V + E) with efficient petgraph representation
- * 
- * ## Concurrency Model
- * 
- * GraphManager is designed for single-threaded access protected by external
- * synchronization (typically a Mutex in the application layer):
- * - All operations assume exclusive access
- * - Batch operations should hold the lock for the entire sequence
- * - Auto-save can be disabled during bulk operations to reduce I/O
- * 
- * ## Error Handling
- * 
- * - **Initialization failures**: Falls back to empty graph (non-fatal)
- * - **Save failures**: Logged but operations continue (data retained in memory)
- * - **Load failures**: Logged with graceful degradation to empty state
- * - **Archive failures**: Propagated to caller, graph state unchanged
- * 
- * ## Persistence Format
- * 
- * Graphs are serialized to JSON with the following structure:
- * ```json
- * {
- *   "version": 1,
- *   "graph": { /* petgraph serialization */ },
- *   "pkm_to_node": { /* ID mapping */ }
- * }
- * ```
- * 
- * ## Integration Points
- * 
- * - **Storage Layer**: Delegates to `graph_persistence` module for I/O
- * - **Domain Layer**: Called by domain-specific modules (e.g., `pkm_data`)
- * - **API Layer**: Wrapped by `graph_operations` for external access
- * - **Transaction Layer**: Participates in transaction coordination
- */
+//! Core knowledge graph storage engine using petgraph
+//! 
+//! This module provides the foundational graph storage and manipulation capabilities
+//! for Cymbiont's knowledge graph system. It implements a generic, high-performance
+//! graph engine using petgraph's StableGraph structure, supporting arbitrary node
+//! and edge types with automatic persistence.
+//! 
+//! ## Architecture Overview
+//! 
+//! The GraphManager maintains two critical data structures:
+//! 1. `graph: StableGraph<NodeData, EdgeData>` - The actual graph structure
+//! 2. `pkm_to_node: HashMap<String, NodeIndex>` - O(1) external ID → graph node lookup
+//! 
+//! ## Key Design Decisions
+//! 
+//! ### StableGraph Selection
+//! Petgraph's StableGraph maintains consistent NodeIndex values even after node removals.
+//! This is critical for our HashMap-based ID mapping system, preventing index invalidation
+//! and ensuring reliable node references throughout the application lifetime.
+//! 
+//! ### Dual ID System
+//! - **External ID (pkm_id)**: Application-provided identifier (e.g., UUID, name)
+//! - **Internal ID**: System-generated UUID for graph serialization
+//! This separation allows the graph to be self-contained while maintaining stable
+//! external references.
+//! 
+//! ### Generic Design
+//! GraphManager is domain-agnostic and accepts any node/edge data that conforms to
+//! the NodeData/EdgeData structures. Domain-specific logic (e.g., PKM operations)
+//! is implemented in separate modules that use GraphManager's generic API.
+//! 
+//! ### Auto-Save Mechanism
+//! Dual-trigger persistence strategy optimizes for both data safety and performance:
+//! - **Time-based**: Every 5 minutes (protects against data loss during low activity)
+//! - **Operation-based**: Every 10 operations (captures bursts of activity)
+//! - **Batch control**: `disable_auto_save()` / `enable_auto_save()` for bulk imports
+//! 
+//! ## Data Structures
+//! 
+//! ### NodeData
+//! - `id`: Internal UUID for serialization
+//! - `pkm_id`: External identifier provided by application
+//! - `node_type`: Enum discriminator (Page or Block)
+//! - `content`: Primary node content
+//! - `reference_content`: Optional expanded/resolved content
+//! - `properties`: Key-value metadata store
+//! - `created_at` / `updated_at`: Audit timestamps
+//! 
+//! ### EdgeData
+//! - `edge_type`: Enum discriminator for edge semantics
+//! - `weight`: Float weight for graph algorithms (default: 1.0)
+//! 
+//! ### Edge Types
+//! - **PageRef**: Reference to a page node
+//! - **BlockRef**: Reference to a block node
+//! - **Tag**: Tag association
+//! - **Property**: Property reference (rarely used as edges)
+//! - **ParentChild**: Hierarchical relationship
+//! - **PageToBlock**: Page ownership relationship
+//! 
+//! ## Core API
+//! 
+//! ### Node Operations
+//! - `create_node()`: Create new node with full attribute specification
+//! - `create_or_update_node()`: Upsert operation with automatic update detection
+//! - `find_node()`: O(1) lookup by external ID
+//! - `get_node()`: Retrieve node data by graph index
+//! - `archive_nodes()`: Soft delete with archival to timestamped JSON
+//! 
+//! ### Edge Operations
+//! - `add_edge()`: Create edge with automatic duplicate prevention
+//! - `has_edge()`: Check edge existence by type
+//! 
+//! ### Persistence Operations
+//! - `new()`: Initialize manager, auto-load existing graph from disk
+//! - `save_graph()`: Explicit full serialization to JSON
+//! - `save_if_needed()`: Conditional save based on configured thresholds
+//! 
+//! ### Utility Operations
+//! - `disable_auto_save()` / `enable_auto_save()`: Batch operation support
+//! 
+//! ## Performance Characteristics
+//! 
+//! - **Node lookup**: O(1) via HashMap index
+//! - **Node creation**: O(1) amortized
+//! - **Edge creation**: O(1) with duplicate check
+//! - **Full serialization**: O(V + E) where V = vertices, E = edges
+//! - **Memory usage**: O(V + E) with efficient petgraph representation
+//! 
+//! ## Concurrency Model
+//! 
+//! GraphManager is designed for single-threaded access protected by external
+//! synchronization (typically a Mutex in the application layer):
+//! - All operations assume exclusive access
+//! - Batch operations should hold the lock for the entire sequence
+//! - Auto-save can be disabled during bulk operations to reduce I/O
+//! 
+//! ## Error Handling
+//! 
+//! - **Initialization failures**: Falls back to empty graph (non-fatal)
+//! - **Save failures**: Logged but operations continue (data retained in memory)
+//! - **Load failures**: Logged with graceful degradation to empty state
+//! - **Archive failures**: Propagated to caller, graph state unchanged
+//! 
+//! ## Persistence Format
+//! 
+//! Graphs are serialized to JSON with the following structure:
+//! ```json
+//! {
+//!   "version": 1,
+//!   "graph": { /* petgraph serialization */ },
+//!   "pkm_to_node": { /* ID mapping */ }
+//! }
+//! ```
+//! 
+//! ## Integration Points
+//! 
+//! - **Storage Layer**: Delegates to `graph_persistence` module for I/O
+//! - **Domain Layer**: Called by domain-specific modules (e.g., `pkm_data`)
+//! - **API Layer**: Wrapped by `graph_operations` for external access
+//! - **Transaction Layer**: Participates in transaction coordination
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

@@ -1,146 +1,144 @@
-/**
- * Graph Operations Module - Agent-Aware PKM Operations
- * 
- * Provides PKM-specific graph operations with runtime agent authorization.
- * All operations require an agent ID and verify authorization before execution.
- * 
- * ## Design Pattern: Single Trait API
- * 
- * The `GraphOps` trait provides all graph operations with agent awareness:
- * ```rust
- * use graph_operations::GraphOps;
- * 
- * // Operations require agent_id for authorization
- * app_state.add_block(agent_id, content, parent_id, page_name, properties, &graph_id).await?;
- * ```
- * 
- * This pattern provides several benefits:
- * - Runtime authorization checks for security
- * - Single source of truth for all graph operations
- * - Clear agent accountability for all changes
- * - Clean integration with transaction system
- * 
- * ## Core Operations
- * 
- * ### Block Operations
- * - `add_block()` - Create new PKM block with content, parent, and properties
- * - `update_block()` - Modify block content with automatic reference resolution
- * - `delete_block()` - Archive block node while preserving data
- * 
- * ### Page Operations  
- * - `create_page()` - Create new PKM page with normalized name handling
- * - `delete_page()` - Archive page node (handles normalized names)
- * 
- * ### Graph Management
- * - `create_graph()` - Initialize new knowledge graph with registry entry
- * - `delete_graph()` - Archive entire graph (can delete both open and closed)
- * - `open_graph()` - Load graph into RAM and trigger recovery
- * - `close_graph()` - Save graph and unload from RAM
- * - `list_graphs()` - Enumerate all registered graphs
- * - `list_open_graphs()` - List currently open graphs
- * 
- * ### Query Operations
- * - `get_node()` - Retrieve node by ID with PKM-aware formatting
- * - `query_graph_bfs()` - Breadth-first traversal (TODO)
- * 
- * ### Recovery Operations
- * - `replay_transaction()` - Replay a stored operation during crash recovery
- * 
- * ## Transaction Integration
- * 
- * All mutation operations are automatically wrapped in transactions:
- * 1. Operation parameters are stored in WAL before execution
- * 2. PKM transformations are applied within transaction boundary
- * 3. Success/failure updates transaction state
- * 4. Crash recovery replays operations with exact parameters
- * 
- * The Operation enum stores full API parameters:
- * ```rust
- * Operation::CreateBlock {
- *     content: String,
- *     parent_id: Option<String>,
- *     page_name: Option<String>,
- *     properties: Option<serde_json::Value>,
- * }
- * ```
- * 
- * ## Crash Recovery
- * 
- * Recovery happens at two points:
- * 1. **Startup** (main.rs): Runs `run_all_graphs_recovery()` for ALL graphs (both open and closed)
- * 2. **Graph Open**: Each `open_graph()` call triggers recovery for that specific graph
- * 
- * The recovery process:
- * - Startup: Iterates all graphs, temporarily opens closed ones for recovery
- * - Finds all Active transactions in each graph's WAL
- * - Calls `OperationExecutor::execute_operation()` for each pending transaction
- * - Updates transaction state based on result
- * - No PKM reconstruction needed - exact API replay
- * - Closed graphs are closed again after recovery
- * 
- * ## OperationExecutor Trait Implementation
- * 
- * Arc<AppState> implements the `OperationExecutor` trait from the storage layer.
- * This enables the transaction system to execute operations without knowing their
- * implementation details:
- * 
- * ```rust
- * // Storage layer defines the trait
- * pub trait OperationExecutor {
- *     async fn execute_operation(&self, operation: Operation) -> Result<(), String>;
- * }
- * 
- * // Graph operations module implements it
- * impl OperationExecutor for Arc<AppState> {
- *     async fn execute_operation(&self, operation: Operation) -> Result<(), String> {
- *         match operation {
- *             Operation::CreateBlock { .. } => self.add_block(...),
- *             // ... other operations
- *         }
- *     }
- * }
- * ```
- * 
- * ## Adding New Graph Operations
- * 
- * When adding new operations, follow these steps:
- * 
- * 1. **Define the Operation variant** in `storage/transaction_log.rs`:
- *    - Add new variant to `Operation` enum with agent_id and all parameters
- *    - Include all data needed to replay the operation during recovery
- * 
- * 2. **Add the trait method** to `GraphOps` trait in this file:
- *    - Include agent_id: Uuid as first parameter
- *    - Add graph_id: &Uuid parameter for graph targeting
- *    - Return appropriate Result<T> type
- * 
- * 3. **Implement the operation** in `impl GraphOps for Arc<AppState>`:
- *    - Start with authorization check using agent_registry
- *    - Create Operation enum with parameters for transaction log
- *    - Execute within with_graph_transaction() for ACID guarantees
- *    - Handle errors appropriately (GraphError vs NodeNotFound)
- * 
- * 4. **Add to OperationExecutor** implementation at bottom of this file:
- *    - Add match arm that calls the GraphOps method
- *    - Map operation parameters to method parameters
- *    - Convert errors to String for transaction system
- * 
- * 5. **Register in tool registry** (optional) in `agent/kg_tools.rs`:
- *    - Add tool registration in appropriate category
- *    - Parse parameters from JSON args
- *    - Call GraphOps method with agent_id and parsed params
- * 
- * 6. **Add WebSocket command** (optional) in `server/websocket.rs`:
- *    - Define command variant in Command enum
- *    - Add handler that extracts current_agent_id
- *    - Call GraphOps method and return success/error response
- * 
- * ## Error Handling
- * 
- * Operations return `Result<T, GraphOperationError>` with two error variants:
- * - `GraphError` - General graph operation failures
- * - `NodeNotFound` - Specific node lookup failures
- */
+//! Graph Operations Module - Agent-Aware PKM Operations
+//! 
+//! Provides PKM-specific graph operations with runtime agent authorization.
+//! All operations require an agent ID and verify authorization before execution.
+//! 
+//! ## Design Pattern: Single Trait API
+//! 
+//! The `GraphOps` trait provides all graph operations with agent awareness:
+//! ```rust
+//! use graph_operations::GraphOps;
+//! 
+//! // Operations require agent_id for authorization
+//! app_state.add_block(agent_id, content, parent_id, page_name, properties, &graph_id).await?;
+//! ```
+//! 
+//! This pattern provides several benefits:
+//! - Runtime authorization checks for security
+//! - Single source of truth for all graph operations
+//! - Clear agent accountability for all changes
+//! - Clean integration with transaction system
+//! 
+//! ## Core Operations
+//! 
+//! ### Block Operations
+//! - `add_block()` - Create new PKM block with content, parent, and properties
+//! - `update_block()` - Modify block content with automatic reference resolution
+//! - `delete_block()` - Archive block node while preserving data
+//! 
+//! ### Page Operations  
+//! - `create_page()` - Create new PKM page with normalized name handling
+//! - `delete_page()` - Archive page node (handles normalized names)
+//! 
+//! ### Graph Management
+//! - `create_graph()` - Initialize new knowledge graph with registry entry
+//! - `delete_graph()` - Archive entire graph (can delete both open and closed)
+//! - `open_graph()` - Load graph into RAM and trigger recovery
+//! - `close_graph()` - Save graph and unload from RAM
+//! - `list_graphs()` - Enumerate all registered graphs
+//! - `list_open_graphs()` - List currently open graphs
+//! 
+//! ### Query Operations
+//! - `get_node()` - Retrieve node by ID with PKM-aware formatting
+//! - `query_graph_bfs()` - Breadth-first traversal (TODO)
+//! 
+//! ### Recovery Operations
+//! - `replay_transaction()` - Replay a stored operation during crash recovery
+//! 
+//! ## Transaction Integration
+//! 
+//! All mutation operations are automatically wrapped in transactions:
+//! 1. Operation parameters are stored in WAL before execution
+//! 2. PKM transformations are applied within transaction boundary
+//! 3. Success/failure updates transaction state
+//! 4. Crash recovery replays operations with exact parameters
+//! 
+//! The Operation enum stores full API parameters:
+//! ```rust
+//! Operation::CreateBlock {
+//!     content: String,
+//!     parent_id: Option<String>,
+//!     page_name: Option<String>,
+//!     properties: Option<serde_json::Value>,
+//! }
+//! ```
+//! 
+//! ## Crash Recovery
+//! 
+//! Recovery happens at two points:
+//! 1. **Startup** (main.rs): Runs `run_all_graphs_recovery()` for ALL graphs (both open and closed)
+//! 2. **Graph Open**: Each `open_graph()` call triggers recovery for that specific graph
+//! 
+//! The recovery process:
+//! - Startup: Iterates all graphs, temporarily opens closed ones for recovery
+//! - Finds all Active transactions in each graph's WAL
+//! - Calls `OperationExecutor::execute_operation()` for each pending transaction
+//! - Updates transaction state based on result
+//! - No PKM reconstruction needed - exact API replay
+//! - Closed graphs are closed again after recovery
+//! 
+//! ## OperationExecutor Trait Implementation
+//! 
+//! Arc<AppState> implements the `OperationExecutor` trait from the storage layer.
+//! This enables the transaction system to execute operations without knowing their
+//! implementation details:
+//! 
+//! ```rust
+//! // Storage layer defines the trait
+//! pub trait OperationExecutor {
+//!     async fn execute_operation(&self, operation: Operation) -> Result<(), String>;
+//! }
+//! 
+//! // Graph operations module implements it
+//! impl OperationExecutor for Arc<AppState> {
+//!     async fn execute_operation(&self, operation: Operation) -> Result<(), String> {
+//!         match operation {
+//!             Operation::CreateBlock { .. } => self.add_block(...),
+//!             // ... other operations
+//!         }
+//!     }
+//! }
+//! ```
+//! 
+//! ## Adding New Graph Operations
+//! 
+//! When adding new operations, follow these steps:
+//! 
+//! 1. **Define the Operation variant** in `storage/transaction_log.rs`:
+//!    - Add new variant to `Operation` enum with agent_id and all parameters
+//!    - Include all data needed to replay the operation during recovery
+//! 
+//! 2. **Add the trait method** to `GraphOps` trait in this file:
+//!    - Include agent_id: Uuid as first parameter
+//!    - Add graph_id: &Uuid parameter for graph targeting
+//!    - Return appropriate Result<T> type
+//! 
+//! 3. **Implement the operation** in `impl GraphOps for Arc<AppState>`:
+//!    - Start with authorization check using agent_registry
+//!    - Create Operation enum with parameters for transaction log
+//!    - Execute within with_graph_transaction() for ACID guarantees
+//!    - Handle errors appropriately (GraphError vs NodeNotFound)
+//! 
+//! 4. **Add to OperationExecutor** implementation at bottom of this file:
+//!    - Add match arm that calls the GraphOps method
+//!    - Map operation parameters to method parameters
+//!    - Convert errors to String for transaction system
+//! 
+//! 5. **Register in tool registry** (optional) in `agent/kg_tools.rs`:
+//!    - Add tool registration in appropriate category
+//!    - Parse parameters from JSON args
+//!    - Call GraphOps method with agent_id and parsed params
+//! 
+//! 6. **Add WebSocket command** (optional) in `server/websocket.rs`:
+//!    - Define command variant in Command enum
+//!    - Add handler that extracts current_agent_id
+//!    - Call GraphOps method and return success/error response
+//! 
+//! ## Error Handling
+//! 
+//! Operations return `Result<T, GraphOperationError>` with two error variants:
+//! - `GraphError` - General graph operation failures
+//! - `NodeNotFound` - Specific node lookup failures
 
 use crate::{
     AppState,

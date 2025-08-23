@@ -1,71 +1,69 @@
-/**
- * @module http_api
- * @description HTTP API implementation for the Cymbiont Knowledge Graph backend
- * 
- * This module provides HTTP endpoints for health checks, one-time import operations,
- * WebSocket upgrades, and monitoring. All real-time data manipulation is handled
- * exclusively through WebSocket connections.
- * 
- * ## Design Philosophy
- * 
- * The HTTP API follows a minimalist approach focused on:
- * - **Stateless Operations**: Perfect for one-time imports and health checks
- * - **WebSocket Handoff**: Real-time operations transition to WebSocket protocol
- * - **Monitoring Integration**: Endpoints for system health and debugging
- * - **Security by Default**: Path validation and canonicalization for imports
- * 
- * ## Endpoints
- * 
- * ### GET /
- * Health check endpoint returning static string "PKM Knowledge Graph Backend Server".
- * - **Purpose**: Load balancer health checks, service discovery
- * - **Response**: Plain text, always returns 200 OK
- * - **Performance**: No database queries, instant response
- * 
- * ### POST /import/logseq
- * Import a Logseq graph from a directory path. This is a one-time operation
- * perfect for HTTP's request/response model.
- * - **Request**: JSON with `path` (required) and `graph_name` (optional)
- * - **Validation**: Path existence, directory check, canonicalization
- * - **Process**: Markdown parsing → Reference resolution → Graph creation
- * - **Response**: Success with import statistics or detailed error message
- * - **Security**: Path traversal prevention, safe directory validation
- * 
- * ### GET /ws
- * WebSocket upgrade endpoint - transitions HTTP connections to WebSocket protocol.
- * - **Purpose**: Upgrade HTTP connections for real-time graph operations
- * - **Protocol**: Standard WebSocket upgrade handshake
- * - **Authentication**: Handled post-upgrade in WebSocket handler
- * - **Connection Management**: Automatic cleanup on disconnect
- * 
- * ### GET /api/websocket/status
- * Returns WebSocket connection metrics for monitoring.
- * - **Response**: JSON with connection count, open graph IDs
- * - **Use Cases**: System monitoring, integration testing, debugging
- * - **Performance**: Fast read-only operation, no heavy processing
- * 
- * ### GET /api/websocket/recent-activity
- * Returns recent WebSocket activity for integration testing and debugging.
- * - **Response**: JSON with active connections and activity metadata
- * - **Purpose**: Integration test validation, debugging connection issues
- * - **Future**: Will be expanded with command history tracking
- * 
- * ## Error Handling
- * 
- * HTTP endpoints implement consistent error patterns:
- * - **Validation Errors**: 400 Bad Request with descriptive messages
- * - **Not Found**: 404 for non-existent paths or resources
- * - **Server Errors**: 500 with generic messages (details in logs)
- * - **Import Errors**: Partial success reporting with error collections
- * 
- * ## Integration Points
- * 
- * The HTTP API integrates with:
- * - **AppState**: Shared application state for graph management
- * - **Import System**: Logseq parsing and graph creation
- * - **WebSocket Server**: Connection handoff and status reporting
- * - **Storage Layer**: Graph registry and transaction coordination
- */
+//! @module http_api
+//! @description HTTP API implementation for the Cymbiont Knowledge Graph backend
+//! 
+//! This module provides HTTP endpoints for health checks, one-time import operations,
+//! WebSocket upgrades, and monitoring. All real-time data manipulation is handled
+//! exclusively through WebSocket connections.
+//! 
+//! ## Design Philosophy
+//! 
+//! The HTTP API follows a minimalist approach focused on:
+//! - **Stateless Operations**: Perfect for one-time imports and health checks
+//! - **WebSocket Handoff**: Real-time operations transition to WebSocket protocol
+//! - **Monitoring Integration**: Endpoints for system health and debugging
+//! - **Security by Default**: Path validation and canonicalization for imports
+//! 
+//! ## Endpoints
+//! 
+//! ### GET /
+//! Health check endpoint returning static string "PKM Knowledge Graph Backend Server".
+//! - **Purpose**: Load balancer health checks, service discovery
+//! - **Response**: Plain text, always returns 200 OK
+//! - **Performance**: No database queries, instant response
+//! 
+//! ### POST /import/logseq
+//! Import a Logseq graph from a directory path. This is a one-time operation
+//! perfect for HTTP's request/response model.
+//! - **Request**: JSON with `path` (required) and `graph_name` (optional)
+//! - **Validation**: Path existence, directory check, canonicalization
+//! - **Process**: Markdown parsing → Reference resolution → Graph creation
+//! - **Response**: Success with import statistics or detailed error message
+//! - **Security**: Path traversal prevention, safe directory validation
+//! 
+//! ### GET /ws
+//! WebSocket upgrade endpoint - transitions HTTP connections to WebSocket protocol.
+//! - **Purpose**: Upgrade HTTP connections for real-time graph operations
+//! - **Protocol**: Standard WebSocket upgrade handshake
+//! - **Authentication**: Handled post-upgrade in WebSocket handler
+//! - **Connection Management**: Automatic cleanup on disconnect
+//! 
+//! ### GET /api/websocket/status
+//! Returns WebSocket connection metrics for monitoring.
+//! - **Response**: JSON with connection count, open graph IDs
+//! - **Use Cases**: System monitoring, integration testing, debugging
+//! - **Performance**: Fast read-only operation, no heavy processing
+//! 
+//! ### GET /api/websocket/recent-activity
+//! Returns recent WebSocket activity for integration testing and debugging.
+//! - **Response**: JSON with active connections and activity metadata
+//! - **Purpose**: Integration test validation, debugging connection issues
+//! - **Future**: Will be expanded with command history tracking
+//! 
+//! ## Error Handling
+//! 
+//! HTTP endpoints implement consistent error patterns:
+//! - **Validation Errors**: 400 Bad Request with descriptive messages
+//! - **Not Found**: 404 for non-existent paths or resources
+//! - **Server Errors**: 500 with generic messages (details in logs)
+//! - **Import Errors**: Partial success reporting with error collections
+//! 
+//! ## Integration Points
+//! 
+//! The HTTP API integrates with:
+//! - **AppState**: Shared application state for graph management
+//! - **Import System**: Logseq parsing and graph creation
+//! - **WebSocket Server**: Connection handoff and status reporting
+//! - **Storage Layer**: Graph registry and transaction coordination
 
 use axum::{
     extract::State, 

@@ -1,55 +1,53 @@
-/**
- * @module graph_commands
- * @description Graph-related WebSocket command handlers
- * 
- * This module implements all graph-related WebSocket commands, providing
- * comprehensive knowledge graph management through the GraphOps trait
- * which enforces agent authorization at runtime.
- * 
- * ## Command Categories
- * 
- * ### Block Operations
- * - `CreateBlock`: Create new block with content, parent, and page associations
- * - `UpdateBlock`: Modify block content while preserving edges
- * - `DeleteBlock`: Archive block node (soft delete)
- * 
- * ### Page Operations
- * - `CreatePage`: Create or update page with properties
- * - `DeletePage`: Archive page and associated blocks
- * 
- * ### Graph Lifecycle
- * - `OpenGraph`: Load graph into memory and trigger recovery
- * - `CloseGraph`: Save and unload graph from memory
- * - `CreateGraph`: Create new graph with prime agent authorization
- * - `DeleteGraph`: Archive entire graph to archived_graphs/
- * - `ListGraphs`: Return all registered graphs with metadata
- * 
- * ## Authorization Model
- * 
- * All operations require an authenticated agent with appropriate graph
- * permissions. The current_agent_id from the WebSocket connection is
- * passed to GraphOps methods which perform runtime authorization checks.
- * 
- * ## Graph Targeting
- * 
- * Commands support flexible graph targeting through:
- * - `graph_id`: Direct UUID string targeting
- * - `graph_name`: Human-readable name resolution
- * - Smart defaults: Falls back to single open graph when unspecified
- * 
- * ## Transaction Integration
- * 
- * All modifying operations are wrapped in transactions via the GraphOps
- * trait, ensuring ACID properties and enabling crash recovery through
- * the WAL (Write-Ahead Log).
- * 
- * ## Error Handling
- * 
- * - Authorization failures return clear "not authorized" errors
- * - Missing agent selection returns "no agent selected" errors
- * - Graph resolution failures provide specific error messages
- * - Operation failures are wrapped with descriptive context
- */
+//! @module graph_commands
+//! @description Graph-related WebSocket command handlers
+//! 
+//! This module implements all graph-related WebSocket commands, providing
+//! comprehensive knowledge graph management through the GraphOps trait
+//! which enforces agent authorization at runtime.
+//! 
+//! ## Command Categories
+//! 
+//! ### Block Operations
+//! - `CreateBlock`: Create new block with content, parent, and page associations
+//! - `UpdateBlock`: Modify block content while preserving edges
+//! - `DeleteBlock`: Archive block node (soft delete)
+//! 
+//! ### Page Operations
+//! - `CreatePage`: Create or update page with properties
+//! - `DeletePage`: Archive page and associated blocks
+//! 
+//! ### Graph Lifecycle
+//! - `OpenGraph`: Load graph into memory and trigger recovery
+//! - `CloseGraph`: Save and unload graph from memory
+//! - `CreateGraph`: Create new graph with prime agent authorization
+//! - `DeleteGraph`: Archive entire graph to archived_graphs/
+//! - `ListGraphs`: Return all registered graphs with metadata
+//! 
+//! ## Authorization Model
+//! 
+//! All operations require an authenticated agent with appropriate graph
+//! permissions. The current_agent_id from the WebSocket connection is
+//! passed to GraphOps methods which perform runtime authorization checks.
+//! 
+//! ## Graph Targeting
+//! 
+//! Commands support flexible graph targeting through:
+//! - `graph_id`: Direct UUID string targeting
+//! - `graph_name`: Human-readable name resolution
+//! - Smart defaults: Falls back to single open graph when unspecified
+//! 
+//! ## Transaction Integration
+//! 
+//! All modifying operations are wrapped in transactions via the GraphOps
+//! trait, ensuring ACID properties and enabling crash recovery through
+//! the WAL (Write-Ahead Log).
+//! 
+//! ## Error Handling
+//! 
+//! - Authorization failures return clear "not authorized" errors
+//! - Missing agent selection returns "no agent selected" errors
+//! - Graph resolution failures provide specific error messages
+//! - Operation failures are wrapped with descriptive context
 
 use std::sync::Arc;
 use uuid::Uuid;

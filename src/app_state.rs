@@ -100,7 +100,7 @@ use crate::error::*;
 use crate::{
     agent::agent::Agent,
     graph_manager::GraphManager,
-    config::{load_config, Config},
+    config::Config,
     storage::{GraphRegistry, AgentRegistry, TransactionLog, TransactionCoordinator, graph_registry::GraphInfo, transaction},
     lock::{RwLockExt, AsyncRwLockExt, lock_registries_for_write},
 };
@@ -141,25 +141,18 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Create new AppState for CLI usage (no server components)
-    pub async fn new_cli(config_path: Option<String>, data_dir_override: Option<String>) -> Result<Arc<Self>> {
-        Self::new_internal(config_path, data_dir_override, false).await
-    }
     
-    /// Create new AppState for server usage (with WebSocket components)  
-    pub async fn new_server(config_path: Option<String>, data_dir_override: Option<String>) -> Result<Arc<Self>> {
-        Self::new_internal(config_path, data_dir_override, true).await
-    }
-    
-    async fn new_internal(config_path: Option<String>, data_dir_override: Option<String>, with_server: bool) -> Result<Arc<Self>> {
-        // Load configuration
-        let mut config = load_config(config_path);
-        
+    /// Create new AppState with pre-loaded config (avoids duplicate config loading)
+    pub async fn new_with_config(mut config: crate::config::Config, data_dir_override: Option<String>, with_server: bool) -> Result<Arc<Self>> {
         // Apply data_dir override if provided
         if let Some(cli_data_dir) = &data_dir_override {
-            info!("🗂️  Overriding data directory: {}", cli_data_dir);
             config.data_dir = cli_data_dir.clone();
         }
+        
+        Self::new_internal_with_config(config, with_server).await
+    }
+    
+    async fn new_internal_with_config(config: crate::config::Config, with_server: bool) -> Result<Arc<Self>> {
         
         // Initialize data directory
         let data_dir = if std::path::Path::new(&config.data_dir).is_absolute() {

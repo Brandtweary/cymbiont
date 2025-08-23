@@ -1,32 +1,80 @@
-/**
- * Transaction Coordinator Module
- * 
- * Manages transaction lifecycle and state transitions for the WAL system.
- * Provides high-level operations for beginning, committing, and aborting transactions.
- * Includes helper functions to reduce AppState verbosity.
- * 
- * ## Transaction-Aware Persistence
- * 
- * The transaction system works alongside graph persistence:
- * - Graph state is saved to knowledge_graph.json by GraphManager
- * - Transaction state is saved to sled database by TransactionLog
- * - On startup, graph is loaded first, then pending transactions are recovered
- * - This ensures consistency: if a transaction was in-flight during shutdown,
- *   it will be retried on startup
- * 
- * The separation of concerns means:
- * - Graph can be saved frequently without worrying about transactions
- * - Transactions persist independently with ACID guarantees via sled
- * - Recovery is automatic and doesn't require graph modification
- * 
- * ## Helper Functions for AppState Verbosity Reduction
- * 
- * This module provides extracted helper functions to simplify AppState:
- * - `run_single_graph_recovery_helper()` - Core recovery logic without circular dependencies
- * - `save_graph_after_recovery_helper()` - Graph saving with error logging that never fails
- * 
- * These helpers maintain the original AppState behavior while reducing code duplication.
- */
+//! Transaction Coordinator Module
+//! 
+//! Manages transaction lifecycle and state transitions for the WAL system.
+//! Provides high-level operations for beginning, committing, and aborting transactions.
+//! Includes helper functions to reduce AppState verbosity.
+//! 
+//! ## Transaction-Aware Persistence
+//! 
+//! The transaction system works alongside graph persistence:
+//! - Graph state is saved to knowledge_graph.json by GraphManager
+//! - Transaction state is saved to sled database by TransactionLog
+//! - On startup, graph is loaded first, then pending transactions are recovered
+//! - This ensures consistency: if a transaction was in-flight during shutdown,
+//!   it will be retried on startup
+//! 
+//! The separation of concerns means:
+//! - Graph can be saved frequently without worrying about transactions
+//! - Transactions persist independently with ACID guarantees via sled
+//! - Recovery is automatic and doesn't require graph modification
+//! 
+//! ## Transaction Coordination Architecture
+//! 
+//! The `TransactionCoordinator` serves as the primary orchestration layer between
+//! high-level operations and the underlying write-ahead log. It maintains several
+//! key data structures to ensure proper transaction lifecycle management:
+//! 
+//! - **pending_operations**: Maps content hashes to transaction IDs for deduplication
+//! - **active_transactions**: Tracks all currently executing transactions
+//! - **shutdown_requested**: Atomic flag for graceful shutdown coordination
+//! - **active_count_notify**: Tokio notification system for shutdown completion
+//! 
+//! This architecture enables the coordinator to make intelligent decisions about
+//! transaction acceptance, provide duplicate content detection, and coordinate
+//! graceful shutdown procedures without blocking or losing data.
+//! 
+//! ## Graceful Shutdown Implementation
+//! 
+//! The shutdown system implements a two-phase approach designed to ensure data
+//! integrity while providing responsiveness to user termination requests:
+//! 
+//! **Phase 1: Graceful Shutdown (30 seconds)**
+//! - `initiate_shutdown()` sets the shutdown flag and rejects new transactions
+//! - `wait_for_completion()` monitors active transactions with timeout support
+//! - Uses Tokio's notification system to wake up immediately when transactions complete
+//! - Returns early if all transactions finish before the timeout
+//! 
+//! **Phase 2: Force Shutdown (immediate)**
+//! - `force_shutdown()` immediately flushes the transaction log to ensure durability
+//! - Called after timeout or on second Ctrl+C from main.rs
+//! - Guarantees that committed operations are persisted even during forced termination
+//! 
+//! This two-phase design balances data safety with user experience, ensuring that
+//! normal shutdown preserves all data while emergency shutdown still maintains
+//! reasonable durability guarantees through forced log flushing.
+//! 
+//! ## Content Deduplication Strategy
+//! 
+//! The coordinator implements sophisticated content deduplication to prevent
+//! race conditions and unnecessary work:
+//! 
+//! - Content hashes are computed deterministically for all create/update operations
+//! - `is_content_pending()` provides fast lookups to detect duplicate submissions
+//! - Pending operations map is maintained in sync with transaction lifecycle
+//! - Deduplication prevents multiple agents from creating identical content simultaneously
+//! 
+//! This system is particularly important in multi-agent environments where
+//! different agents might attempt to create the same content concurrently,
+//! ensuring that only one transaction succeeds while others receive clear
+//! error messages about the duplication.
+//! 
+//! ## Helper Functions for AppState Verbosity Reduction
+//! 
+//! This module provides extracted helper functions to simplify AppState:
+//! - `run_single_graph_recovery_helper()` - Core recovery logic without circular dependencies
+//! - `save_graph_after_recovery_helper()` - Graph saving with error logging that never fails
+//! 
+//! These helpers maintain the original AppState behavior while reducing code duplication.
 
 use crate::storage::transaction_log::{Operation, Transaction, TransactionLog, TransactionState};
 use std::sync::Arc;

@@ -1,74 +1,72 @@
-/**
- * @module config
- * @description Configuration management for the PKM Knowledge Graph backend
- * 
- * This module provides a flexible configuration system that supports both file-based
- * and default configurations, with special emphasis on maintaining consistency between
- * the Rust backend and external client components.
- * 
- * ## Configuration Loading Strategy
- * 
- * The `load_config()` function implements a smart search algorithm:
- * 1. Start from the executable's directory
- * 2. Search up to 3 parent directories for config.yaml
- * 3. Fall back to hardcoded defaults if no file found
- * 
- * This approach supports multiple deployment scenarios:
- * - Development: config.yaml in project root
- * - Testing: config.yaml in backend directory
- * - Production: config.yaml alongside executable
- * 
- * ## Configuration Structures
- * 
- * ### Config (root)
- * Top-level container aggregating all configuration sections.
- * 
- * ### BackendConfig
- * - `port`: Base port for HTTP server (default: 8888)
- * - `max_port_attempts`: Port search range (default: 10)
- * - `server_info_file`: Filename for server discovery info (default: "cymbiont_server.json")
- *   
- * When port 8888 is busy, the server tries 8889, 8890, etc., up to
- * 8888 + max_port_attempts. This enables multiple instances during development.
- * 
- * The server_info_file allows multiple Cymbiont instances to run simultaneously
- * without interfering with each other's discovery mechanisms.
- * 
- * ### DevelopmentConfig
- * - `default_duration`: Auto-exit after N seconds (default: None)
- * 
- * Useful for automated testing and development workflows. Production
- * deployments should leave this as None for indefinite operation.
- * 
- * 
- * ### Data Directory Configuration
- * - `data_dir`: Path for data storage (default: "data")
- * 
- * The data directory stores all persistent state including graph registries,
- * session information, knowledge graphs, and transaction logs. Can be specified
- * as absolute or relative path. Relative paths are resolved from the current
- * working directory. This setting enables:
- * - Storing data outside the Cymbiont installation directory
- * - Data isolation for testing environments
- * - Multi-user deployments with separate data stores
- * - CLI override via --data-dir flag
- * 
- * ## Default Values
- * 
- * All configuration structures implement Default trait for robustness:
- * - Missing sections use defaults via serde(default)
- * - Individual fields use field-level defaults where appropriate
- * - Entire config falls back to Config::default() if file errors occur
- * 
- * ## Error Handling
- * 
- * Configuration loading is resilient:
- * - File not found: Use defaults (common in development)
- * - Parse errors: Log and use defaults (prevents startup failure)
- * - Validation errors: Log warnings but continue operation
- * 
- * This approach prioritizes service availability over configuration perfection.
- */
+//! @module config
+//! @description Configuration management for the PKM Knowledge Graph backend
+//!
+//! This module provides a flexible configuration system that supports both file-based
+//! and default configurations, with special emphasis on maintaining consistency between
+//! the Rust backend and external client components.
+//!
+//! ## Configuration Loading Strategy
+//!
+//! The `load_config()` function implements a smart search algorithm:
+//! 1. Start from the executable's directory
+//! 2. Search up to 3 parent directories for config.yaml
+//! 3. Fall back to hardcoded defaults if no file found
+//!
+//! This approach supports multiple deployment scenarios:
+//! - Development: config.yaml in project root
+//! - Testing: config.yaml in backend directory
+//! - Production: config.yaml alongside executable
+//!
+//! ## Configuration Structures
+//!
+//! ### Config (root)
+//! Top-level container aggregating all configuration sections.
+//!
+//! ### BackendConfig
+//! - `port`: Base port for HTTP server (default: 8888)
+//! - `max_port_attempts`: Port search range (default: 10)
+//! - `server_info_file`: Filename for server discovery info (default: "cymbiont_server.json")
+//!   
+//! When port 8888 is busy, the server tries 8889, 8890, etc., up to
+//! 8888 + max_port_attempts. This enables multiple instances during development.
+//!
+//! The server_info_file allows multiple Cymbiont instances to run simultaneously
+//! without interfering with each other's discovery mechanisms.
+//!
+//! ### DevelopmentConfig
+//! - `default_duration`: Auto-exit after N seconds (default: None)
+//!
+//! Useful for automated testing and development workflows. Production
+//! deployments should leave this as None for indefinite operation.
+//!
+//!
+//! ### Data Directory Configuration
+//! - `data_dir`: Path for data storage (default: "data")
+//!
+//! The data directory stores all persistent state including graph registries,
+//! session information, knowledge graphs, and transaction logs. Can be specified
+//! as absolute or relative path. Relative paths are resolved from the current
+//! working directory. This setting enables:
+//! - Storing data outside the Cymbiont installation directory
+//! - Data isolation for testing environments
+//! - Multi-user deployments with separate data stores
+//! - CLI override via --data-dir flag
+//!
+//! ## Default Values
+//!
+//! All configuration structures implement Default trait for robustness:
+//! - Missing sections use defaults via serde(default)
+//! - Individual fields use field-level defaults where appropriate
+//! - Entire config falls back to Config::default() if file errors occur
+//!
+//! ## Error Handling
+//!
+//! Configuration loading is resilient:
+//! - File not found: Use defaults (common in development)
+//! - Parse errors: Log and use defaults (prevents startup failure)
+//! - Validation errors: Log warnings but continue operation
+//!
+//! This approach prioritizes service availability over configuration perfection.
 
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -88,6 +86,10 @@ pub struct Config {
     #[serde(default)]
     #[allow(dead_code)] // TODO: Remove when transaction log config is used
     pub transaction_log: TransactionLogConfig,
+    #[serde(default)]
+    pub logging: LoggingConfig,
+    #[serde(default)]
+    pub verbosity: VerbosityConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -132,6 +134,28 @@ pub struct TransactionLogConfig {
     pub integrity_check_on_startup: bool,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct LoggingConfig {
+    #[serde(default = "default_log_directory")]
+    pub directory: String,
+    #[serde(default = "default_log_filename")]
+    pub filename: String,
+    #[serde(default = "default_log_max_files")]
+    pub max_files: usize,
+    #[serde(default = "default_log_max_size_mb")]
+    pub max_size_mb: usize,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct VerbosityConfig {
+    #[serde(default = "default_info_threshold")]
+    pub info_threshold: usize,
+    #[serde(default = "default_debug_threshold")]
+    pub debug_threshold: usize,
+    #[serde(default = "default_trace_threshold")]
+    pub trace_threshold: usize,
+}
+
 
 fn default_data_dir() -> String {
     "data".to_string()
@@ -161,6 +185,34 @@ fn default_integrity_check_on_startup() -> bool {
     true
 }
 
+fn default_log_directory() -> String {
+    "logs".to_string()
+}
+
+fn default_log_filename() -> String {
+    "cymbiont.log".to_string()
+}
+
+fn default_log_max_files() -> usize {
+    10
+}
+
+fn default_log_max_size_mb() -> usize {
+    500
+}
+
+fn default_info_threshold() -> usize {
+    50
+}
+
+fn default_debug_threshold() -> usize {
+    100
+}
+
+fn default_trace_threshold() -> usize {
+    200
+}
+
 // Default configuration
 impl Default for Config {
     fn default() -> Self {
@@ -176,6 +228,8 @@ impl Default for Config {
             data_dir: default_data_dir(),
             auth: AuthConfig::default(),
             transaction_log: TransactionLogConfig::default(),
+            logging: LoggingConfig::default(),
+            verbosity: VerbosityConfig::default(),
         }
     }
 }
@@ -205,6 +259,27 @@ impl Default for TransactionLogConfig {
             retention_days: default_retention_days(),
             redundant_copies: default_redundant_copies(),
             integrity_check_on_startup: default_integrity_check_on_startup(),
+        }
+    }
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        LoggingConfig {
+            directory: default_log_directory(),
+            filename: default_log_filename(),
+            max_files: default_log_max_files(),
+            max_size_mb: default_log_max_size_mb(),
+        }
+    }
+}
+
+impl Default for VerbosityConfig {
+    fn default() -> Self {
+        VerbosityConfig {
+            info_threshold: default_info_threshold(),
+            debug_threshold: default_debug_threshold(),
+            trace_threshold: default_trace_threshold(),
         }
     }
 }

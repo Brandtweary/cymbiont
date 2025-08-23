@@ -1,5 +1,3 @@
-#![allow(dead_code)] // TODO: Remove when agent integration is complete
-
 //! Tool Schema Definitions for LLM Function Calling
 //!
 //! This module defines the schema structures used to describe tools to LLM providers.
@@ -32,6 +30,35 @@
 //! - Anthropic's tool use specification
 //!
 //! This ensures agents can work with multiple LLM providers without schema translation.
+//!
+//! ## Schema Generation
+//!
+//! Each tool has a dedicated schema function that returns a ToolDefinition with
+//! complete parameter specifications. The schemas include type information,
+//! descriptions, and required field indicators that help LLMs understand proper
+//! tool usage and parameter formatting.
+//!
+//! ## Validation Benefits
+//!
+//! By providing explicit schemas, the system enables:
+//! - Parameter validation before tool execution
+//! - Better LLM understanding of tool capabilities
+//! - Automatic error detection for malformed calls
+//! - Consistent parameter naming across all tools
+//! - Self-documenting API surface for agent developers
+//!
+//! ## Tool Categories
+//!
+//! The schemas cover the complete Cymbiont knowledge graph API:
+//! - Block lifecycle operations (create, update, delete)
+//! - Page management (create, delete with properties)
+//! - Graph administration (create, delete, open, close, list)
+//! - Query operations (node retrieval, breadth-first search)
+//! 
+//! All schemas follow consistent patterns for UUID parameters, optional fields,
+//! and error response formats, enabling predictable agent behavior.
+
+#![allow(dead_code)] // TODO: Remove when agent integration is complete
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

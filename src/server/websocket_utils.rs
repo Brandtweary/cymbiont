@@ -1,10 +1,8 @@
-/**
- * @module websocket_utils
- * @description Utility functions for WebSocket operations
- * 
- * This module contains shared helper functions used by command handlers,
- * including graph resolution, authentication checks, and response sending.
- */
+//! @module websocket_utils
+//! @description Utility functions for WebSocket operations
+//! 
+//! This module contains shared helper functions used by command handlers,
+//! including graph resolution, authentication checks, and response sending.
 
 use axum::extract::ws::Message;
 use std::sync::Arc;

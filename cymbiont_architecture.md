@@ -554,10 +554,12 @@ The shutdown sequence runs `cleanup_and_save()` to close WebSocket connections, 
 
 ### autodebugger/
 **Purpose**: Git submodule providing LLM-oriented developer utilities  
-**Features**: Automated log verbosity detection via tracing Layer, command execution wrappers for structured results, and utilities that address common pain points in LLM-assisted development. The VerbosityCheckLayer automatically monitors log output and warns when applications exceed reasonable thresholds (50/100/200 logs for INFO/DEBUG/TRACE levels). Also provides a complete tracing subscriber with clean console output optimized for terminal development.
+**Features**: Automated log verbosity detection via tracing Layer, command execution wrappers for structured results, documentation validation for Rust modules, and utilities that address common pain points in LLM-assisted development. The VerbosityCheckLayer automatically monitors log output and warns when applications exceed reasonable thresholds (50/100/200 logs for INFO/DEBUG/TRACE levels). Also provides a complete tracing subscriber with clean console output optimized for terminal development. The validate-docs command ensures complex modules (>200 lines) have adequate documentation (50+ lines of //! comments).
 
 **Usage Examples**:
 ```bash
 autodebugger remove-debug              # Remove all debug! calls from current directory
 autodebugger remove-debug src/         # Target specific directory
+autodebugger validate-docs             # Check module documentation meets complexity thresholds
+autodebugger validate-docs --verbose   # Show all validated files and skipped simple modules
 ```

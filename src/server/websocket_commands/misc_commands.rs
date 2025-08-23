@@ -1,54 +1,52 @@
-/**
- * @module misc_commands
- * @description System, authentication, and test command handlers
- * 
- * This module implements system-level WebSocket commands including
- * authentication, testing utilities, and operation control mechanisms
- * for deterministic testing scenarios.
- * 
- * ## Command Categories
- * 
- * ### Authentication
- * - `Auth`: Authenticate connection with token and set prime agent
- * 
- * ### Testing
- * - `Test`: Echo test with connection statistics
- * - `Heartbeat`: Client keep-alive (acknowledged but no response)
- * - `TestCliCommand`: CLI command bridge (debug builds only)
- * 
- * ### Operation Control
- * - `FreezeOperations`: Pause graph operations after WAL write
- * - `UnfreezeOperations`: Resume paused graph operations
- * - `GetFreezeState`: Query current freeze status
- * 
- * ## Authentication Flow
- * 
- * 1. Client connects via WebSocket (no auth required)
- * 2. Client sends Auth command with token
- * 3. Token validated against stored auth_token
- * 4. Connection marked as authenticated
- * 5. Prime agent set as current for connection
- * 6. First auth triggers ws_ready signal
- * 
- * ## Freeze Mechanism
- * 
- * The freeze/unfreeze commands enable deterministic testing by pausing
- * transaction execution after WAL writes but before graph updates. This
- * allows tests to simulate crashes and verify recovery behavior.
- * 
- * ## Heartbeat Design
- * 
- * Client heartbeats are acknowledged internally but don't generate
- * responses to prevent infinite loops. The server sends its own
- * heartbeats every 30 seconds independently.
- * 
- * ## Integration
- * 
- * - Uses auth module for token validation
- * - Updates connection state for authentication
- * - Integrates with operation_freeze for test control
- * - Bridges to CLI module for command testing (debug only)
- */
+//! @module misc_commands
+//! @description System, authentication, and test command handlers
+//! 
+//! This module implements system-level WebSocket commands including
+//! authentication, testing utilities, and operation control mechanisms
+//! for deterministic testing scenarios.
+//! 
+//! ## Command Categories
+//! 
+//! ### Authentication
+//! - `Auth`: Authenticate connection with token and set prime agent
+//! 
+//! ### Testing
+//! - `Test`: Echo test with connection statistics
+//! - `Heartbeat`: Client keep-alive (acknowledged but no response)
+//! - `TestCliCommand`: CLI command bridge (debug builds only)
+//! 
+//! ### Operation Control
+//! - `FreezeOperations`: Pause graph operations after WAL write
+//! - `UnfreezeOperations`: Resume paused graph operations
+//! - `GetFreezeState`: Query current freeze status
+//! 
+//! ## Authentication Flow
+//! 
+//! 1. Client connects via WebSocket (no auth required)
+//! 2. Client sends Auth command with token
+//! 3. Token validated against stored auth_token
+//! 4. Connection marked as authenticated
+//! 5. Prime agent set as current for connection
+//! 6. First auth triggers ws_ready signal
+//! 
+//! ## Freeze Mechanism
+//! 
+//! The freeze/unfreeze commands enable deterministic testing by pausing
+//! transaction execution after WAL writes but before graph updates. This
+//! allows tests to simulate crashes and verify recovery behavior.
+//! 
+//! ## Heartbeat Design
+//! 
+//! Client heartbeats are acknowledged internally but don't generate
+//! responses to prevent infinite loops. The server sends its own
+//! heartbeats every 30 seconds independently.
+//! 
+//! ## Integration
+//! 
+//! - Uses auth module for token validation
+//! - Updates connection state for authentication
+//! - Integrates with operation_freeze for test control
+//! - Bridges to CLI module for command testing (debug only)
 
 use std::sync::Arc;
 use tracing::{info, warn, error};

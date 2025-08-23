@@ -23,23 +23,67 @@
 //! - **system_prompt**: Optional system instructions
 //! - **timestamps**: Created and last modified times
 //!
-//! ## Auto-save Triggers
+//! ## Agent Persistence Strategies
 //!
-//! Agents automatically save their state based on two thresholds:
-//! - **Time-based**: Every 5 minutes of activity
-//! - **Message-based**: Every 10 new messages
+//! The persistence system implements a multi-layered approach to ensure both
+//! performance and data durability for agent state management:
 //!
-//! This ensures data durability without impacting performance. The thresholds
-//! balance between minimizing disk I/O and preventing data loss.
+//! **Lazy Loading Strategy**: Agents are loaded from disk only when needed,
+//! either through explicit activation or first use in chat operations. This
+//! approach minimizes memory usage in deployments with many registered agents,
+//! as inactive agents remain serialized on disk until required.
 //!
-//! ## Error Handling
+//! **In-Memory State Management**: Active agents maintain their full state
+//! in memory, including conversation history and LLM configuration. This
+//! enables fast response times for chat operations while the auto-save system
+//! ensures durability without blocking user interactions.
 //!
-//! The persistence layer provides detailed error types for:
-//! - I/O failures (disk full, permissions)
-//! - JSON serialization issues (malformed data)
-//! - Path resolution problems
+//! **Versioned Serialization**: The agent.json format includes a version field
+//! to enable future schema evolution. Currently at version 1, this system
+//! allows backward compatibility as agent capabilities expand over time.
 //!
-//! All errors are propagated with context to aid debugging.
+//! ## Auto-save Triggers and Thresholds
+//!
+//! The auto-save system uses a dual-threshold approach optimized for both
+//! data safety and performance characteristics:
+//!
+//! **Time-based Threshold (5 minutes)**: Ensures that even low-activity agents
+//! with infrequent messages have their state persisted regularly. This prevents
+//! data loss during unexpected shutdowns or crashes, particularly important
+//! for long-running conversations with sparse interaction patterns.
+//!
+//! **Message-based Threshold (10 messages)**: Triggers saves based on conversation
+//! activity volume, ensuring that active conversations are persisted frequently.
+//! This threshold balances I/O efficiency with data safety, preventing excessive
+//! disk writes during rapid conversation exchanges while maintaining reasonable
+//! durability guarantees.
+//!
+//! The thresholds are evaluated by `should_save()` which agents can call
+//! periodically to determine when persistence is needed. This decoupled design
+//! allows different agent usage patterns to trigger saves appropriately without
+//! forcing rigid save intervals.
+//!
+//! ## Error Handling and Recovery
+//!
+//! The persistence layer provides detailed error types and recovery strategies:
+//!
+//! **I/O Error Handling**: File system errors (disk full, permissions, network
+//! storage issues) are captured and wrapped with context about the specific
+//! operation and agent involved. These errors are propagated to enable
+//! appropriate user notification and retry logic.
+//!
+//! **Serialization Error Recovery**: JSON serialization failures are detected
+//! and reported with enough context to identify problematic agent state.
+//! The system uses serde's robust error reporting to pinpoint specific fields
+//! or values that caused serialization failures.
+//!
+//! **Version Compatibility**: When loading agents with newer version numbers,
+//! the system logs warnings but attempts to continue. This forward-compatibility
+//! approach enables graceful degradation when running older code against
+//! newer agent data, though functionality may be limited.
+//!
+//! All errors are propagated with sufficient context to aid debugging and
+//! enable appropriate error handling at higher layers of the system.
 
 use std::path::Path;
 use std::fs::{self, File};

@@ -1,23 +1,57 @@
-/**
- * @module utils
- * @description Cross-cutting utility functions for the knowledge graph engine
- * 
- * This module provides essential helpers for process management, datetime parsing,
- * JSON processing, and network operations used throughout the application.
- * 
- * ## Process Management
- * 
- * Server lifecycle management with platform-specific process control:
- * - `terminate_previous_instance()`: Clean server startup with PID checking
- * - `write_server_info()`: Creates discovery file for external clients
- * - `find_available_port()`: Port allocation with configurable fallback
- * 
- * ## Data Processing
- * 
- * Utilities for parsing and converting data formats:
- * - `parse_datetime()`: Multi-format datetime parsing with fallback
- * - `parse_properties()`: JSON to HashMap conversion for metadata
- */
+//! @module utils
+//! @description Cross-cutting utility functions for the knowledge graph engine
+//!
+//! This module provides essential helpers for process management, datetime parsing,
+//! JSON processing, and network operations used throughout the application.
+//!
+//! ## Process Management
+//!
+//! Server lifecycle management with platform-specific process control:
+//! - `terminate_previous_instance()`: Clean server startup with PID checking
+//! - `write_server_info()`: Creates discovery file for external clients
+//! - `find_available_port()`: Port allocation with configurable fallback
+//!
+//! ## Data Processing
+//!
+//! Utilities for parsing and converting data formats:
+//! - `parse_datetime()`: Multi-format datetime parsing with fallback
+//! - `parse_properties()`: JSON to HashMap conversion for metadata
+//!
+//! ## Process Coordination
+//!
+//! The module handles server lifecycle coordination by managing PID files and
+//! terminating previous instances. This ensures clean startup when restarting
+//! the server without manually killing existing processes.
+//!
+//! ### Platform-Specific Behavior
+//!
+//! Process management adapts to the underlying platform:
+//! - **Unix/Linux**: Uses `kill -0` for process existence checking and `kill -2` (SIGINT) for graceful termination
+//! - **Windows**: Uses `tasklist` for process enumeration and `taskkill /F` for forced termination
+//!
+//! The termination logic includes stale PID file cleanup to prevent false positives
+//! when processes have already exited.
+//!
+//! ## Network Utilities
+//!
+//! Port allocation functionality with intelligent fallback:
+//! - Primary port from configuration is tested first
+//! - Fallback scanning within configured range prevents startup failures
+//! - TCP binding tests ensure ports are genuinely available
+//!
+//! ## DateTime Handling
+//!
+//! Multi-format datetime parsing supports various PKM and export formats:
+//! - RFC 3339 timestamps (ISO 8601 compliant)
+//! - Unix timestamps (both seconds and milliseconds)
+//! - Fallback to current time with warning for unparseable formats
+//!
+//! ## JSON Processing
+//!
+//! Property extraction from JSON objects with type coercion:
+//! - String values are preserved as-is
+//! - Non-string values are converted to string representation
+//! - Supports nested object flattening for metadata storage
 
 use std::process::Command;
 use std::fs;

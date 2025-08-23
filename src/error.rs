@@ -42,6 +42,13 @@
 //!
 //! Each category provides convenience constructors for common error patterns,
 //! making it easy to create appropriate errors without verbose boilerplate.
+//!
+//! ## Error Propagation
+//!
+//! The system uses `thiserror` for automatic error derivation and implements
+//! automatic conversions from common external error types (serde_json, sled, etc.)
+//! to appropriate domain errors. This enables seamless error propagation using
+//! the `?` operator throughout the codebase.
 
 use thiserror::Error;
 use uuid::Uuid;

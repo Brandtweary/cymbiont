@@ -1,58 +1,56 @@
-/**
- * @module agent_commands
- * @description Agent-related WebSocket command handlers
- * 
- * This module implements all agent-related WebSocket commands, providing
- * comprehensive agent management capabilities including chat interactions,
- * agent lifecycle management, and graph authorization control.
- * 
- * ## Command Categories
- * 
- * ### Chat Operations
- * - `AgentChat`: Send messages to agents and receive LLM responses
- * - `AgentHistory`: Retrieve conversation history with optional limits
- * - `AgentReset`: Clear agent conversation history
- * 
- * ### Agent Selection
- * - `AgentSelect`: Switch current agent for connection
- * - `AgentList`: List all agents with active/prime status
- * - `AgentInfo`: Get detailed agent information
- * 
- * ### Agent Administration
- * - `CreateAgent`: Register new agent with MockLLM config
- * - `DeleteAgent`: Archive agent (prime agent protected)
- * - `ActivateAgent`: Load agent into memory
- * - `DeactivateAgent`: Save and unload from memory
- * 
- * ### Authorization Management
- * - `AuthorizeAgent`: Grant agent access to specific graphs
- * - `DeauthorizeAgent`: Revoke agent access from graphs
- * 
- * ## Key Patterns
- * 
- * ### Agent Resolution
- * Commands accept both agent_id (UUID) and agent_name for flexibility.
- * Resolution follows priority: explicit ID > explicit name > current > prime.
- * 
- * ### Prime Agent Protection
- * The prime agent cannot be deleted and serves as the default for all
- * operations when no specific agent is selected.
- * 
- * ### Bidirectional Authorization
- * Authorization updates both agent and graph registries to maintain
- * consistency and enable efficient permission checks.
- * 
- * ### Lock Ordering
- * When both registries need write access (authorization operations),
- * uses `lock_registries_for_write()` to acquire locks in the
- * canonical order (graph_registry → agent_registry) to prevent deadlocks.
- * 
- * ## Integration
- * 
- * - Uses AgentRegistry for lifecycle and authorization management
- * - Integrates with Agent instances for chat and history operations
- * - Maintains connection state for agent selection persistence
- */
+//! @module agent_commands
+//! @description Agent-related WebSocket command handlers
+//! 
+//! This module implements all agent-related WebSocket commands, providing
+//! comprehensive agent management capabilities including chat interactions,
+//! agent lifecycle management, and graph authorization control.
+//! 
+//! ## Command Categories
+//! 
+//! ### Chat Operations
+//! - `AgentChat`: Send messages to agents and receive LLM responses
+//! - `AgentHistory`: Retrieve conversation history with optional limits
+//! - `AgentReset`: Clear agent conversation history
+//! 
+//! ### Agent Selection
+//! - `AgentSelect`: Switch current agent for connection
+//! - `AgentList`: List all agents with active/prime status
+//! - `AgentInfo`: Get detailed agent information
+//! 
+//! ### Agent Administration
+//! - `CreateAgent`: Register new agent with MockLLM config
+//! - `DeleteAgent`: Archive agent (prime agent protected)
+//! - `ActivateAgent`: Load agent into memory
+//! - `DeactivateAgent`: Save and unload from memory
+//! 
+//! ### Authorization Management
+//! - `AuthorizeAgent`: Grant agent access to specific graphs
+//! - `DeauthorizeAgent`: Revoke agent access from graphs
+//! 
+//! ## Key Patterns
+//! 
+//! ### Agent Resolution
+//! Commands accept both agent_id (UUID) and agent_name for flexibility.
+//! Resolution follows priority: explicit ID > explicit name > current > prime.
+//! 
+//! ### Prime Agent Protection
+//! The prime agent cannot be deleted and serves as the default for all
+//! operations when no specific agent is selected.
+//! 
+//! ### Bidirectional Authorization
+//! Authorization updates both agent and graph registries to maintain
+//! consistency and enable efficient permission checks.
+//! 
+//! ### Lock Ordering
+//! When both registries need write access (authorization operations),
+//! uses `lock_registries_for_write()` to acquire locks in the
+//! canonical order (graph_registry → agent_registry) to prevent deadlocks.
+//! 
+//! ## Integration
+//! 
+//! - Uses AgentRegistry for lifecycle and authorization management
+//! - Integrates with Agent instances for chat and history operations
+//! - Maintains connection state for agent selection persistence
 
 use std::sync::Arc;
 use uuid::Uuid;

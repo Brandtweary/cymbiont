@@ -23,6 +23,36 @@
 //! The architecture supports additional backends through the LLMBackend trait.
 //! Each backend implementation handles its own connection management, error handling,
 //! and response formatting while maintaining the common interface.
+//!
+//! ## Conversation Management
+//!
+//! The module defines a comprehensive Message enum that captures the full context
+//! of agent conversations. Messages include User inputs with optional echo responses
+//! for testing, Assistant completions with LLM-generated content, and Tool execution
+//! records with parameters and results. This enables complete conversation replay
+//! and context preservation across agent sessions.
+//!
+//! ## Tool Integration
+//!
+//! The LLM backend interfaces with Cymbiont's tool system through ToolDefinition
+//! schemas that describe available graph operations. Future implementations will
+//! support function calling where LLMs can request specific tool executions based
+//! on conversation context, enabling autonomous agent behavior with knowledge graph
+//! manipulation capabilities.
+//!
+//! ## Persistence Integration
+//!
+//! Agent configurations and conversation histories are automatically persisted
+//! through the storage layer. The LLMConfig enum serializes cleanly to JSON,
+//! allowing agents to maintain their model preferences across restarts. Auto-save
+//! thresholds ensure conversation data is preserved without excessive disk I/O.
+//!
+//! ## Testing Strategy
+//!
+//! The MockLLM implementation provides deterministic behavior for integration tests.
+//! Tests can specify exact responses through the echo mechanism, ensuring predictable
+//! agent behavior without external LLM dependencies. This enables comprehensive
+//! testing of agent workflows, conversation management, and tool integration.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

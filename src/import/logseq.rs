@@ -1,3 +1,89 @@
+//! # Logseq Import Module
+//!
+//! This module provides comprehensive support for importing Logseq graph data into Cymbiont's
+//! knowledge graph format. Logseq is a block-based note-taking application that stores data
+//! in markdown files with hierarchical block structures, and this module handles the complete
+//! transformation pipeline from raw markdown to structured PKM data.
+//!
+//! ## Architecture Overview
+//!
+//! The import process follows a multi-stage pipeline:
+//! 1. **Directory Scanning**: Recursively discovers `.md` files in `pages/` and `journals/` directories
+//! 2. **File Parsing**: Extracts page properties, block content, and hierarchical relationships
+//! 3. **Block Hierarchy Construction**: Builds parent-child relationships based on indentation levels
+//! 4. **Reference Extraction**: Identifies and extracts page references `[[page]]`, block references `((block-id))`, and tags `#tag`
+//! 5. **Data Transformation**: Converts Logseq structures to PKM data types for graph application
+//! 6. **Reference Resolution**: Expands block references to their actual content using a two-pass approach
+//!
+//! ## Logseq Data Model Understanding
+//!
+//! ### Block Structure
+//! Logseq organizes information in hierarchical blocks, each identified by:
+//! - **Indentation Level**: Determines parent-child relationships (tabs or spaces)
+//! - **Content**: The actual text content of the block
+//! - **Properties**: Metadata in `key:: value` format immediately following the block
+//! - **Block ID**: Optional UUID for referencing (`id:: uuid`)
+//! - **Children**: Nested blocks at higher indentation levels
+//!
+//! ### File Organization
+//! - **Pages Directory** (`pages/`): Contains manually created pages and concept notes
+//! - **Journals Directory** (`journals/`): Contains daily journal entries with date-based filenames
+//! - **Markdown Format**: All files use `.md` extension with Logseq-specific conventions
+//!
+//! ## Parsing Algorithm Details
+//!
+//! ### Two-Phase Parsing Strategy
+//! The parser uses a sophisticated two-phase approach to handle Logseq's complex block structure:
+//!
+//! **Phase 1 - Linear Block Extraction:**
+//! - Scans each line to identify block markers (lines starting with `-`)
+//! - Calculates indentation levels (tabs=2, spaces=1, converted to tab-equivalent)
+//! - Extracts block content and immediate properties
+//! - Handles multi-line block content continuation
+//! - Stores blocks with their indentation metadata
+//!
+//! **Phase 2 - Hierarchy Construction:**
+//! - Uses a stack-based algorithm to build parent-child relationships
+//! - Processes blocks by indentation level to determine nesting
+//! - Moves child blocks into their parent's children array
+//! - Maintains proper ordering while building tree structure
+//!
+//! ## Reference System
+//!
+//! ### Supported Reference Types
+//! - **Page References**: `[[Page Name]]` - Links to other pages in the graph
+//! - **Block References**: `((block-uuid))` - References specific blocks by ID
+//! - **Tag References**: `#tag` - Implicit references to tag pages
+//! - **Properties**: `key:: value` - Metadata stored as node properties
+//!
+//! ### Reference Resolution Strategy
+//! Block references are resolved using a content expansion approach:
+//! 1. Build a comprehensive block ID → content mapping from all parsed blocks
+//! 2. Use regex pattern matching to find `((block-id))` patterns in content
+//! 3. Replace references with actual block content recursively
+//! 4. Handle circular references and self-references gracefully
+//! 5. Store expanded content in `reference_content` field for graph application
+//!
+//! ## Error Handling and Robustness
+//!
+//! The module implements comprehensive error handling for real-world Logseq data:
+//! - **Malformed Files**: Gracefully skips files that cannot be parsed
+//! - **Missing References**: Preserves original reference syntax for unresolvable references
+//! - **Circular References**: Detects and breaks infinite loops in block references
+//! - **Empty Content**: Filters out empty blocks during PKM conversion
+//! - **Property Parsing**: Handles various property formats and edge cases
+//!
+//! ## Integration Points
+//!
+//! This module integrates with the broader Cymbiont import system through:
+//! - **PKM Data Types**: Produces `PKMBlockData` and `PKMPageData` for graph application
+//! - **Reference Resolver**: Uses shared reference resolution logic from `reference_resolver.rs`
+//! - **Error System**: Reports import errors through the centralized error hierarchy
+//! - **Graph Manager**: Resulting data is applied to graphs via `GraphManager` operations
+//!
+//! The module serves as the entry point for all Logseq import operations and is called
+//! from `import_utils.rs` during HTTP import requests and CLI import commands.
+
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;

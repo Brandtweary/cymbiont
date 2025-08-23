@@ -1,5 +1,3 @@
-#![allow(dead_code)] // TODO: Remove when agent integration is complete
-
 //! Knowledge Graph Tool Registry
 //!
 //! This module provides a registry of knowledge graph operations that can be
@@ -38,6 +36,29 @@
 //! The registry is initialized with an AppState reference and automatically
 //! registers all available tools. Agents invoke tools by name with JSON parameters,
 //! and the registry handles async execution and result formatting.
+//!
+//! ## Authorization Model
+//!
+//! All tools operate within Cymbiont's authorization framework. Each tool execution
+//! receives an agent_id parameter that identifies the requesting agent, enabling
+//! runtime permission checks against the agent registry. Tools that modify graphs
+//! verify agent authorization before proceeding with the operation.
+//!
+//! ## Error Handling
+//!
+//! Tools handle errors gracefully by catching exceptions and returning standardized
+//! JSON responses with success/error indicators. This prevents LLM confusion and
+//! provides clear feedback about operation outcomes. Failed operations include
+//! detailed error messages to help agents understand and recover from failures.
+//!
+//! ## Future Extensions
+//!
+//! The registry architecture supports dynamic tool registration, enabling plugins
+//! or specialized agents to register custom operations. Tool schemas can be
+//! automatically generated from function signatures, and the registry provides
+//! introspection capabilities for agent discovery of available operations.
+
+#![allow(dead_code)] // TODO: Remove when agent integration is complete
 
 use std::collections::HashMap;
 use std::sync::Arc;

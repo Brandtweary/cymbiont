@@ -1,34 +1,83 @@
-/**
- * @module reference_resolver
- * @description Block reference resolution for knowledge graph import
- * 
- * This module handles the expansion of block references during import, converting
- * references like ((block-id)) into the actual content of the referenced block.
- * This is critical for maintaining the semantic richness of knowledge graphs
- * where blocks frequently reference other blocks.
- * 
- * ## Reference Format
- * 
- * Block references follow the pattern: `((block-id))`
- * - `block-id`: UUID or alphanumeric identifier for the target block
- * - References can be nested (references within referenced content)
- * - Multiple references per block are supported
- * 
- * ## Circular Reference Protection
- * 
- * The resolver implements sophisticated circular reference detection:
- * - Maintains a visited set during traversal
- * - Prevents self-references (block referencing itself)
- * - Detects cycles in reference chains
- * - Leaves unresolvable references unchanged
- * 
- * ## Performance Considerations
- * 
- * - Uses regex with lazy static compilation for efficiency
- * - Recursively processes references to handle nested cases
- * - Tracks visited blocks to prevent infinite loops
- * - Optimized for import-time processing (not runtime queries)
- */
+//! # Block Reference Resolution Engine
+//!
+//! This module provides sophisticated block reference resolution for knowledge graph import,
+//! handling the critical task of expanding block references like `((block-id))` into their
+//! actual content. This transformation is essential for maintaining the semantic richness
+//! of knowledge graphs where blocks frequently reference and build upon other blocks,
+//! creating complex webs of interconnected knowledge.
+//!
+//! ## Reference Format and Semantics
+//!
+//! ### Block Reference Syntax
+//! Block references follow the pattern: `((block-id))`
+//! - **Block ID**: UUID or alphanumeric identifier for the target block
+//! - **Nested References**: References can exist within referenced content, creating chains
+//! - **Multiple References**: Single blocks can contain multiple references to different blocks
+//! - **Mixed Content**: References can be embedded within regular text and markdown
+//!
+//! ### Reference Resolution Strategy
+//! When a block reference `((target-123))` is encountered:
+//! 1. **Lookup**: Find the target block's content using the block ID
+//! 2. **Expansion**: Replace the reference with the target block's actual content
+//! 3. **Recursion**: Process any references within the expanded content
+//! 4. **Safety**: Apply circular reference detection and loop prevention
+//!
+//! ## Circular Reference Protection System
+//!
+//! The resolver implements a comprehensive multi-layered protection system:
+//!
+//! ### Visited Set Tracking
+//! - Maintains a `HashSet<String>` of currently visited block IDs during traversal
+//! - Prevents infinite loops by detecting when a block is referenced while being processed
+//! - Automatically adds/removes blocks from the visited set during recursion
+//!
+//! ### Self-Reference Prevention
+//! - Explicitly prevents blocks from referencing themselves
+//! - Uses the `current_block_id` parameter to identify self-references
+//! - Preserves original reference syntax for self-references rather than expanding
+//!
+//! ### Cycle Detection Algorithm
+//! - Detects complex cycles like A→B→C→A through visited set membership testing
+//! - Stops expansion at the point where a cycle is detected
+//! - Maintains partial expansion up to the cycle point for maximum information preservation
+//!
+//! ## Performance Optimization Techniques
+//!
+//! ### Lazy Static Regex Compilation
+//! - Uses `once_cell::sync::Lazy` to compile regex patterns only once
+//! - Avoids repeated regex compilation overhead during batch processing
+//! - Pattern: `r"\(\(([a-zA-Z0-9-]+)\)\)"` optimized for common block ID formats
+//!
+//! ### Efficient Content Mapping
+//! - Pre-builds comprehensive block ID → content mappings for fast lookups
+//! - Separates mapping construction from resolution to optimize batch operations
+//! - Provides specialized functions for building maps from GraphManager instances
+//!
+//! ### Recursive Processing with Backtracking
+//! - Processes references recursively to handle arbitrary nesting depths
+//! - Uses backtracking to properly manage the visited set across recursive calls
+//! - Ensures each block can be referenced multiple times in different contexts
+//!
+//! ## Integration with Import Pipeline
+//!
+//! ### Primary Use Cases
+//! 1. **Import-Time Resolution**: Expands references during initial graph construction
+//! 2. **Update Resolution**: Re-resolves references when block content changes
+//! 3. **Graph Queries**: Provides expanded content for search and analysis operations
+//!
+//! ### API Design Patterns
+//! - **Standalone Resolution**: `resolve_block_references()` for direct reference processing
+//! - **Graph Integration**: `resolve_references_in_graph()` for GraphManager integration
+//! - **Mapping Utilities**: `build_block_map_from_graph()` for efficient batch operations
+//!
+//! ### Error Handling Philosophy
+//! - **Graceful Degradation**: Missing references are preserved in original form
+//! - **No Exceptions**: Never throws errors for unresolvable references
+//! - **Information Preservation**: Maintains maximum information even with partial failures
+//!
+//! This module serves as the foundation for all reference resolution operations
+//! across the import system, ensuring consistent and reliable expansion of block
+//! references while maintaining performance and data integrity.
 
 use std::collections::{HashMap, HashSet};
 use regex::Regex;

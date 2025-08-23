@@ -7,8 +7,7 @@ cargo check                      # Quick syntax check - don't filter with grep/t
 cargo build                      # Build cymbiont
 cargo test                       # Run full test suite (preferred - only filter by test during active troubleshooting)
 RUST_LOG=debug cargo run         # Run cymbiont with debug logging (do not change duration or set a timeout unless user requests it)
-env RUST_LOG=debug cargo test -- --nocapture 2>&1 | tee test_output.log  # Capture console output to file; do not filter before piping the full output
-# NEVER: cargo run 2>&1 | tail   # WRONG: '2' becomes an argument to cargo! Plus we have verbosity checks now, just run without filtering
+# NEVER: cargo run 2>&1 | tail   # WRONG: '2' becomes an argument to cargo! And you shouldn't be filtering cargo commands anyway
 ```
 
 ## CLI Flags
@@ -98,3 +97,4 @@ env RUST_LOG=debug cargo test -- --nocapture 2>&1 | tee test_output.log  # Captu
 
 ### Autodebugger Commands
 - **Remove debug! calls**: `autodebugger remove-debug` (default: targets src/ and tests/ directories)
+- **Validate documentation**: `autodebugger validate-docs` (checks module docs meet complexity thresholds)

@@ -1,40 +1,96 @@
-/**
- * @module pkm_data
- * @description PKM data structures and graph transformation logic
- * 
- * This module defines the core PKM (Personal Knowledge Management) data structures
- * and provides the logic to transform them into graph nodes and edges. It serves
- * as the bridge between external PKM formats and the internal graph representation.
- * 
- * ## Core Types
- * 
- * - `PKMBlockData`: Knowledge block with content, references, and hierarchy
- * - `PKMPageData`: Knowledge page that contains and organizes blocks
- * - `PKMReference`: Typed references (page, block, tag) extracted from content
- * 
- * ## Key Responsibilities
- * 
- * ### Data Transformation
- * The `apply_to_graph()` methods on PKMBlockData and PKMPageData handle:
- * - Creating or updating graph nodes with appropriate metadata
- * - Resolving block references to expand content
- * - Creating edges for relationships (parent-child, page-block, references)
- * - Ensuring referenced pages/blocks exist (creating placeholders if needed)
- * 
- * ### Reference Resolution
- * - Block references `((block-id))` are resolved to their content
- * - Page references `[[page-name]]` create edges to page nodes
- * - Tags `#tag` are treated as implicit page references
- * - Properties are stored in node metadata, not as edges
- * 
- * ## Design Principles
- * 
- * - **Separation of Concerns**: PKM logic is isolated from generic graph operations
- * - **Lazy Page Creation**: Referenced pages are created on-demand
- * - **Normalized Names**: Page names are normalized to lowercase for consistency
- * - **Flexible Timestamps**: Accepts various timestamp formats via custom deserializer
- * - **Reference Safety**: Circular and self-references are handled gracefully
- */
+//! # PKM Data Structures and Graph Transformation
+//!
+//! This module defines the core PKM (Personal Knowledge Management) data structures
+//! and provides the logic to transform them into graph nodes and edges. It serves
+//! as the bridge between external PKM formats and the internal graph representation,
+//! handling the complex task of converting hierarchical, reference-rich knowledge
+//! structures into a navigable graph format.
+//!
+//! ## Core Data Types
+//!
+//! ### PKMBlockData
+//! Represents a single knowledge block with rich metadata:
+//! - **Content**: The actual text content with markdown formatting
+//! - **Hierarchy**: Parent-child relationships within the knowledge structure
+//! - **References**: Extracted links to pages, blocks, and tags
+//! - **Properties**: Structured metadata (status, priority, dates, etc.)
+//! - **Timestamps**: Creation and modification tracking with flexible deserialization
+//!
+//! ### PKMPageData
+//! Represents a knowledge page that organizes and contains blocks:
+//! - **Naming**: Both original and normalized names for consistent referencing
+//! - **Block Organization**: Lists of root-level blocks belonging to the page
+//! - **Metadata**: Page-level properties and timestamps
+//!
+//! ### PKMReference
+//! Typed references extracted from content during parsing:
+//! - **Page References**: `[[Page Name]]` - Links to other pages
+//! - **Block References**: `((block-id))` - Direct block citations
+//! - **Tag References**: `#tag` - Categorical classifications
+//!
+//! ## Graph Transformation Architecture
+//!
+//! ### Smart Node Management
+//! The `apply_to_graph()` methods implement sophisticated node lifecycle management:
+//! - **Existence Checking**: Efficiently determines if nodes already exist
+//! - **Update vs Create**: Preserves existing nodes while updating content
+//! - **UUID Generation**: Creates consistent internal identifiers
+//! - **Metadata Preservation**: Maintains properties and timestamps across updates
+//!
+//! ### Edge Creation Strategy
+//! Creates typed edges to represent different relationship semantics:
+//! - **ParentChild**: Hierarchical block relationships
+//! - **PageToBlock**: Page ownership of blocks
+//! - **PageRef**: Explicit page references from content
+//! - **BlockRef**: Direct block-to-block citations
+//! - **Tag**: Categorical relationships via hashtags
+//!
+//! ### Reference Resolution Pipeline
+//! - **Content Expansion**: Block references are resolved to actual content
+//! - **Circular Detection**: Prevents infinite loops in reference chains
+//! - **Placeholder Creation**: Ensures referenced entities exist in the graph
+//! - **Lazy Loading**: Creates referenced pages and blocks on-demand
+//!
+//! ## Design Principles and Patterns
+//!
+//! ### Separation of Concerns
+//! PKM logic is completely isolated from generic graph operations, allowing:
+//! - **Domain Expertise**: PKM-specific business logic remains centralized
+//! - **Graph Flexibility**: Underlying graph engine can evolve independently
+//! - **Testing Simplicity**: PKM transformations can be tested in isolation
+//!
+//! ### Defensive Programming
+//! - **Flexible Timestamps**: Custom deserializer handles strings, integers, and ISO formats
+//! - **Graceful Degradation**: Missing references become placeholders rather than errors
+//! - **Data Validation**: Content and structure validation with meaningful error messages
+//! - **Safe Defaults**: Optional fields have sensible default values
+//!
+//! ### Performance Optimization
+//! - **Batch Operations**: Groups related graph operations for efficiency
+//! - **Content Mapping**: Pre-builds block maps for fast reference resolution
+//! - **Incremental Updates**: Only modifies changed content during updates
+//! - **Smart Normalization**: Caches normalized names to avoid repeated computation
+//!
+//! ## Factory Methods and Convenience APIs
+//!
+//! ### Creation Helpers
+//! - `PKMBlockData::new_block()`: Creates blocks with automatic UUID generation
+//! - `PKMPageData::new_page()`: Initializes pages with normalized naming
+//! - Smart defaults for timestamps, properties, and references
+//!
+//! ### Update Operations
+//! - `update_block_content()`: Handles the complex find-update-resolve-save cycle
+//! - `create_or_update_page()`: Intelligently manages page existence and updates
+//! - Reference re-resolution when content changes
+//!
+//! ## Integration with Import Pipeline
+//!
+//! This module fits into the broader import system architecture:
+//! 1. **Input Processing**: Receives parsed data from format-specific modules (Logseq, etc.)
+//! 2. **Data Transformation**: Converts external formats to PKM structures
+//! 3. **Graph Application**: Uses GraphManager to persist nodes and edges
+//! 4. **Reference Resolution**: Coordinates with reference_resolver for content expansion
+//! 5. **Error Propagation**: Reports transformation errors through centralized error system
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};

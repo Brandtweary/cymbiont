@@ -162,7 +162,7 @@ static VERBOSITY_LAYER: Mutex<Option<VerbosityCheckLayer>> = Mutex::new(None);
 fn init_test_tracing() {
     INIT.call_once(|| {
         // Use RUST_LOG if set, otherwise default to warn for tests
-        let verbosity_layer = init_logging(Some("warn"));
+        let verbosity_layer = init_logging(Some("warn"), None);
         
         // Store the layer for later checking
         if let Ok(mut guard) = VERBOSITY_LAYER.lock() {

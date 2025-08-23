@@ -80,7 +80,7 @@ mod utils;
 
 use app_state::AppState;
 use cli::{Args, handle_cli_commands};
-use autodebugger::{init_logging_with_file, RotatingFileConfig, VerbosityConfig as AutodebuggerVerbosityConfig};
+use autodebugger::{init_logging, VerbosityConfig as AutodebuggerVerbosityConfig};
 
 fn main() -> Result<()> {
     // Create Tokio runtime explicitly for proper shutdown control
@@ -103,27 +103,14 @@ async fn async_main() -> Result<()> {
     // Load configuration once to get logging settings
     let config = config::load_config(args.config.clone());
     
-    // Initialize logging with file rotation and verbosity config
-    let file_config = RotatingFileConfig {
-        log_directory: std::path::PathBuf::from(&config.logging.directory),
-        filename: config.logging.filename.clone(),
-        max_files: config.logging.max_files,
-        max_size_mb: config.logging.max_size_mb as u64,
-        console_output: true,  // Keep console output
-    };
-    
-    // Convert Cymbiont's VerbosityConfig to autodebugger's format
+    // Initialize logging with verbosity config
     let verbosity_config = AutodebuggerVerbosityConfig {
         info_threshold: config.verbosity.info_threshold,
         debug_threshold: config.verbosity.debug_threshold,
         trace_threshold: config.verbosity.trace_threshold,
     };
     
-    let (verbosity_layer, _file_guard) = init_logging_with_file(
-        None,  // Use default log level
-        Some(file_config),
-        Some(verbosity_config)
-    );
+    let verbosity_layer = init_logging(None, Some(verbosity_config));
     
     // Track start time for total runtime measurement
     let start_time = std::time::Instant::now();

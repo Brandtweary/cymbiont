@@ -87,8 +87,6 @@ pub struct Config {
     #[allow(dead_code)] // TODO: Remove when transaction log config is used
     pub transaction_log: TransactionLogConfig,
     #[serde(default)]
-    pub logging: LoggingConfig,
-    #[serde(default)]
     pub verbosity: VerbosityConfig,
 }
 
@@ -134,17 +132,6 @@ pub struct TransactionLogConfig {
     pub integrity_check_on_startup: bool,
 }
 
-#[derive(Debug, Deserialize, Clone)]
-pub struct LoggingConfig {
-    #[serde(default = "default_log_directory")]
-    pub directory: String,
-    #[serde(default = "default_log_filename")]
-    pub filename: String,
-    #[serde(default = "default_log_max_files")]
-    pub max_files: usize,
-    #[serde(default = "default_log_max_size_mb")]
-    pub max_size_mb: usize,
-}
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct VerbosityConfig {
@@ -185,21 +172,6 @@ fn default_integrity_check_on_startup() -> bool {
     true
 }
 
-fn default_log_directory() -> String {
-    "logs".to_string()
-}
-
-fn default_log_filename() -> String {
-    "cymbiont.log".to_string()
-}
-
-fn default_log_max_files() -> usize {
-    10
-}
-
-fn default_log_max_size_mb() -> usize {
-    500
-}
 
 fn default_info_threshold() -> usize {
     50
@@ -228,7 +200,6 @@ impl Default for Config {
             data_dir: default_data_dir(),
             auth: AuthConfig::default(),
             transaction_log: TransactionLogConfig::default(),
-            logging: LoggingConfig::default(),
             verbosity: VerbosityConfig::default(),
         }
     }
@@ -263,16 +234,6 @@ impl Default for TransactionLogConfig {
     }
 }
 
-impl Default for LoggingConfig {
-    fn default() -> Self {
-        LoggingConfig {
-            directory: default_log_directory(),
-            filename: default_log_filename(),
-            max_files: default_log_max_files(),
-            max_size_mb: default_log_max_size_mb(),
-        }
-    }
-}
 
 impl Default for VerbosityConfig {
     fn default() -> Self {

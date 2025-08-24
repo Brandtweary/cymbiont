@@ -610,7 +610,8 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
         // Show conversation stats if agent is loaded
         if is_active {
             let agents = app_state.agents.read_or_panic("show agent status - read agents").await;
-            if let Some(agent) = agents.get(&resolved_id) {
+            if let Some(agent_arc) = agents.get(&resolved_id) {
+                let agent = agent_arc.read_or_panic("show agent status - read agent").await;
                 info!("  Conversation Messages: {}", agent.conversation_history.len());
             }
         }

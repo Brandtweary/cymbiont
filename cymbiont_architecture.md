@@ -170,8 +170,9 @@ fn example() -> Result<()> {
 - `initiate_graceful_shutdown()`, `wait_for_transactions()` - shutdown coordination
 - `get_transaction_coordinator()` - access to per-graph WAL
 - `cleanup_and_save()` - saves all agents and graphs on shutdown
-**Agent state**: Manages `agents: HashMap<Uuid, Agent>` and `agent_registry: AgentRegistry`
-**Lock usage**: Uses `read_or_panic()` and `write_or_panic()` for all lock operations
+**Agent state**: Manages `agents: HashMap<Uuid, Arc<RwLock<Agent>>>` with per-agent locking for parallel operations
+**Concurrency**: Per-agent RwLocks enable operations on different agents to proceed simultaneously
+**Lock usage**: Brief HashMap locks for Arc retrieval, then individual agent locks for operations
 **Role**: Acts as the central nervous system, connecting all components without implementing business logic
 
 ### server/http_api.rs
@@ -343,9 +344,13 @@ fn example() -> Result<()> {
 - **Graph operations**: Block/page CRUD, graph lifecycle (all require agent authorization via GraphOps)
 - **Agent operations**: Chat, selection, history, administration, authorization management
 - **System commands**: Auth, test, freeze/unfreeze for deterministic testing
-**Key features**: Async task spawning per message, smart graph/agent resolution, prime agent defaults
+**Key features**: 
+- Async task spawning per message enables parallel processing
+- Per-agent locking allows concurrent operations on different agents
+- Smart graph/agent resolution with prime agent defaults
+**Performance**: WebSocket commands for different agents execute in parallel without blocking
 **Error handling**: Uses hierarchical error system with domain-specific types (ServerError, etc.)
-**Lock handling**: All async locks use `read_or_panic()` and `write_or_panic()` extension methods
+**Lock handling**: Brief HashMap access followed by individual resource locks
 **Full API reference**: See `src/server/CLAUDE.md` for complete command documentation
 
 ### import/mod.rs
@@ -580,10 +585,10 @@ The shutdown sequence runs `cleanup_and_save()` to close WebSocket connections, 
 
 **Prime Agent**: Auto-created on first run → Authorized for all new graphs → Cannot be deleted → Default for all operations
 
-**Lock Ordering**: To prevent deadlocks, all code that needs both `graph_registry` and `agent_registry` locks must acquire them in a consistent order:
-1. `graph_registry` (SyncRwLock) - Always acquired first
-2. `agent_registry` (SyncRwLock) - Acquired after graph_registry
-3. Use `lock_registries_for_write()` function from `lock.rs` to ensure correct ordering
+**Lock Ordering**: To prevent deadlocks when acquiring multiple locks simultaneously:
+- **Registry locks**: Always acquire `graph_registry` before `agent_registry` (use `lock_registries_for_write()` helper)
+- **Agent locks**: The `agents` HashMap lock should only be held briefly to get/insert/remove Arc references, never while acquiring individual agent locks
+- **Graph locks**: Similar pattern - brief HashMap access, then work with individual resources
 
 ### autodebugger/
 **Purpose**: Git submodule providing LLM-oriented developer utilities  

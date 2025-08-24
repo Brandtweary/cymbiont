@@ -73,18 +73,23 @@
 //! - Authorization → AgentRegistry
 //! 
 //! ### Concurrency Design
-//! - Async RwLocks for frequently accessed resources (graphs, agents, connections)
+//! - **Per-agent locking**: Each agent has its own RwLock, enabling parallel operations
+//! - **HashMap discipline**: The `agents` HashMap lock is ONLY for Arc management (get/insert/remove)
+//! - **Operation pattern**: Get Arc from HashMap → drop HashMap lock → work with individual agent
+//! - Async RwLocks for frequently accessed resources (graphs, connections)
 //! - Sync RwLocks for registries requiring immediate consistency
 //! - Double-check pattern prevents race conditions in resource creation
 //! - Debug assertions detect lock contention during development
 //! 
-//! ### Lock Ordering Hierarchy
-//! To prevent deadlocks, locks must be acquired in this strict order:
-//! 1. `graph_registry` (SyncRwLock) - Always acquired first
-//! 2. `agent_registry` (SyncRwLock) - Acquired after graph_registry
-//! 3. Async locks (`graph_resources`, `agents`, `ws_connections`) - No ordering required
+//! ### Lock Ordering Rules
+//! To prevent deadlocks when acquiring MULTIPLE locks simultaneously:
+//! - **Registry locks**: Always acquire `graph_registry` before `agent_registry`
+//!   (use `lock_registries_for_write()` helper)
+//! - **Agent locks**: The `agents` HashMap lock should only be held briefly to get/insert/remove
+//!   Arc references. Never hold it while acquiring individual agent locks.
+//! - **Graph locks**: Similar pattern - brief HashMap access, then work with individual resources
 //! 
-//! Use `lock_registries_for_write()` when both registries need write access.
+//! Note: We never actually hold multiple agent locks or mix registry/agent locks simultaneously.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -123,7 +128,7 @@ pub struct AppState {
     pub graph_registry: Arc<SyncRwLock<GraphRegistry>>,
     
     // Agent management - parallel to graph management
-    pub agents: Arc<RwLock<HashMap<Uuid, Agent>>>,  // Active agents
+    pub agents: Arc<RwLock<HashMap<Uuid, Arc<RwLock<Agent>>>>>,  // Active agents with per-agent locks
     pub agent_registry: Arc<SyncRwLock<AgentRegistry>>,  // Agent lifecycle management
     
     pub config: Config,
@@ -576,7 +581,7 @@ impl AppState {
                   agent_id, agent_info.authorized_graphs[0]);
         }
         
-        agents.insert(*agent_id, agent);
+        agents.insert(*agent_id, Arc::new(RwLock::new(agent)));
         
         Ok(())
     }
@@ -602,9 +607,27 @@ impl AppState {
     pub async fn deactivate_agent(&self, agent_id: &Uuid) -> Result<()> {
         // Save and unload agent from memory (AppState-specific coordination)
         let mut agents = self.agents.write_or_panic("deactivate agent - write agents").await;
-        if let Some(mut agent) = agents.remove(agent_id) {
-            agent.save()
-                .map_err(|e| CymbiontError::Other(format!("Failed to save agent before deactivation: {:?}", e)))?;
+        if let Some(agent_arc) = agents.remove(agent_id) {
+            // Try to extract agent from Arc - this will fail if other references exist
+            match Arc::try_unwrap(agent_arc) {
+                Ok(agent_lock) => {
+                    // Successfully unwrapped - we own the agent
+                    let mut agent = agent_lock.into_inner();
+                    agent.save()
+                        .map_err(|e| CymbiontError::Other(format!("Failed to save agent before deactivation: {:?}", e)))?;
+                }
+                Err(agent_arc) => {
+                    // Agent is still referenced elsewhere - save through the Arc
+                    {
+                        let mut agent = agent_arc.write_or_panic("deactivate agent - save").await;
+                        agent.save()
+                            .map_err(|e| CymbiontError::Other(format!("Failed to save agent before deactivation: {:?}", e)))?;
+                    } // Drop the guard here
+                    warn!("Agent {} has active references during deactivation", agent_id);
+                    // Put it back since we couldn't unwrap it
+                    agents.insert(*agent_id, agent_arc);
+                }
+            }
         }
         drop(agents);
         
@@ -647,8 +670,9 @@ impl AppState {
         }
         
         // If agent is loaded, check if it needs a default graph
-        let mut agents = self.agents.write_or_panic("authorize agent - write agents").await;
-        if let Some(agent) = agents.get_mut(agent_id) {
+        let agents = self.agents.read_or_panic("authorize agent - read agents").await;
+        if let Some(agent_arc) = agents.get(agent_id) {
+            let mut agent = agent_arc.write_or_panic("authorize agent - set default").await;
             if agent.get_default_graph_id().is_none() {
                 agent.set_default_graph_id(Some(*graph_id));
                 info!("Set default graph for agent {} to {}", agent_id, graph_id);
@@ -709,8 +733,9 @@ impl AppState {
         }
         
         // Save all active agents
-        let mut agents = self.agents.write_or_panic("cleanup - write agents").await;
-        for (agent_id, agent) in agents.iter_mut() {
+        let agents = self.agents.read_or_panic("cleanup - read agents").await;
+        for (agent_id, agent_arc) in agents.iter() {
+            let mut agent = agent_arc.write_or_panic("cleanup - save agent").await;
             if let Err(e) = agent.save() {
                 error!("Failed to save agent {}: {:?}", agent_id, e);
             }

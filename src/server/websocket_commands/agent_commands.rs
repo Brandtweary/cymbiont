@@ -46,6 +46,31 @@
 //! uses `lock_registries_for_write()` to acquire locks in the
 //! canonical order (graph_registry → agent_registry) to prevent deadlocks.
 //! 
+//! ### Per-Agent Locking Pattern (CRITICAL)
+//! Agents use fine-grained locking for parallel operations:
+//! 1. **Brief HashMap lock**: Acquire read lock on `agents` HashMap only to get Arc
+//! 2. **Clone the Arc**: Get `Arc<RwLock<Agent>>` and immediately drop HashMap lock
+//! 3. **Individual agent lock**: Work with the specific agent's lock
+//! 
+//! **NEVER hold the HashMap lock while calling agent methods!** This would block
+//! all other agent operations unnecessarily. Example:
+//! ```rust
+//! // CORRECT: Brief HashMap access
+//! let agent_arc = {
+//!     let agents = state.agents.read_or_panic("get agent").await;
+//!     agents.get(&agent_id).cloned()
+//! };
+//! if let Some(agent_arc) = agent_arc {
+//!     let mut agent = agent_arc.write_or_panic("operation").await;
+//!     // ... work with agent
+//! }
+//! 
+//! // WRONG: Holding HashMap lock during operations
+//! let mut agents = state.agents.write_or_panic("...").await;
+//! let agent = agents.get_mut(&agent_id)?;
+//! agent.process_message(...).await; // BLOCKS ALL OTHER AGENTS!
+//! ```
+//! 
 //! ## Integration
 //! 
 //! - Uses AgentRegistry for lifecycle and authorization management
@@ -53,6 +78,7 @@
 //! - Maintains connection state for agent selection persistence
 
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use uuid::Uuid;
 use crate::error::*;
 use crate::AppState;
@@ -91,19 +117,21 @@ pub async fn handle(
             // Ensure we have an agent ID
             let agent_id = agent_id.ok_or_else(|| ServerError::websocket("No agent available for chat"))?;
             
-            // Get the agent from the map and process the message
-            let response = {
-                let mut agents = state.agents.write_or_panic("agent chat - write agents").await;
-                
-                match agents.get_mut(&agent_id) {
-                    Some(agent) => {
-                        let result = agent.process_message(state, message, echo, echo_tool).await;
-                        result?
-                    }
-                    None => {
-                        send_error_response(connection_id, state, &format!("Agent {} not found", agent_id)).await?;
-                        return Ok(());
-                    }
+            // Get the agent Arc from the map (brief lock)
+            let agent_arc = {
+                let agents = state.agents.read_or_panic("agent chat - get agent").await;
+                agents.get(&agent_id).cloned()
+            };
+            
+            // Process message with just this agent's lock
+            let response = match agent_arc {
+                Some(agent_arc) => {
+                    let mut agent = agent_arc.write_or_panic("agent chat - process message").await;
+                    agent.process_message(state, message, echo, echo_tool).await?
+                }
+                None => {
+                    send_error_response(connection_id, state, &format!("Agent {} not found", agent_id)).await?;
+                    return Ok(());
                 }
             };
             
@@ -223,7 +251,8 @@ pub async fn handle(
             // Get conversation history
             let history = {
                 let agents = state.agents.read_or_panic("agent history - read agents").await;
-                if let Some(agent) = agents.get(&resolved_id) {
+                if let Some(agent_arc) = agents.get(&resolved_id) {
+                    let agent = agent_arc.read_or_panic("agent history - read agent").await;
                     let messages = if let Some(limit) = limit {
                         agent.get_recent_messages(limit)
                     } else {
@@ -308,8 +337,9 @@ pub async fn handle(
             
             // Clear the agent's conversation history
             {
-                let mut agents = state.agents.write_or_panic("agent operation - write agents").await;
-                if let Some(agent) = agents.get_mut(&resolved_id) {
+                let agents = state.agents.read_or_panic("agent reset - get agent").await;
+                if let Some(agent_arc) = agents.get(&resolved_id) {
+                    let mut agent = agent_arc.write_or_panic("agent reset - clear history").await;
                     agent.clear_history();
                     // Save after clearing
                     agent.save()?;
@@ -361,8 +391,8 @@ pub async fn handle(
                 agent.save()?;
                 
                 // Add to active agents map
-                let mut agents = state.agents.write_or_panic("agent operation - write agents").await;
-                agents.insert(agent_info.id, agent);
+                let mut agents = state.agents.write_or_panic("create agent - insert").await;
+                agents.insert(agent_info.id, Arc::new(RwLock::new(agent)));
             }
             
             // Save the registry after creating agent
@@ -645,7 +675,8 @@ pub async fn handle(
             let conversation_stats = if is_active {
                 let agents = state.agents.read_or_panic("agent info - read agents").await;
                 match agents.get(&resolved_id) {
-                    Some(agent) => {
+                    Some(agent_arc) => {
+                        let agent = agent_arc.read_or_panic("agent info - read agent").await;
                         Some(serde_json::json!({
                             "message_count": agent.conversation_history.len(),
                             "llm_config": agent.llm_config,

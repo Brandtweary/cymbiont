@@ -138,16 +138,26 @@ fn check_directory(dir: &Path, violations: &mut Vec<(std::path::PathBuf, usize, 
                 }
                 
                 // Check for banned macros (using concat to avoid self-detection)
-                let banned = [
-                    concat!("print", "ln!"),
-                    concat!("eprint", "ln!"),
+                // We check for the macro name followed by ! and then either space or paren
+                let banned_prefixes = [
+                    concat!("print", "ln", "!"),
+                    concat!("eprint", "ln", "!"),
                     concat!("print", "!"),
                     concat!("eprint", "!"),
                     concat!("dbg", "!"),
                 ];
                 
-                if banned.iter().any(|pattern| line.contains(pattern)) {
-                    violations.push((path.clone(), line_num + 1, line.to_string()));
+                for prefix in &banned_prefixes {
+                    // Check if line contains the macro (must be followed by paren or space)
+                    if let Some(pos) = line.find(prefix) {
+                        // Get the character after the macro name
+                        let after_macro = line.chars().nth(pos + prefix.len());
+                        // It's a macro call if followed by '(' or whitespace
+                        if matches!(after_macro, Some('(') | Some(' ') | Some('\t') | None) {
+                            violations.push((path.clone(), line_num + 1, line.to_string()));
+                            break;
+                        }
+                    }
                 }
             }
         }

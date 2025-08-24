@@ -88,13 +88,14 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock as SyncRwLock, Mutex};
+use std::sync::{Arc, RwLock as SyncRwLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::fs;
 use std::time::Duration;
 use tokio::sync::{oneshot, RwLock};
 use tracing::{info, error, warn};
 use uuid::Uuid;
+
 use crate::error::*;
 
 use crate::{
@@ -129,7 +130,7 @@ pub struct AppState {
     pub data_dir: PathBuf,  // Resolved absolute path
     
     // Server-specific components (optional)
-    pub ws_ready_tx: Mutex<Option<oneshot::Sender<()>>>,
+    pub ws_ready_tx: std::sync::Mutex<Option<oneshot::Sender<()>>>,
     pub ws_connections: Option<Arc<RwLock<HashMap<String, WsConnection>>>>,
     pub auth_token: Arc<RwLock<Option<String>>>,  // Authentication token
     
@@ -219,7 +220,7 @@ impl AppState {
             agent_registry,
             config,
             data_dir: data_dir.clone(),
-            ws_ready_tx: Mutex::new(None),
+            ws_ready_tx: std::sync::Mutex::new(None),
             ws_connections,
             auth_token: Arc::new(RwLock::new(None)),
             operation_freeze: Arc::new(RwLock::new(false)),
@@ -455,18 +456,24 @@ impl AppState {
         description: Option<String>,
     ) -> Result<GraphInfo> {
         // Delegate complete workflow to GraphRegistry
-        let graph_info = {
+        let (graph_info, _prime_agent_id) = {
             let (mut graph_registry, mut agent_registry) = lock_registries_for_write(
                 &self.graph_registry,
                 &self.agent_registry
             )?;
             
-            graph_registry.create_new_graph_complete(name, description, &mut agent_registry)
-                .map_err(|e| CymbiontError::Other(format!("Failed to create graph: {}", e)))?
+            let graph_info = graph_registry.create_new_graph_complete(name, description, &mut agent_registry)
+                .map_err(|e| CymbiontError::Other(format!("Failed to create graph: {}", e)))?;
+            
+            let prime_id = agent_registry.get_prime_agent_id();
+            (graph_info, prime_id)
         };
         
         // Create graph manager resources (AppState-specific coordination)
         self.get_or_create_graph_manager(&graph_info.id).await?;
+        
+        // Don't try to set prime agent default here - it causes deadlock if called from a tool
+        // The caller can handle setting defaults if needed
         
         Ok(graph_info)
     }
@@ -559,8 +566,15 @@ impl AppState {
         };
         
         // Load agent from disk
-        let agent = Agent::load(&agent_info.data_path)
+        let mut agent = Agent::load(&agent_info.data_path)
             .map_err(|e| CymbiontError::Other(format!("Failed to load agent {}: {:?}", agent_id, e)))?;
+        
+        // If agent has no default but is authorized for graphs, set first as default
+        if agent.get_default_graph_id().is_none() && !agent_info.authorized_graphs.is_empty() {
+            agent.set_default_graph_id(Some(agent_info.authorized_graphs[0]));
+            info!("Set default graph for loaded agent {} to {}", 
+                  agent_id, agent_info.authorized_graphs[0]);
+        }
         
         agents.insert(*agent_id, agent);
         
@@ -587,7 +601,7 @@ impl AppState {
     /// Simplified workflow using downstream registry methods.
     pub async fn deactivate_agent(&self, agent_id: &Uuid) -> Result<()> {
         // Save and unload agent from memory (AppState-specific coordination)
-        let mut agents = self.agents.write_or_panic("get or load agent - write agents").await;
+        let mut agents = self.agents.write_or_panic("deactivate agent - write agents").await;
         if let Some(mut agent) = agents.remove(agent_id) {
             agent.save()
                 .map_err(|e| CymbiontError::Other(format!("Failed to save agent before deactivation: {:?}", e)))?;
@@ -609,6 +623,39 @@ impl AppState {
         } else {
             false
         }
+    }
+    
+    /// Authorize an agent for a graph and set default if needed
+    /// 
+    /// This method handles the complete authorization workflow:
+    /// 1. Updates both registries for bidirectional tracking
+    /// 2. If agent is loaded and has no default, sets this graph as default
+    /// 3. Saves all changes to disk
+    pub async fn authorize_agent_for_graph(&self, agent_id: &Uuid, graph_id: &Uuid) -> Result<()> {
+        // Update registries
+        {
+            let (mut graph_registry, mut agent_registry) = lock_registries_for_write(
+                &self.graph_registry,
+                &self.agent_registry
+            )?;
+            
+            agent_registry.authorize_agent_for_graph(agent_id, graph_id, &mut graph_registry)?;
+            
+            // Save both registries
+            agent_registry.save()?;
+            graph_registry.save()?;
+        }
+        
+        // If agent is loaded, check if it needs a default graph
+        let mut agents = self.agents.write_or_panic("authorize agent - write agents").await;
+        if let Some(agent) = agents.get_mut(agent_id) {
+            if agent.get_default_graph_id().is_none() {
+                agent.set_default_graph_id(Some(*graph_id));
+                info!("Set default graph for agent {} to {}", agent_id, graph_id);
+            }
+        }
+        
+        Ok(())
     }
     
     /// Save all graphs and registry on shutdown
@@ -662,7 +709,7 @@ impl AppState {
         }
         
         // Save all active agents
-        let mut agents = self.agents.write_or_panic("get or load agent - write agents").await;
+        let mut agents = self.agents.write_or_panic("cleanup - write agents").await;
         for (agent_id, agent) in agents.iter_mut() {
             if let Err(e) = agent.save() {
                 error!("Failed to save agent {}: {:?}", agent_id, e);

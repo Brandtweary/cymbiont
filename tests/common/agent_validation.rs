@@ -142,6 +142,17 @@ impl AgentValidator {
                 index, self.conversation_history.len()
             ));
         
+        // Debug logging
+        tracing::debug!("Checking message at index {}: role={:?}, expected={:?}", 
+            index, 
+            message["role"].as_str(),
+            match expected {
+                ExpectedMessage::User { .. } => "user",
+                ExpectedMessage::Assistant { .. } => "assistant", 
+                ExpectedMessage::Tool { .. } => "tool",
+            }
+        );
+        
         match expected {
             ExpectedMessage::User { content, .. } => {
                 assert_eq!(message["role"].as_str(), Some("user"),
@@ -165,9 +176,14 @@ impl AgentValidator {
                 assert_eq!(message["name"].as_str(), Some(name.as_str()),
                     "Expected tool '{}' at index {}", name, index);
                 
-                let actual_result = message["result"].as_str()
-                    .expect("Tool message must have result");
-                result_pattern.assert_matches(actual_result, &format!("Tool result at index {}", index));
+                // Tool result is an AgentContext object with success, message, and optional data
+                let result = &message["result"];
+                assert!(result.is_object(), "Tool result must be an object at index {}", index);
+                
+                // Extract the message field from the result for pattern matching
+                let actual_message = result["message"].as_str()
+                    .expect("Tool result must have message field");
+                result_pattern.assert_matches(actual_message, &format!("Tool result at index {}", index));
             },
         }
     }
@@ -226,7 +242,6 @@ pub enum ExpectedMessage {
     Assistant { 
         content: MessagePattern,
     },
-    #[allow(dead_code)]  // TODO: Implement when tool support is added
     Tool { 
         name: String, 
         result_pattern: MessagePattern,
@@ -237,6 +252,7 @@ pub enum ExpectedMessage {
 #[derive(Debug, Clone)]
 pub enum MessagePattern {
     Exact(String),
+    Contains(String),
 }
 
 impl MessagePattern {
@@ -245,6 +261,10 @@ impl MessagePattern {
         match self {
             MessagePattern::Exact(expected) => {
                 assert_eq!(actual, expected, "{}: Content mismatch", context);
+            },
+            MessagePattern::Contains(substring) => {
+                assert!(actual.contains(substring), 
+                    "{}: Expected content to contain '{}', got: '{}'" , context, substring, actual);
             },
         }
     }
@@ -359,7 +379,6 @@ impl AgentValidationFixture {
         self
     }
     
-    #[allow(dead_code)] // TODO: Implement when tool support is added
     pub fn expect_tool_message(&mut self, agent_id: &Uuid, tool: &str, result: MessagePattern) -> &mut Self {
         self.expected_conversations
             .entry(*agent_id)
@@ -490,6 +509,9 @@ impl AgentValidationFixture {
     
     /// Validate message sequence matches expectations
     fn validate_message_sequence(&self, validator: &AgentValidator, expected: &[ExpectedMessage]) {
+        tracing::debug!("Validating message sequence for agent {}: {} actual messages, {} expected",
+            validator.agent_id, validator.conversation_history.len(), expected.len());
+        
         assert_eq!(validator.conversation_history.len(), expected.len(),
             "Agent {} has {} messages, expected {}",
             validator.agent_id, validator.conversation_history.len(), expected.len());

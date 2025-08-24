@@ -12,6 +12,7 @@
   - **cli_commands.rs**: CLI command tests with build-time contract enforcement (see src/cli.rs header for adding commands)
   - **websocket_commands.rs**: WebSocket API tests
   - **agent_commands.rs**: Agent chat and admin command tests
+  - **agent_tools.rs**: Agent tool execution tests for all 15 knowledge graph tools
   - **freeze_mechanism.rs**: Freeze/unfreeze operation tests for deterministic testing
   - **crash_recovery.rs**: Transaction recovery tests for startup and graph switching
 
@@ -61,15 +62,17 @@
 - `AgentValidationFixture::new()`: Create fixture to track expected agent state and conversations
 - `expect_agent_created(id, name, is_prime)`: Track agent creation with prime status
 - `expect_agent_deleted/activated/deactivated(id)`: Track agent lifecycle changes
-- `expect_user_message/assistant_message(agent_id, pattern)`: Track conversation messages with pattern matching
+- `expect_user_message/assistant_message/tool_message(agent_id, pattern)`: Track conversation messages with pattern matching
 - `expect_chat_reset(agent_id)`: Clear expected conversation for an agent
 - `expect_prime_agent(prime_id)`: Helper to set up prime agent expectations
 - `expect_authorization/deauthorization(agent_id, graph_id)`: Track agent-graph authorization changes
 - `validate_all(data_dir)`: Validate all expectations against persisted agent state
 
 ## MockLLM Testing
-MockLLM is the test LLM backend. Pass `echo` in AgentChat commands to control responses.
-Without echo, MockLLM returns a default response. The echo field flows through Message::User to MockLLM::complete().
+MockLLM is the test LLM backend with two control mechanisms:
+- `echo`: Pass text in AgentChat commands to control assistant responses
+- `echo_tool`: Pass tool name and args to trigger deterministic tool execution
+Without echo/echo_tool, MockLLM returns a default response. These fields flow through Message::User to MockLLM::complete().
 
 ## Key Concepts
 - Each test gets unique port (8888+), data directory, and config file via atomic counter

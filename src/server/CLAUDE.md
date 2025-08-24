@@ -54,7 +54,7 @@ server/
 - `ListGraphs` - Return all graphs with metadata
 
 ### Agent Chat Commands
-- `AgentChat { message, echo?, agent_id?, agent_name? }` - Send message to agent (echo for MockLLM testing)
+- `AgentChat { message, echo?, echo_tool?, agent_id?, agent_name? }` - Send message to agent (echo for text, echo_tool for tool calls in MockLLM)
 - `AgentSelect { agent_id?, agent_name? }` - Switch connection's current agent
 - `AgentList` - List all agents with active/prime status
 - `AgentHistory { agent_id?, agent_name?, limit? }` - Get conversation messages
@@ -91,7 +91,7 @@ server/
 - **Smart Resolution**: Commands use UUID/name with intelligent defaults for graph/agent targeting
 
 ## Testing Support
-- **MockLLM**: Pass `echo` in AgentChat for deterministic responses
+- **MockLLM**: Pass `echo` for text responses or `echo_tool` for tool execution in AgentChat
 - **Freeze/Unfreeze**: Pause operations after WAL write for crash testing
 - **CLI Bridge**: TestCliCommand for integration test coverage
 

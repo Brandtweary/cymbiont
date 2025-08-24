@@ -119,25 +119,24 @@ impl Default for LLMConfig {
 
 /// Message types in conversation history
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "role")]
+#[serde(tag = "role", rename_all = "lowercase")]
 pub enum Message {
     User {
         content: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         echo: Option<String>,  // Test-only: force MockLLM to echo this response
-        #[serde(with = "chrono::serde::ts_seconds")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        echo_tool: Option<String>,  // Test-only: force MockLLM to return a tool call
         timestamp: chrono::DateTime<chrono::Utc>,
     },
     Assistant {
         content: String,
-        #[serde(with = "chrono::serde::ts_seconds")]
         timestamp: chrono::DateTime<chrono::Utc>,
     },
     Tool {
         name: String,
         args: Value,
         result: AgentContext,
-        #[serde(with = "chrono::serde::ts_seconds")]
         timestamp: chrono::DateTime<chrono::Utc>,
     },
 }
@@ -229,6 +228,49 @@ pub struct MockLLM {
     default_response: String,
 }
 
+/// Generate mock arguments for a tool based on its schema
+/// 
+/// This creates valid test arguments with required fields filled in
+/// with reasonable test values. Used by MockLLM to generate realistic
+/// tool calls for integration testing.
+fn generate_mock_args(tool_name: &str, tools: &[ToolDefinition]) -> serde_json::Value {
+    // Find the tool schema
+    let tool = tools.iter().find(|t| t.name == tool_name);
+    
+    let Some(tool) = tool else {
+        // Tool not found, return empty args
+        return serde_json::json!({});
+    };
+    
+    let mut args = serde_json::Map::new();
+    
+    // Fill in required parameters with test values
+    for required_param in &tool.parameters.required {
+        if let Some(prop) = tool.parameters.properties.get(required_param) {
+            let value = match prop.property_type.as_str() {
+                "string" => {
+                    // Generate appropriate test values based on parameter name
+                    match required_param.as_str() {
+                        "content" => serde_json::Value::String("Test content from MockLLM".to_string()),
+                        // Use valid UUIDs for ID fields - this block exists in dummy graph
+                        "block_id" => serde_json::Value::String("67f9a190-985b-4dbf-90e4-c2abffb2ab51".to_string()),
+                        "node_id" => serde_json::Value::String("456e7890-e89b-12d3-a456-426614174000".to_string()),
+                        "page_name" => serde_json::Value::String("Test Page".to_string()),
+                        "start_id" => serde_json::Value::String("789e0123-e89b-12d3-a456-426614174000".to_string()),
+                        _ => serde_json::Value::String(format!("test-{}", required_param)),
+                    }
+                },
+                "number" => serde_json::Value::Number(serde_json::Number::from(3)),
+                "object" => serde_json::json!({}),
+                _ => serde_json::Value::Null,
+            };
+            args.insert(required_param.clone(), value);
+        }
+    }
+    
+    serde_json::Value::Object(args)
+}
+
 // Note: MockLLM instances are created via create_llm_backend() using LLMConfig
 
 #[async_trait]
@@ -239,30 +281,28 @@ impl LLMBackend for MockLLM {
         tools: &[ToolDefinition],
     ) -> Result<LLMResponse> {
         // For testing: look at the last user message
-        if let Some(Message::User { content, echo, .. }) = messages.last() {
-            // First priority: if echo is provided, use it
+        if let Some(Message::User { echo_tool, echo, .. }) = messages.last() {
+            // Priority 1: echo_tool returns a tool call
+            if let Some(tool_name) = echo_tool {
+                // Generate mock arguments based on the tool schema
+                let mock_args = generate_mock_args(tool_name, tools);
+                
+                return Ok(LLMResponse {
+                    content: format!("I've executed the {} tool for you", tool_name),
+                    tool_call: Some(ToolCall {
+                        name: tool_name.clone(),
+                        arguments: mock_args,
+                    }),
+                });
+            }
+            
+            // Priority 2: echo returns text response
             if let Some(echo_response) = echo {
                 return Ok(LLMResponse {
                     content: echo_response.clone(),
                     tool_call: None,
                 });
             }
-            
-            // Second priority: check if any tool name is mentioned
-            for tool in tools {
-                if content.to_lowercase().contains(&tool.name) {
-                    // Return a tool call response
-                    return Ok(LLMResponse {
-                        content: format!("I'll use the {} tool for you.", tool.name),
-                        tool_call: Some(ToolCall {
-                            name: tool.name.clone(),
-                            arguments: serde_json::json!({}), // Mock arguments
-                        }),
-                    });
-                }
-            }
-            
-            // No more predefined responses - just echo or default
         }
         
         // Default: return default response
@@ -294,6 +334,7 @@ mod tests {
             Message::User {
                 content: "Hello".to_string(),
                 echo: None,
+                echo_tool: None,
                 timestamp: Utc::now(),
             }
         ];
@@ -304,15 +345,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_mock_llm_tool_detection() {
+    async fn test_mock_llm_echo_tool() {
         let config = LLMConfig::Mock {
             default_response: "Default".to_string(),
         };
         let llm = create_llm_backend(&config);
         let messages = vec![
             Message::User {
-                content: "Please add_block with content 'test'".to_string(),
+                content: "Please create a block".to_string(),
                 echo: None,
+                echo_tool: Some("add_block".to_string()),
                 timestamp: Utc::now(),
             }
         ];
@@ -330,7 +372,7 @@ mod tests {
         ];
         
         let response = llm.complete(&messages, &tools).await.unwrap();
-        assert!(response.content.contains("add_block"));
+        assert_eq!(response.content, "I've executed the add_block tool for you");
         assert!(response.tool_call.is_some());
         assert_eq!(response.tool_call.unwrap().name, "add_block");
     }
@@ -358,6 +400,7 @@ mod tests {
         let user_msg = Message::User {
             content: "Hello".to_string(),
             echo: None,
+            echo_tool: None,
             timestamp: Utc::now(),
         };
         let json = serde_json::to_string(&user_msg).unwrap();

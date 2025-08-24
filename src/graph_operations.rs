@@ -540,6 +540,9 @@ impl GraphOps for Arc<AppState> {
         let graph_info = AppState::create_new_graph(self, name, description).await
             .map_err(|e| GraphError::lifecycle(format!("Failed to create graph: {}", e)))?;
         
+        // Note: Prime agent authorization is handled in AppState::create_new_graph
+        // via GraphRegistry::create_new_graph_complete
+        
         Ok(json!({
             "id": graph_info.id,
             "name": graph_info.name,

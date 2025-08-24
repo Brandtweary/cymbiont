@@ -68,7 +68,7 @@ pub async fn handle(
 ) -> Result<()> {
     match command {
         // Agent Commands
-        Command::AgentChat { message, echo } => {
+        Command::AgentChat { message, echo, echo_tool } => {
             
             // Get the current agent for this connection (defaults to prime if none selected)
             let agent_id = {
@@ -91,14 +91,19 @@ pub async fn handle(
             // Ensure we have an agent ID
             let agent_id = agent_id.ok_or_else(|| ServerError::websocket("No agent available for chat"))?;
             
-            // Get the agent and process the message
+            // Get the agent from the map and process the message
             let response = {
-                let mut agents = state.agents.write_or_panic("agent operation - write agents").await;
-                if let Some(agent) = agents.get_mut(&agent_id) {
-                    agent.process_message(message, echo).await?
-                } else {
-                    send_error_response(connection_id, state, &format!("Agent {} not found", agent_id)).await?;
-                    return Ok(());
+                let mut agents = state.agents.write_or_panic("agent chat - write agents").await;
+                
+                match agents.get_mut(&agent_id) {
+                    Some(agent) => {
+                        let result = agent.process_message(state, message, echo, echo_tool).await;
+                        result?
+                    }
+                    None => {
+                        send_error_response(connection_id, state, &format!("Agent {} not found", agent_id)).await?;
+                        return Ok(());
+                    }
                 }
             };
             
@@ -527,30 +532,8 @@ pub async fn handle(
                 )?
             };
             
-            // Authorize agent for graph
-            {
-                let (mut graph_registry, mut agent_registry) = lock_registries_for_write(
-                    &state.graph_registry,
-                    &state.agent_registry
-                )
-                    ?;
-                
-                agent_registry.authorize_agent_for_graph(
-                    &resolved_agent_id,
-                    &resolved_graph_id,
-                    &mut graph_registry,
-                )?;
-            }
-            
-            // Save both registries
-            {
-                let registry = state.agent_registry.read_or_panic("read agent registry");
-                registry.save()?;
-            }
-            {
-                let registry = state.graph_registry.read_or_panic("read graph registry");
-                registry.save()?;
-            }
+            // Authorize agent for graph using the complete workflow
+            state.authorize_agent_for_graph(&resolved_agent_id, &resolved_graph_id).await?;
             
             let data = serde_json::json!({
                 "agent_id": resolved_agent_id.to_string(),
@@ -660,13 +643,16 @@ pub async fn handle(
             
             // Get conversation stats if agent is loaded
             let conversation_stats = if is_active {
-                let agents = state.agents.read_or_panic("agent history - read agents").await;
-                agents.get(&resolved_id).map(|agent| {
-                    serde_json::json!({
-                        "message_count": agent.conversation_history.len(),
-                        "llm_config": agent.llm_config,
-                    })
-                })
+                let agents = state.agents.read_or_panic("agent info - read agents").await;
+                match agents.get(&resolved_id) {
+                    Some(agent) => {
+                        Some(serde_json::json!({
+                            "message_count": agent.conversation_history.len(),
+                            "llm_config": agent.llm_config,
+                        }))
+                    },
+                    None => None
+                }
             } else {
                 None
             };

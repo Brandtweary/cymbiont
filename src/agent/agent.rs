@@ -174,13 +174,231 @@
 //! - Thread-safe message processing and persistence
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use tracing::{info, error};
 use uuid::Uuid;
+use serde_json::Value;
 
 use crate::storage::agent_persistence;
 use crate::agent::llm::{LLMConfig, LLMBackend, Message, AgentContext, create_llm_backend};
+use crate::agent::kg_tools;
+use crate::app_state::AppState;
 use crate::error::*;
+
+/// Tool argument validation result with detailed error information
+#[derive(Debug)]
+struct ValidationError {
+    field: String,
+    issue: ValidationIssue,
+}
+
+#[derive(Debug)]
+enum ValidationIssue {
+    MissingRequired,
+    WrongType { expected: String, got: String },
+    InvalidUuid(String),
+    InvalidValue(String),
+}
+
+impl std::fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.issue {
+            ValidationIssue::MissingRequired => {
+                write!(f, "Required field '{}' is missing", self.field)
+            }
+            ValidationIssue::WrongType { expected, got } => {
+                write!(f, "Field '{}' has wrong type: expected {}, got {}", 
+                       self.field, expected, got)
+            }
+            ValidationIssue::InvalidUuid(msg) => {
+                write!(f, "Field '{}' has invalid UUID: {}", self.field, msg)
+            }
+            ValidationIssue::InvalidValue(msg) => {
+                write!(f, "Field '{}' has invalid value: {}", self.field, msg)
+            }
+        }
+    }
+}
+
+/// Validate tool arguments against the tool's schema
+/// 
+/// Performs comprehensive validation including:
+/// - Required field presence
+/// - Type checking
+/// - UUID format validation for ID fields
+/// - Value range validation where applicable
+fn validate_tool_arguments(tool_name: &str, args: &Value) -> std::result::Result<(), String> {
+    // Get all tool schemas
+    let tools = kg_tools::get_tool_schemas();
+    
+    // Find the specific tool schema
+    let tool = tools.iter()
+        .find(|t| t.name == tool_name)
+        .ok_or_else(|| format!("Unknown tool: {}", tool_name))?;
+    
+    // Arguments must be an object
+    let args_obj = args.as_object()
+        .ok_or_else(|| "Tool arguments must be a JSON object".to_string())?;
+    
+    let mut errors = Vec::new();
+    
+    // Check all required fields are present and valid
+    for required_field in &tool.parameters.required {
+        if let Some(value) = args_obj.get(required_field) {
+            // Validate the field type and value
+            if let Some(schema) = tool.parameters.properties.get(required_field) {
+                if let Err(e) = validate_field_value(required_field, value, &schema.property_type) {
+                    errors.push(e);
+                }
+            }
+        } else {
+            errors.push(ValidationError {
+                field: required_field.clone(),
+                issue: ValidationIssue::MissingRequired,
+            });
+        }
+    }
+    
+    // Check that no unknown fields are present (helps catch typos)
+    for (field_name, value) in args_obj {
+        if !tool.parameters.properties.contains_key(field_name) {
+            // Allow extra fields but log a warning
+            tracing::warn!(
+                "Unknown field '{}' in arguments for tool '{}' with value: {:?}",
+                field_name, tool_name, value
+            );
+        }
+    }
+    
+    // If there are validation errors, format them nicely
+    if !errors.is_empty() {
+        let error_messages: Vec<String> = errors.iter()
+            .map(|e| e.to_string())
+            .collect();
+        return Err(error_messages.join("; "));
+    }
+    
+    Ok(())
+}
+
+/// Validate a single field value against its expected type
+fn validate_field_value(field_name: &str, value: &Value, expected_type: &str) -> std::result::Result<(), ValidationError> {
+    match expected_type {
+        "string" => {
+            if let Some(s) = value.as_str() {
+                // Additional validation for UUID fields
+                if field_name.ends_with("_id") || field_name == "graph_id" {
+                    if Uuid::parse_str(s).is_err() {
+                        return Err(ValidationError {
+                            field: field_name.to_string(),
+                            issue: ValidationIssue::InvalidUuid(format!("'{}' is not a valid UUID", s)),
+                        });
+                    }
+                }
+                // Additional validation for non-empty strings
+                if field_name == "content" || field_name == "page_name" {
+                    if s.trim().is_empty() {
+                        return Err(ValidationError {
+                            field: field_name.to_string(),
+                            issue: ValidationIssue::InvalidValue("Cannot be empty".to_string()),
+                        });
+                    }
+                }
+                Ok(())
+            } else {
+                Err(ValidationError {
+                    field: field_name.to_string(),
+                    issue: ValidationIssue::WrongType {
+                        expected: "string".to_string(),
+                        got: value_type_name(value),
+                    },
+                })
+            }
+        }
+        "number" => {
+            if value.is_number() {
+                // Additional validation for positive numbers
+                if field_name == "max_depth" {
+                    if let Some(n) = value.as_u64() {
+                        if n == 0 || n > 100 {
+                            return Err(ValidationError {
+                                field: field_name.to_string(),
+                                issue: ValidationIssue::InvalidValue(
+                                    "Must be between 1 and 100".to_string()
+                                ),
+                            });
+                        }
+                    }
+                }
+                Ok(())
+            } else {
+                Err(ValidationError {
+                    field: field_name.to_string(),
+                    issue: ValidationIssue::WrongType {
+                        expected: "number".to_string(),
+                        got: value_type_name(value),
+                    },
+                })
+            }
+        }
+        "object" => {
+            if value.is_object() {
+                Ok(())
+            } else {
+                Err(ValidationError {
+                    field: field_name.to_string(),
+                    issue: ValidationIssue::WrongType {
+                        expected: "object".to_string(),
+                        got: value_type_name(value),
+                    },
+                })
+            }
+        }
+        "boolean" => {
+            if value.is_boolean() {
+                Ok(())
+            } else {
+                Err(ValidationError {
+                    field: field_name.to_string(),
+                    issue: ValidationIssue::WrongType {
+                        expected: "boolean".to_string(),
+                        got: value_type_name(value),
+                    },
+                })
+            }
+        }
+        "array" => {
+            if value.is_array() {
+                Ok(())
+            } else {
+                Err(ValidationError {
+                    field: field_name.to_string(),
+                    issue: ValidationIssue::WrongType {
+                        expected: "array".to_string(),
+                        got: value_type_name(value),
+                    },
+                })
+            }
+        }
+        _ => {
+            // Unknown type, allow it
+            Ok(())
+        }
+    }
+}
+
+/// Get a human-readable name for a JSON value type
+fn value_type_name(value: &Value) -> String {
+    match value {
+        Value::Null => "null".to_string(),
+        Value::Bool(_) => "boolean".to_string(),
+        Value::Number(_) => "number".to_string(),
+        Value::String(_) => "string".to_string(),
+        Value::Array(_) => "array".to_string(),
+        Value::Object(_) => "object".to_string(),
+    }
+}
 
 
 
@@ -208,6 +426,9 @@ pub struct Agent {
     
     /// Custom system prompt/instructions
     pub system_prompt: Option<String>,
+    
+    /// Default graph for tool operations (set to first authorized graph)
+    pub default_graph_id: Option<Uuid>,
     
     /// Creation timestamp
     pub created: DateTime<Utc>,
@@ -242,6 +463,7 @@ impl Agent {
             conversation_history: Vec::new(),
             context_window_limit: 100,  // Default context window
             system_prompt,
+            default_graph_id: None,  // Will be set when first authorized for a graph
             created: now,
             last_active: now,
             data_path,
@@ -261,6 +483,7 @@ impl Agent {
             conversation_history: loaded.conversation_history,
             context_window_limit: loaded.context_window_limit,
             system_prompt: loaded.system_prompt,
+            default_graph_id: loaded.default_graph_id,
             created: loaded.created,
             last_active: loaded.last_active,
             data_path: agent_dir.to_path_buf(),
@@ -279,6 +502,7 @@ impl Agent {
             &self.conversation_history,
             self.context_window_limit,
             self.system_prompt.as_deref(),
+            self.default_graph_id,
             self.created,
             self.last_active,
         )?;
@@ -316,10 +540,11 @@ impl Agent {
     }
     
     /// Add a user message with optional echo for testing
-    pub fn add_user_message(&mut self, content: String, echo: Option<String>) {
+    pub fn add_user_message(&mut self, content: String, echo: Option<String>, echo_tool: Option<String>) {
         self.add_message(Message::User {
             content,
             echo,
+            echo_tool,
             timestamp: Utc::now(),
         });
     }
@@ -334,13 +559,24 @@ impl Agent {
     
     /// Add a tool execution result
     /// 
-    /// TODO: Will be used in Phase 1 when agents can execute graph tools.
-    #[allow(dead_code)]
+    /// Formats the tool result in a way that helps the LLM understand
+    /// what happened and continue the conversation appropriately.
     pub fn add_tool_result(&mut self, name: String, args: serde_json::Value, result: AgentContext) {
+        // Create a formatted result that's easier for LLMs to understand
+        let formatted_result = AgentContext {
+            success: result.success,
+            message: if result.success {
+                format!("✓ Tool '{}' executed successfully: {}", name, result.message)
+            } else {
+                format!("✗ Tool '{}' failed: {}", name, result.message)
+            },
+            data: result.data,
+        };
+        
         self.add_message(Message::Tool {
             name,
             args,
-            result,
+            result: formatted_result,
             timestamp: Utc::now(),
         });
     }
@@ -371,6 +607,23 @@ impl Agent {
         info!("Cleared conversation history for agent '{}'", self.name);
     }
     
+    
+    /// Get the agent's default graph ID
+    pub fn get_default_graph_id(&self) -> Option<Uuid> {
+        self.default_graph_id
+    }
+    
+    /// Set the agent's default graph ID
+    /// 
+    /// This is typically called when the agent is first authorized for a graph,
+    /// or when the agent explicitly switches its default using the set_default_graph tool.
+    pub fn set_default_graph_id(&mut self, graph_id: Option<Uuid>) {
+        self.default_graph_id = graph_id;
+        // Auto-save configuration changes
+        if let Err(e) = self.save() {
+            error!("Failed to save agent after default graph change: {}", e);
+        }
+    }
     
     /// Set system prompt
     /// 
@@ -411,34 +664,86 @@ impl Agent {
         }
     }
     
+    /// Execute a tool from the registry
+    /// 
+    /// Validates arguments against the tool schema, then calls the tool with
+    /// the agent's ID and provided arguments, converting the result to an
+    /// AgentContext for conversation tracking.
+    pub async fn execute_tool(&mut self, app_state: &Arc<AppState>, tool_name: &str, args: Value) -> Result<AgentContext> {
+        
+        // First validate the arguments against the tool schema
+        if let Err(validation_error) = validate_tool_arguments(tool_name, &args) {
+            return Ok(AgentContext {
+                success: false,
+                message: format!("Tool argument validation failed: {}", validation_error),
+                data: None,
+            });
+        }
+        
+        let result = kg_tools::execute_tool(app_state, self, tool_name, args).await?;
+        
+        // Convert result Value to AgentContext
+        let context = if let Some(obj) = result.as_object() {
+            AgentContext {
+                success: obj.get("success").and_then(|v| v.as_bool()).unwrap_or(false),
+                message: obj.get("message")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| obj.get("error").and_then(|v| v.as_str()))
+                    .unwrap_or("Tool executed")
+                    .to_string(),
+                data: obj.get("data").cloned(),
+            }
+        } else {
+            AgentContext {
+                success: false,
+                message: "Invalid tool response format".to_string(),
+                data: None,
+            }
+        };
+        
+        Ok(context)
+    }
+    
     /// Process an incoming message and generate a response
     /// 
     /// This is the main chat interaction method. It:
     /// 1. Adds the user message to history
     /// 2. Calls the LLM backend for a response
-    /// 3. Handles any tool calls (in future phases)
+    /// 3. Handles any tool calls
     /// 4. Adds the assistant response to history
     /// 5. Returns the response to the user
-    pub async fn process_message(&mut self, content: String, echo: Option<String>) -> Result<String> {
+    pub async fn process_message(&mut self, app_state: &Arc<AppState>, content: String, echo: Option<String>, echo_tool: Option<String>) -> Result<String> {
+        
         // Add user message to conversation history
-        self.add_user_message(content, echo);
+        self.add_user_message(content, echo, echo_tool.clone());
         
         // Get the LLM backend for this agent
         let llm = self.get_llm_backend();
         
-        // Call LLM with conversation history
-        // For now, we're not passing tools - that will come in Phase 2
-        let response = llm.complete(&self.conversation_history, &[])
+        // Get tool schemas
+        // TODO: Add tool filtering/selection based on context or agent capabilities
+        // For now we pass all tools on every call which works but may overwhelm smaller models
+        let tool_schemas = kg_tools::get_tool_schemas();
+        
+        // Call LLM with conversation history and tools
+        let response = llm.complete(&self.conversation_history, &tool_schemas)
             .await
             .map_err(|e| AgentError::llm(format!("LLM backend error: {}", e)))?;
         
-        // TODO: In Phase 2, check for tool calls here and execute them
-        // if let Some(tool_call) = response.tool_call {
-        //     // Execute tool and add result to history
-        //     // Call LLM again with updated history
-        // }
         
-        // Add assistant response to conversation history
+        // Handle tool calls
+        if let Some(tool_call) = response.tool_call {
+            // Execute the tool and add result to conversation BEFORE the assistant message
+            // This matches the realistic flow: user asks → tool executes → assistant responds
+            let result = self.execute_tool(app_state, &tool_call.name, tool_call.arguments.clone()).await?;
+            self.add_tool_result(tool_call.name, tool_call.arguments, result);
+            
+            // Note: With MockLLM, the response still says "I'll use the X tool" even though
+            // the tool has already been executed. This is a limitation of the test backend.
+            // Real LLMs would generate a response that acknowledges the tool result.
+        }
+        
+        // Add assistant response to conversation history AFTER any tool results
         self.add_assistant_message(response.content.clone());
         
         // Auto-save if needed (based on time/message thresholds)

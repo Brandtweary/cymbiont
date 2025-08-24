@@ -483,32 +483,8 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
             )?
         };
         
-        // Authorize agent for graph
-        {
-            let (mut graph_registry, mut agent_registry) = lock_registries_for_write(
-                &app_state.graph_registry,
-                &app_state.agent_registry
-            )
-                ?;
-            
-            agent_registry.authorize_agent_for_graph(
-                &resolved_agent_id,
-                &resolved_graph_id,
-                &mut graph_registry,
-            )?;
-        }
-        
-        // Save both registries
-        {
-            let registry = app_state.agent_registry.read_or_panic("read agent registry");
-            registry.save()
-                ?;
-        }
-        {
-            let registry = app_state.graph_registry.read_or_panic("read graph registry");
-            registry.save()
-                ?;
-        }
+        // Authorize agent for graph using the complete workflow
+        app_state.authorize_agent_for_graph(&resolved_agent_id, &resolved_graph_id).await?;
         
         info!("✅ Authorized agent {} for graph {}", resolved_agent_id, resolved_graph_id);
     }

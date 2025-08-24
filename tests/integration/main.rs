@@ -13,6 +13,7 @@ mod websocket_commands;
 mod freeze_mechanism;
 mod crash_recovery;
 mod agent_commands;
+mod agent_tools;
 mod cli_commands;
 
 // Re-export test functions with #[test] attribute
@@ -79,4 +80,44 @@ fn test_agent_admin_commands() {
 #[test]
 fn test_all_cli_commands() {
     cli_commands::test_all_cli_commands();
+}
+
+#[test]
+fn test_agent_graph_management_tools() {
+    agent_tools::test_agent_graph_management_tools();
+}
+
+#[test]
+fn test_agent_block_operations() {
+    agent_tools::test_agent_block_operations();
+}
+
+#[test]
+fn test_agent_page_operations() {
+    agent_tools::test_agent_page_operations();
+}
+
+#[test]
+fn test_agent_query_operations() {
+    agent_tools::test_agent_query_operations();
+}
+
+#[test]
+fn test_agent_authorization_failures() {
+    agent_tools::test_agent_authorization_failures();
+}
+
+#[test]
+fn test_agent_tool_validation_errors() {
+    agent_tools::test_agent_tool_validation_errors();
+}
+
+#[test]
+fn test_agent_tool_chaining() {
+    agent_tools::test_agent_tool_chaining();
+}
+
+#[test]
+fn test_agent_graph_management_tools_direct() {
+    agent_tools::test_agent_graph_management_tools_direct();
 }

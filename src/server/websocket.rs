@@ -168,8 +168,9 @@ pub enum Command {
     // Agent commands
     AgentChat {
         message: String,
-        // TODO: Re-evaluate if echo field should be feature-gated or if it has legitimate user use cases
-        echo: Option<String>,  // Test-only: force MockLLM to echo this response
+        // TODO: Re-evaluate if echo fields should be feature-gated or if they have legitimate user use cases
+        echo: Option<String>,     // Test-only: force MockLLM to echo this response
+        echo_tool: Option<String>, // Test-only: force MockLLM to call this tool
     },
     AgentSelect {
         agent_id: Option<String>,    // Optional UUID
@@ -411,6 +412,7 @@ async fn route_command(
     }
 
     // Route to appropriate handler based on command type
+    
     if is_agent_command(&command) {
         crate::server::websocket_commands::agent_commands::handle(command, connection_id, state).await
     } else if is_graph_command(&command) {

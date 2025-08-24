@@ -15,10 +15,10 @@ cymbiont/
 │   ├── graph_operations.rs        # Multi-agent graph operations with runtime authorization
 │   ├── agent/                     # Agent abstraction layer
 │   │   ├── mod.rs                 # Agent module exports
-│   │   ├── agent.rs               # Core Agent struct with conversation management
-│   │   ├── llm.rs                 # LLM backend abstraction and MockLLM implementation
-│   │   ├── kg_tools.rs            # Knowledge graph tool registry
-│   │   └── schemas.rs             # Ollama-compatible tool schemas
+│   │   ├── agent.rs               # Core Agent struct with conversation management and tool execution
+│   │   ├── llm.rs                 # LLM backend abstraction with MockLLM tool support
+│   │   ├── kg_tools.rs            # Static knowledge graph tool registry with 15 functional tools
+│   │   └── schemas.rs             # Ollama-compatible tool schemas for function calling
 │   ├── import/                    # Data import functionality
 │   │   ├── mod.rs                 # Import module exports and errors
 │   │   ├── pkm_data.rs            # PKM data structures
@@ -61,13 +61,14 @@ cymbiont/
 │   │   ├── mod.rs                 # Test environment setup
 │   │   ├── test_harness.rs        # TestServer lifecycle management
 │   │   ├── graph_validation.rs    # Automated graph state validation
-│   │   └── agent_validation.rs    # Agent state and conversation validation
+│   │   └── agent_validation.rs    # Agent state, conversation, and tool message validation
 │   └── integration/               # Integration test suite (single binary)
 │       ├── main.rs                # Test entry point
 │       ├── crash_recovery.rs      # Transaction recovery tests
 │       ├── http_logseq_import.rs  # HTTP API tests
 │       ├── websocket_commands.rs  # WebSocket tests
 │       ├── agent_commands.rs      # Agent chat and admin command tests
+│       ├── agent_tools.rs         # Complete agent tool execution test suite
 │       ├── cli_commands.rs        # CLI command tests with contract enforcement
 │       └── freeze_mechanism.rs    # Operation freeze/unfreeze tests
 ├── autodebugger/                  # Git submodule: LLM developer utilities toolbag
@@ -252,7 +253,7 @@ fn example() -> Result<()> {
 **Purpose**: Agent save/load functionality with auto-save thresholds
 **Key operations**: `save_agent()`, `load_agent()` - full agent state serialization
 **Auto-save triggers**: Time-based (5 minutes) and message-based (10 messages)
-**Data format**: JSON with conversation history, LLM config, system prompt
+**Data format**: JSON with conversation history, LLM config, system prompt, default_graph_id
 
 ### storage/registry_utils.rs
 **Purpose**: Shared UUID serialization utilities for both registries
@@ -276,30 +277,59 @@ fn example() -> Result<()> {
 **Shutdown behavior**: Tracks all active transactions, rejects new ones during shutdown
 
 ### agent/agent.rs
-**Purpose**: Core Agent struct with conversation management and LLM interaction
-**Key types**: `Agent`, `Message` enum (User/Assistant/Tool)
+**Purpose**: Core Agent struct with conversation management, LLM interaction, and tool execution
+**Key types**: `Agent`, `Message` enum (User/Assistant/Tool with AgentContext)
 **Key features**:
 - Conversation history with automatic context window management
-- LLM backend configuration per agent
-- System prompt customization
+- LLM backend configuration and tool execution pipeline
+- Default graph management for simplified tool usage
+- Comprehensive argument validation for tool calls
 - Auto-save on configuration changes
-**Methods**: `chat()`, `reset_conversation()`, `get_history()`, `save()`, `load()`
+**Methods**: 
+- `chat()`, `process_message()` - LLM interaction with tool support
+- `execute_tool()` - Tool execution with authorization and validation
+- `get/set_default_graph_id()` - Default graph management
+- `reset_conversation()`, `get_history()`, `save()`, `load()`
 
 ### agent/llm.rs
-**Purpose**: LLM backend abstraction with MockLLM implementation
-**Key types**: `LLMBackend` trait, `LLMConfig` enum, `MockLLM` struct
-**MockLLM**: Test implementation with echo support for deterministic testing
-**Interface**: `complete()` for message completion, `health_check()` for connectivity
+**Purpose**: LLM backend abstraction with MockLLM tool execution support
+**Key types**: 
+- `LLMBackend` trait, `LLMConfig` enum
+- `MockLLM` struct with `echo_tool` mechanism
+- `ToolCall` and `LLMResponse` with tool_call field
+**MockLLM features**: 
+- Test implementation with deterministic tool calls
+- `generate_mock_args()` for realistic test values
+- Valid UUID generation for dummy graph entities
+**Interface**: `complete()` with tool schemas, `health_check()` for connectivity
 
 ### agent/kg_tools.rs
-**Purpose**: Knowledge graph tool registry for agent-graph interaction
-**Key types**: `KGTool` enum, `ToolRegistry` struct
-**Tools**: Graph CRUD operations wrapped for agent execution
+**Purpose**: Static knowledge graph tool registry with 15 functional tools
+**Architecture**: Static `TOOLS` HashMap with function pointers for zero-overhead dispatch
+**Tool categories**:
+- **Block operations**: `add_block`, `update_block`, `delete_block`
+- **Page operations**: `create_page`, `delete_page`
+- **Query operations**: `get_node`, `query_graph_bfs` (stub)
+- **Graph lifecycle**: `open_graph`, `close_graph`, `create_graph`, `delete_graph`
+- **Graph queries**: `list_graphs`, `list_open_graphs`
+- **Agent graph management**: `set_default_graph`, `get_default_graph`, `list_my_graphs`
+**Key features**:
+- Smart graph resolution with fallback hierarchy
+- Authorization enforcement at tool boundary
+- Consistent JSON success/failure responses
+- Tool execution via `execute_tool()` function
 
 ### agent/schemas.rs
-**Purpose**: Ollama-compatible tool schemas for function calling
-**Key types**: `ToolSchema`, `ParameterSchema`
-**Design**: JSON schemas describing available graph operations
+**Purpose**: Complete Ollama-compatible tool schemas for all 15 graph operations
+**Key types**: 
+- `ToolDefinition` with name, description, parameters
+- `ParameterSchema` with type, properties, required fields
+- `PropertySchema` with type, description, optional enums
+**Schema features**:
+- Graph targeting via graph_id (UUID) or graph_name
+- Required vs optional parameter specification
+- Type information and parameter descriptions
+- `all_tool_definitions()` for schema generation
 
 ### server/server.rs
 **Purpose**: Server lifecycle management and port finding
@@ -397,15 +427,18 @@ fn example() -> Result<()> {
 **Benefits**: Eliminates manual assertions, reduces test brittleness, comprehensive edge validation
 
 ### tests/common/agent_validation.rs
-**Purpose**: Agent state and conversation validation for integration tests
+**Purpose**: Agent state, conversation, and tool execution validation for integration tests
 **Key types**: `AgentValidationFixture`, `AgentValidator`, `MessageOrderValidator`
 **Key methods**:
 - `validate_agent_registry_schema()` - verify registry structure
 - `expect_agent_created()`, `expect_agent_deleted()` - track lifecycle
-- `expect_user_message()`, `expect_assistant_message()` - validate conversations
+- `expect_user_message()`, `expect_assistant_message()`, `expect_tool_message()` - validate all message types
 - `expect_authorization()`, `expect_deauthorization()` - track graph access
 - `validate_all()` - comprehensive validation against disk state
-**Critical feature**: Message ordering validation ensures conversation integrity
+**Message validation**: 
+- `MessagePattern::Exact()` and `MessagePattern::Contains()` for flexible matching
+- Tool message result validation with AgentContext
+- Conversation sequence ordering (user → tool → assistant)
 
 
 ## Data Structures
@@ -527,7 +560,7 @@ The shutdown sequence runs `cleanup_and_save()` to close WebSocket connections, 
 
 **WebSocket**: Client auth → Prime agent selection → Async command execution (spawned tasks) → Runtime authorization check → Transaction-wrapped operation → Success/Error response
 
-**Agent Chat**: WebSocket command → Resolve agent target → Load agent if needed → LLM completion → Save conversation → Return response
+**Agent Chat**: WebSocket command → Resolve agent target → Load agent if needed → LLM completion with tool schemas → Tool execution if requested → Save conversation including tool results → Return response
 
 **Agent Lifecycle**: Create in registry → Save to disk → Activate (load to memory) → Chat interactions → Auto-save triggers → Deactivate (save and unload) → Archive on deletion
 
@@ -558,7 +591,7 @@ The shutdown sequence runs `cleanup_and_save()` to close WebSocket connections, 
 
 **Usage Examples**:
 ```bash
-autodebugger remove-debug              # Remove all debug! calls from current directory
+autodebugger remove-debug              # Remove all debug! calls from src/ and tests/
 autodebugger remove-debug src/         # Target specific directory
 autodebugger validate-docs             # Check module documentation meets complexity thresholds
 autodebugger validate-docs --verbose   # Show all validated files and skipped simple modules

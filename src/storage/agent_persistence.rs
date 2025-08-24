@@ -110,6 +110,8 @@ pub struct SerializedAgent {
     pub conversation_history: Vec<Message>,
     pub context_window_limit: usize,
     pub system_prompt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_graph_id: Option<Uuid>,
     pub created: DateTime<Utc>,
     pub last_active: DateTime<Utc>,
     #[serde(default = "default_version")]
@@ -129,6 +131,7 @@ pub struct LoadedAgentData {
     pub conversation_history: Vec<Message>,
     pub context_window_limit: usize,
     pub system_prompt: Option<String>,
+    pub default_graph_id: Option<Uuid>,
     pub created: DateTime<Utc>,
     pub last_active: DateTime<Utc>,
 }
@@ -163,6 +166,7 @@ pub fn load_agent(agent_dir: &Path) -> Result<LoadedAgentData> {
         conversation_history: serialized.conversation_history,
         context_window_limit: serialized.context_window_limit,
         system_prompt: serialized.system_prompt,
+        default_graph_id: serialized.default_graph_id,
         created: serialized.created,
         last_active: serialized.last_active,
     })
@@ -179,6 +183,7 @@ pub fn save_agent(
     conversation_history: &[Message],
     context_window_limit: usize,
     system_prompt: Option<&str>,
+    default_graph_id: Option<Uuid>,
     created: DateTime<Utc>,
     last_active: DateTime<Utc>,
 ) -> Result<()> {
@@ -194,6 +199,7 @@ pub fn save_agent(
         conversation_history: conversation_history.to_vec(),
         context_window_limit,
         system_prompt: system_prompt.map(|s| s.to_string()),
+        default_graph_id,
         created,
         last_active,
         version: 1,
@@ -245,6 +251,7 @@ mod tests {
             Message::User {
                 content: "Hello".to_string(),
                 echo: None,
+                echo_tool: None,
                 timestamp: Utc::now(),
             },
             Message::Assistant {
@@ -265,6 +272,7 @@ mod tests {
             &conversation_history,
             100,
             Some("You are a helpful assistant"),
+            None, // default_graph_id
             created,
             last_active,
         ).unwrap();

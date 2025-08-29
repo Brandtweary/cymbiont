@@ -65,22 +65,30 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
-use async_trait::async_trait;
 use crate::error::*;
 
 
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum TransactionState {
-    Active,
-    Committed,
-    Aborted,
+    Active,    // Transaction created but not yet executed (including deferred with retry)
+    Committed, // Transaction successfully executed
+    Aborted,   // Transaction failed and will not be retried
 }
 
+// Categorized operation structure for better organization
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Operation {
-    // Block operations with full API parameters
+    Graph(GraphOperation),
+    Agent(AgentOperation),
+    Registry(RegistryOperation),
+}
+
+// Graph operations (existing functionality)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum GraphOperation {
     CreateBlock {
+        graph_id: uuid::Uuid,
         agent_id: uuid::Uuid,
         content: String,
         parent_id: Option<String>,
@@ -88,34 +96,111 @@ pub enum Operation {
         properties: Option<serde_json::Value>,
     },
     UpdateBlock {
+        graph_id: uuid::Uuid,
         agent_id: uuid::Uuid,
         block_id: String,
         content: String,
     },
     DeleteBlock {
+        graph_id: uuid::Uuid,
         agent_id: uuid::Uuid,
         block_id: String,
     },
-    // Page operations with full API parameters
     CreatePage {
+        graph_id: uuid::Uuid,
         agent_id: uuid::Uuid,
         page_name: String,
         properties: Option<serde_json::Value>,
     },
     DeletePage {
+        graph_id: uuid::Uuid,
         agent_id: uuid::Uuid,
         page_name: String,
     },
 }
 
-/// Trait for executing operations
-/// This allows the storage layer to define operations without knowing about
-/// the specific implementation details of graph operations
-#[async_trait]
-pub trait OperationExecutor: Send + Sync {
-    /// Execute an operation and return success/failure
-    async fn execute_operation(&self, graph_id: &uuid::Uuid, operation: Operation) -> Result<()>;
+// Agent operations
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AgentOperation {
+    // Conversation operations
+    AddMessage {
+        agent_id: uuid::Uuid,
+        message: serde_json::Value, // Will be the full Message struct
+    },
+    ClearHistory {
+        agent_id: uuid::Uuid,
+    },
+    // Configuration operations
+    SetLLMConfig {
+        agent_id: uuid::Uuid,
+        config: serde_json::Value, // LLMConfig serialized
+    },
+    SetSystemPrompt {
+        agent_id: uuid::Uuid,
+        prompt: String,
+    },
+    SetDefaultGraph {
+        agent_id: uuid::Uuid,
+        graph_id: Option<uuid::Uuid>,
+    },
 }
+
+// Registry operations
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RegistryOperation {
+    Graph(GraphRegistryOp),
+    Agent(AgentRegistryOp),
+}
+
+// Graph registry operations
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum GraphRegistryOp {
+    RegisterGraph {
+        graph_id: uuid::Uuid,
+        name: Option<String>,
+        description: Option<String>,
+    },
+    RemoveGraph {
+        graph_id: uuid::Uuid,
+    },
+    OpenGraph {
+        graph_id: uuid::Uuid,
+    },
+    CloseGraph {
+        graph_id: uuid::Uuid,
+    },
+}
+
+// Agent registry operations
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AgentRegistryOp {
+    RegisterAgent {
+        agent_id: uuid::Uuid,
+        name: Option<String>,
+        description: Option<String>,
+    },
+    RemoveAgent {
+        agent_id: uuid::Uuid,
+    },
+    ActivateAgent {
+        agent_id: uuid::Uuid,
+    },
+    DeactivateAgent {
+        agent_id: uuid::Uuid,
+    },
+    AuthorizeAgent {
+        agent_id: uuid::Uuid,
+        graph_id: uuid::Uuid,
+    },
+    DeauthorizeAgent {
+        agent_id: uuid::Uuid,
+        graph_id: uuid::Uuid,
+    },
+    SetPrimeAgent {
+        agent_id: uuid::Uuid,
+    },
+}
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Transaction {
@@ -126,6 +211,8 @@ pub struct Transaction {
     pub updated_at: u64,
     pub content_hash: Option<String>,
     pub error_message: Option<String>,
+    pub deferred_reason: Option<String>,  // Why execution was delayed (entity unavailable, etc.)
+    pub retry_count: u32,                 // Number of retry attempts
 }
 
 impl Transaction {
@@ -136,8 +223,8 @@ impl Transaction {
             .as_millis() as u64;
             
         let content_hash = match &operation {
-            Operation::CreateBlock { content, .. } | 
-            Operation::UpdateBlock { content, .. } => {
+            Operation::Graph(GraphOperation::CreateBlock { content, .. }) | 
+            Operation::Graph(GraphOperation::UpdateBlock { content, .. }) => {
                 Some(compute_content_hash(content))
             }
             _ => None,
@@ -151,12 +238,72 @@ impl Transaction {
             updated_at: now,
             content_hash,
             error_message: None,
+            deferred_reason: None,
+            retry_count: 0,
         }
     }
 }
 
+impl Operation {
+    /// Extract the graph ID from an operation if it involves a specific graph
+    pub fn extract_graph_id(&self) -> Option<Uuid> {
+        match self {
+            Operation::Graph(op) => match op {
+                GraphOperation::CreateBlock { graph_id, .. } |
+                GraphOperation::UpdateBlock { graph_id, .. } |
+                GraphOperation::DeleteBlock { graph_id, .. } |
+                GraphOperation::CreatePage { graph_id, .. } |
+                GraphOperation::DeletePage { graph_id, .. } => Some(*graph_id),
+            },
+            Operation::Registry(RegistryOperation::Graph(op)) => match op {
+                GraphRegistryOp::RegisterGraph { graph_id, .. } |
+                GraphRegistryOp::RemoveGraph { graph_id } |
+                GraphRegistryOp::OpenGraph { graph_id } |
+                GraphRegistryOp::CloseGraph { graph_id } => Some(*graph_id),
+            },
+            Operation::Registry(RegistryOperation::Agent(op)) => match op {
+                AgentRegistryOp::AuthorizeAgent { graph_id, .. } |
+                AgentRegistryOp::DeauthorizeAgent { graph_id, .. } => Some(*graph_id),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+    
+    /// Extract the agent ID from an operation if it involves a specific agent
+    pub fn extract_agent_id(&self) -> Option<Uuid> {
+        match self {
+            Operation::Graph(op) => match op {
+                GraphOperation::CreateBlock { agent_id, .. } |
+                GraphOperation::UpdateBlock { agent_id, .. } |
+                GraphOperation::DeleteBlock { agent_id, .. } |
+                GraphOperation::CreatePage { agent_id, .. } |
+                GraphOperation::DeletePage { agent_id, .. } => Some(*agent_id),
+            },
+            Operation::Agent(op) => match op {
+                AgentOperation::AddMessage { agent_id, .. } |
+                AgentOperation::ClearHistory { agent_id } |
+                AgentOperation::SetLLMConfig { agent_id, .. } |
+                AgentOperation::SetSystemPrompt { agent_id, .. } |
+                AgentOperation::SetDefaultGraph { agent_id, .. } => Some(*agent_id),
+            },
+            Operation::Registry(RegistryOperation::Agent(op)) => match op {
+                AgentRegistryOp::RegisterAgent { agent_id, .. } |
+                AgentRegistryOp::RemoveAgent { agent_id } |
+                AgentRegistryOp::ActivateAgent { agent_id } |
+                AgentRegistryOp::DeactivateAgent { agent_id } |
+                AgentRegistryOp::AuthorizeAgent { agent_id, .. } |
+                AgentRegistryOp::DeauthorizeAgent { agent_id, .. } |
+                AgentRegistryOp::SetPrimeAgent { agent_id } => Some(*agent_id),
+            },
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct TransactionLog {
-    db: std::sync::Mutex<Option<sled::Db>>,
+    db: sled::Db,
     transactions_tree: sled::Tree,
     content_hash_index: sled::Tree,
     pending_index: sled::Tree,
@@ -170,8 +317,7 @@ impl TransactionLog {
         
         let config = sled::Config::new()
             .path(path_ref)
-            .flush_every_ms(Some(100))  // Frequent durability
-            // .snapshot_after_ops(10000)  // Deprecated in current sled version
+            // Removed async flushing - let sled use synchronous defaults for proper transaction ordering
             .cache_capacity(64 * 1024 * 1024)  // 64MB cache
             .mode(sled::Mode::HighThroughput);
             
@@ -182,29 +328,20 @@ impl TransactionLog {
         let pending_index = db.open_tree("pending_transactions")?;
         
         Ok(Self {
-            db: std::sync::Mutex::new(Some(db)),
+            db,
             transactions_tree,
             content_hash_index,
             pending_index,
         })
     }
     
+    
     /// Flush and close the database, ensuring all pending writes are persisted
     pub async fn close(&self) -> Result<()> {
-        // Flushing transaction log to disk
-        
-        // Extract the db from the mutex to avoid holding guard across await
-        let db_to_flush = {
-            let mut db_guard = self.db.lock().unwrap();
-            db_guard.take()
-        };
-        
-        // Now flush if we had a database
-        if let Some(db) = db_to_flush {
-            db.flush_async().await?;
-            // Transaction log flushed successfully
-            // db is dropped here, triggering sled cleanup
-        }
+        // Flush transaction log to disk before closing
+        self.db.flush_async().await?;
+        // Transaction log flushed successfully
+        // db is dropped when TransactionLog is dropped, triggering sled cleanup
         
         Ok(())
     }
@@ -213,18 +350,23 @@ impl TransactionLog {
         let tx_id = transaction.id.clone();
         let tx_bytes = serde_json::to_vec(&transaction)?;
         
-        
-        // Store the transaction
-        self.transactions_tree.insert(tx_id.as_bytes(), tx_bytes)?;
-        
-        // Index by content hash if present
-        if let Some(hash) = &transaction.content_hash {
-            self.content_hash_index.insert(hash.as_bytes(), tx_id.as_bytes())?;
-        }
-        
-        // Add to pending index
-        self.pending_index.insert(tx_id.as_bytes(), b"")?;
-        
+        // Use atomic sled multi-tree transaction for proper ordering guarantees
+        use sled::Transactional;
+        (&self.transactions_tree, &self.content_hash_index, &self.pending_index)
+            .transaction(|(tx_tree, hash_tree, pending_tree)| {
+                // Store the transaction atomically
+                tx_tree.insert(tx_id.as_bytes(), tx_bytes.as_slice())?;
+                
+                // Index by content hash if present
+                if let Some(hash) = &transaction.content_hash {
+                    hash_tree.insert(hash.as_bytes(), tx_id.as_bytes())?;
+                }
+                
+                // Add to pending index
+                pending_tree.insert(tx_id.as_bytes(), b"")?;
+                
+                Ok(())
+            }).map_err(|e: sled::transaction::TransactionError<sled::Error>| StorageError::transaction_log(format!("Failed to append transaction: {:?}", e)))?;
         
         Ok(tx_id)
     }
@@ -236,12 +378,31 @@ impl TransactionLog {
         }
     }
     
+    pub fn update_transaction_deferred(&self, id: &str, reason: &str) -> Result<()> {
+        let mut transaction = self.get_transaction(id)?;
+        
+        // Update deferred reason and increment retry count
+        transaction.deferred_reason = Some(reason.to_string());
+        transaction.retry_count += 1;
+        transaction.updated_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+            
+        let tx_bytes = serde_json::to_vec(&transaction)?;
+        
+        // Update in tree (stays in pending index since still Active)
+        self.transactions_tree.insert(id.as_bytes(), tx_bytes)?;
+        
+        Ok(())
+    }
+    
     pub fn update_transaction_state(&self, id: &str, new_state: TransactionState) -> Result<()> {
         let mut transaction = self.get_transaction(id)?;
         
         // Validate state transition
         match (&transaction.state, &new_state) {
-            (TransactionState::Active, _) => {}, // Active can transition to any state
+            (TransactionState::Active, _) => {}, // Active can transition to any state  
             (from, to) => {
                 return Err(StorageError::transaction_log(format!("Cannot transition from {:?} to {:?}", from, to)).into());
             }
@@ -252,15 +413,23 @@ impl TransactionLog {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-            
+                
         let tx_bytes = serde_json::to_vec(&transaction)?;
         
-        self.transactions_tree.insert(id.as_bytes(), tx_bytes)?;
-        
-        // Remove from pending index if committed or aborted
-        if matches!(new_state, TransactionState::Committed | TransactionState::Aborted) {
-            self.pending_index.remove(id.as_bytes())?;
-        }
+        // Use atomic sled multi-tree transaction for proper ordering guarantees
+        use sled::Transactional;
+        (&self.transactions_tree, &self.pending_index)
+            .transaction(|(tx_tree, pending_tree)| {
+                // Update transaction state atomically
+                tx_tree.insert(id.as_bytes(), tx_bytes.as_slice())?;
+                
+                // Remove from pending index if committed or aborted
+                if matches!(new_state, TransactionState::Committed | TransactionState::Aborted) {
+                    pending_tree.remove(id.as_bytes())?;
+                }
+                
+                Ok(())
+            }).map_err(|e: sled::transaction::TransactionError<sled::Error>| StorageError::transaction_log(format!("Failed to update transaction state: {:?}", e)))?;
         
         Ok(())
     }
@@ -278,7 +447,32 @@ impl TransactionLog {
             }
         }
         
+        // Sort by created_at to maintain chronological order
+        pending.sort_by_key(|t| t.created_at);
+        
         Ok(pending)
+    }
+    
+    
+    /// List all transactions (committed and pending) for full WAL replay
+    /// List only committed transactions for stable state rebuild
+    pub fn list_committed_transactions(&self) -> Result<Vec<Transaction>> {
+        let mut transactions = Vec::new();
+        
+        for item in self.transactions_tree.iter() {
+            let (_key, value) = item?;
+            let transaction: Transaction = serde_json::from_slice(&value)?;
+            
+            // Only include committed transactions
+            if matches!(transaction.state, TransactionState::Committed) {
+                transactions.push(transaction);
+            }
+        }
+        
+        // Sort by created_at to maintain chronological order
+        transactions.sort_by_key(|t| t.created_at);
+        
+        Ok(transactions)
     }
 }
 
@@ -306,13 +500,14 @@ mod tests {
     fn test_append_and_get_transaction() {
         let (log, _temp_dir) = create_test_log();
         
-        let operation = Operation::CreateBlock {
+        let operation = Operation::Graph(GraphOperation::CreateBlock {
+            graph_id: uuid::Uuid::new_v4(),
             agent_id: uuid::Uuid::new_v4(),
             content: "Test content".to_string(),
             parent_id: None,
             page_name: Some("test-page".to_string()),
             properties: None,
-        };
+        });
         
         let transaction = Transaction::new(operation);
         let tx_id = log.append_transaction(transaction.clone()).unwrap();
@@ -327,13 +522,14 @@ mod tests {
     fn test_update_transaction_state() {
         let (log, _temp_dir) = create_test_log();
         
-        let operation = Operation::CreateBlock {
+        let operation = Operation::Graph(GraphOperation::CreateBlock {
+            graph_id: uuid::Uuid::new_v4(),
             agent_id: uuid::Uuid::new_v4(),
             content: "Test content".to_string(),
             parent_id: None,
             page_name: Some("test-page".to_string()),
             properties: None,
-        };
+        });
         
         let transaction = Transaction::new(operation);
         let tx_id = log.append_transaction(transaction).unwrap();
@@ -350,13 +546,14 @@ mod tests {
         
         // Create multiple transactions
         for i in 0..3 {
-            let operation = Operation::CreateBlock {
+            let operation = Operation::Graph(GraphOperation::CreateBlock {
+                graph_id: uuid::Uuid::new_v4(),
                 agent_id: uuid::Uuid::new_v4(),
                 content: format!("Content {}", i),
                 parent_id: None,
                 page_name: Some("test-page".to_string()),
                 properties: None,
-            };
+            });
             log.append_transaction(Transaction::new(operation)).unwrap();
         }
         

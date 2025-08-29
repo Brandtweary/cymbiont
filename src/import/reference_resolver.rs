@@ -1,3 +1,8 @@
+// TODO: This module is auxiliary to pkm_data.rs and was partially orphaned during the import refactor.
+// - The core resolution logic may still be needed
+// - Consider whether to integrate with the new import system or remove
+#![allow(dead_code)]
+
 //! # Block Reference Resolution Engine
 //!
 //! This module provides sophisticated block reference resolution for knowledge graph import,

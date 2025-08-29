@@ -51,7 +51,7 @@
 use std::sync::Arc;
 use tracing::{info, warn, error};
 use crate::error::*;
-use crate::lock::{RwLockExt, AsyncRwLockExt};
+use crate::lock::AsyncRwLockExt;
 use crate::AppState;
 use crate::server::websocket::Command;
 use crate::server::websocket_utils::{
@@ -80,7 +80,7 @@ pub async fn handle(
                     // Set the prime agent as the default for this connection
                     if let Some(ref connections) = state.ws_connections {
                         let prime_agent_id = {
-                            let registry = state.agent_registry.read_or_panic("read agent registry for auth");
+                            let registry = state.agent_registry.read_or_panic("read agent registry for auth").await;
                             registry.get_prime_agent_id()
                         };
                         

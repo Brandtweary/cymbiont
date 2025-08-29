@@ -60,7 +60,7 @@
 //! After graceful cleanup, the process uses std::process::exit(0) due to sled database background threads.
 
 use crate::error::*;
-use crate::lock::RwLockExt;
+use crate::lock::AsyncRwLockExt;
 use clap::Parser;
 use tracing::{info, error, warn, trace};
 
@@ -169,9 +169,54 @@ async fn run_startup_sequence(app_state: &std::sync::Arc<AppState>) -> Result<()
     info!("🧠 Cymbiont initialized");
     info!("📁 Data directory: {}", app_state.data_dir.display());
     
-    // Run transaction recovery for all graphs
-    if let Err(e) = app_state.run_all_graphs_recovery().await {
-        error!("Failed to run graph recovery: {}", e);
+    // Three-phase startup:
+    // Phase 1: Rebuild entire state from committed transactions
+    if let Err(e) = storage::recovery::rebuild_from_wal_complete(&app_state).await {
+        error!("Failed to rebuild from WAL: {}", e);
+    }
+    
+    // Phase 2: Recover any pending transactions (crash recovery)
+    if let Err(e) = storage::recovery::recover_pending_transactions(&app_state).await {
+        error!("Failed to recover pending transactions: {}", e);
+    }
+    
+    // Phase 3: Bootstrap and activation
+    // Ensure prime agent exists (creates on first run)
+    storage::AgentRegistry::ensure_default_agent(
+        app_state.agent_registry.clone()
+    ).await?;
+    
+    // Activate all agents that should be active
+    let agents_to_activate = {
+        let registry = app_state.agent_registry.read_or_panic("get active agents").await;
+        registry.get_active_agents()
+    };
+    
+    for agent_id in agents_to_activate {
+        // Use the new static method that manages its own locking
+        if let Err(e) = storage::AgentRegistry::activate_agent_complete(
+            app_state.agent_registry.clone(),
+            agent_id,
+            false  // don't skip_wal - this is a real persistent activation
+        ).await {
+            error!("Failed to activate agent {}: {}", agent_id, e);
+        }
+    }
+    
+    // Open all graphs that should be open
+    let graphs_to_open = {
+        let registry = app_state.graph_registry.read_or_panic("get open graphs").await;
+        registry.get_open_graphs()
+    };
+    
+    for graph_id in graphs_to_open {
+        if let Err(e) = storage::GraphRegistry::open_graph_complete(
+            app_state.graph_registry.clone(),
+            graph_id,
+            false  // don't skip_wal - this is a real persistent open operation
+        ).await {
+            error!("Failed to open graph {}: {}", graph_id, e);
+        }
     }
     
     // Check for orphaned graphs (graphs with no authorized agents)
@@ -188,8 +233,8 @@ async fn run_startup_sequence(app_state: &std::sync::Arc<AppState>) -> Result<()
 
 /// Check for graphs with no authorized agents and warn
 async fn check_orphaned_graphs(app_state: &std::sync::Arc<AppState>) {
-    let agent_registry = app_state.agent_registry.read_or_panic("check orphaned graphs - agent registry");
-    let graph_registry = app_state.graph_registry.read_or_panic("check orphaned graphs - graph registry");
+    let agent_registry = app_state.agent_registry.read_or_panic("check orphaned graphs - agent registry").await;
+    let graph_registry = app_state.graph_registry.read_or_panic("check orphaned graphs - graph registry").await;
     let orphaned_graphs = agent_registry.find_orphaned_graphs(&graph_registry);
     
     if !orphaned_graphs.is_empty() {

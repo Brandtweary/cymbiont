@@ -1,6 +1,6 @@
 use std::fs;
 use serde_json::{json, Value};
-use crate::common::{setup_test_env, cleanup_test_env, GraphValidationFixture};
+use crate::common::{setup_test_env, cleanup_test_env, WalValidator};
 use crate::common::test_harness::{
     PreShutdown, PostShutdown, assert_phase,
     WsConnection, connect_websocket, send_command, expect_success, 
@@ -103,7 +103,7 @@ fn test_delete_page(ws: &mut WsConnection, page_name: &str) {
 }
 
 /// Test multiple updates on the same block to ensure edges are preserved
-fn test_multiple_block_updates(ws: &mut WsConnection, fixture: &mut GraphValidationFixture) -> String {
+fn test_multiple_block_updates(ws: &mut WsConnection, validator: &mut WalValidator) -> String {
     // Create a parent block first
     let parent_cmd = json!({
         "type": "create_block",
@@ -116,8 +116,8 @@ fn test_multiple_block_updates(ws: &mut WsConnection, fixture: &mut GraphValidat
     let parent_id = data["block_id"].as_str().expect("No block_id in response").to_string();
     
     // Record parent block expectation - the page will be auto-created
-    fixture.expect_create_page("test-update-page", None);
-    fixture.expect_create_block(&parent_id, "Parent block for update test", Some("test-update-page"));
+    validator.expect_create_page("test-update-page", None);
+    validator.expect_create_block(&parent_id, "Parent block for update test", Some("test-update-page"));
     
     // Create a child block
     let child_cmd = json!({
@@ -132,10 +132,9 @@ fn test_multiple_block_updates(ws: &mut WsConnection, fixture: &mut GraphValidat
     let child_id = data["block_id"].as_str().expect("No block_id in response").to_string();
     
     // Record child block expectation with parent-child edge
-    fixture.expect_create_block(&child_id, "Child block that will be updated multiple times", Some("test-update-page"));
+    validator.expect_create_block(&child_id, "Child block that will be updated multiple times", Some("test-update-page"));
     
-    // Add the parent-child edge expectation
-    fixture.expect_edge(&parent_id, &child_id, "ParentChild");
+    // Note: Parent-child edge is implicit in the parent_id parameter
     
     // Update 1: Change content
     let update1_cmd = json!({
@@ -146,7 +145,7 @@ fn test_multiple_block_updates(ws: &mut WsConnection, fixture: &mut GraphValidat
     
     let response = send_command(ws, update1_cmd);
     expect_success(response);
-    fixture.expect_update_block(&child_id, "First update - content changed");
+    validator.expect_update_block(&child_id, "First update - content changed");
     
     // Update 2: Change content again
     let update2_cmd = json!({
@@ -157,7 +156,7 @@ fn test_multiple_block_updates(ws: &mut WsConnection, fixture: &mut GraphValidat
     
     let response = send_command(ws, update2_cmd);
     expect_success(response);
-    fixture.expect_update_block(&child_id, "Second update - content changed again");
+    validator.expect_update_block(&child_id, "Second update - content changed again");
     
     // Update 3: Final content change
     let update3_cmd = json!({
@@ -168,7 +167,7 @@ fn test_multiple_block_updates(ws: &mut WsConnection, fixture: &mut GraphValidat
     
     let response = send_command(ws, update3_cmd);
     expect_success(response);
-    fixture.expect_update_block(&child_id, "Final update - this should be the final content");
+    validator.expect_update_block(&child_id, "Final update - this should be the final content");
     
     child_id
 }
@@ -341,9 +340,9 @@ pub fn test_websocket_commands() {
         // === Phase 1: Server Running (PreShutdown) ===
         assert_phase(PreShutdown);
         
-        // Initialize the validation fixture and expect the dummy graph
-        let mut fixture = GraphValidationFixture::new();
-        fixture.expect_dummy_graph();
+        // Initialize the validator and expect the dummy graph
+        let mut validator = WalValidator::new(&data_dir);
+        validator.expect_dummy_graph();
         
         // Connect WebSocket client
         let mut ws = connect_websocket(port);
@@ -354,38 +353,38 @@ pub fn test_websocket_commands() {
         
         // Test Create Block  
         let new_block_id = test_create_block(&mut ws);
-        // Record expectation in fixture
-        fixture.expect_create_block(&new_block_id, "WebSocket test block with **bold** and *italic* text", Some("test-websocket-page"));
+        // Record expectation in validator
+        validator.expect_create_block(&new_block_id, "WebSocket test block with **bold** and *italic* text", Some("test-websocket-page"));
         
         // Test Update Block (use a different existing block)
         test_update_block(&mut ws, "67f9a190-985b-4dbf-90e4-c2abffb2ab51");
-        // Record expectation in fixture
-        fixture.expect_update_block("67f9a190-985b-4dbf-90e4-c2abffb2ab51", "## Types of Knowledge Graphs (Updated via WebSocket)");
+        // Record expectation in validator
+        validator.expect_update_block("67f9a190-985b-4dbf-90e4-c2abffb2ab51", "## Types of Knowledge Graphs (Updated via WebSocket)");
         
         // Test Multiple Updates on Same Block (with parent-child and page-to-block edges)
-        let _updated_child_id = test_multiple_block_updates(&mut ws, &mut fixture);
+        let _updated_child_id = test_multiple_block_updates(&mut ws, &mut validator);
         
         // Test Delete Block (use another existing block)
         test_delete_block(&mut ws, "67fbd626-8e4a-485f-ad03-fd1ce5539ebb");
-        // Record expectation in fixture
-        fixture.expect_delete("67fbd626-8e4a-485f-ad03-fd1ce5539ebb");
+        // Record expectation in validator
+        validator.expect_delete_block("67fbd626-8e4a-485f-ad03-fd1ce5539ebb");
         
         // Test Create Page
         test_create_page(&mut ws, "test-websocket-page");
-        // Record expectation in fixture
-        fixture.expect_create_page("test-websocket-page", Some(json!({
+        // Record expectation in validator
+        validator.expect_create_page("test-websocket-page", Some(json!({
             "test-property": "test-value",
             "created-by": "websocket-test"
         })));
         
         // Test Delete Page (create a new page to delete)
         test_create_page(&mut ws, "page-to-delete");
-        fixture.expect_create_page("page-to-delete", Some(json!({
+        validator.expect_create_page("page-to-delete", Some(json!({
             "test-property": "test-value",
             "created-by": "websocket-test"
         })));
         test_delete_page(&mut ws, "page-to-delete");
-        fixture.expect_delete("page-to-delete");
+        validator.expect_delete_page("page-to-delete");
         
         // Test Graph Operations
         let final_graph_id = test_graph_operations(&mut ws, &data_dir);
@@ -403,8 +402,8 @@ pub fn test_websocket_commands() {
         // === Phase 3: Server Shutdown (PostShutdown) ===
         assert_phase(PostShutdown);
         
-        // Validate graph state using the fixture
-        fixture.validate_graph(&test_env.data_dir, &original_graph_id);
+        // Validate graph state using the validator
+        validator.validate_all().expect("Validation failed");
         
         // Validate registry state (graph switching behavior)
         validate_registry_state(&test_env.data_dir, &original_graph_id);

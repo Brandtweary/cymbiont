@@ -1,6 +1,6 @@
 use std::fs;
 use serde_json::{json, Value};
-use crate::common::{setup_test_env, cleanup_test_env};
+use crate::common::{setup_test_env, cleanup_test_env, WalValidator};
 use crate::common::test_harness::{TestServer, PreShutdown, PostShutdown, assert_phase, read_auth_token};
 
 
@@ -49,6 +49,10 @@ pub fn test_http_logseq_import() {
         
         // Read auth token
         let auth_token = read_auth_token(&test_data_dir);
+        
+        // Initialize WAL validator
+        let mut validator = WalValidator::new(&test_data_dir);
+        validator.expect_dummy_graph();
         
         // Get the absolute path to the dummy graph
         let dummy_graph_path = std::env::current_dir()
@@ -148,6 +152,9 @@ pub fn test_http_logseq_import() {
         // Phase 3: Server has shutdown - safe to validate persisted data
         assert_phase(PostShutdown);
         
+        // Validate WAL operations
+        validator.validate_all().expect("WAL validation failed");
+        
         test_env
     });
     
@@ -177,6 +184,7 @@ pub fn test_http_import_error_cases() {
         
         // Read auth token
         let auth_token = read_auth_token(&test_data_dir);
+        
         
         // Test 1: Non-existent path
         let response = make_import_request(port, "/path/that/does/not/exist", None, Some(&auth_token))

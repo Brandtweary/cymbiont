@@ -6,14 +6,16 @@
 
 use serde_json::json;
 use uuid::Uuid;
-use crate::common::{setup_test_env, cleanup_test_env, AgentValidationFixture, GraphValidationFixture};
+use crate::common::{setup_test_env, cleanup_test_env, WalValidator, MessagePattern};
 use crate::common::test_harness::{
     PreShutdown, PostShutdown, assert_phase,
     connect_websocket, send_command, expect_success, 
     authenticate_websocket, setup_with_graph, read_auth_token,
     TestServer
 };
-use crate::common::agent_validation::MessagePattern;
+
+#[allow(deprecated)] // Using deprecated agent_chat_sync until CQRS refactor
+use crate::common::test_harness::agent_chat_sync;
 
 /// Test graph management tools (create, list, open, close, delete graphs)
 pub fn test_agent_graph_management_tools() {
@@ -28,7 +30,7 @@ pub fn test_agent_graph_management_tools() {
         
         assert_phase(PreShutdown);
         
-        let mut agent_fixture = AgentValidationFixture::new();
+        let mut validator = WalValidator::new(&data_dir);
         
         // Connect and authenticate
         let mut ws = connect_websocket(port);
@@ -43,9 +45,9 @@ pub fn test_agent_graph_management_tools() {
             Uuid::parse_str(data["agent_id"].as_str().unwrap()).unwrap()
         };
         
-        agent_fixture.expect_prime_agent(prime_agent_id);
+        validator.expect_prime_agent(prime_agent_id);
         let initial_graph_uuid = Uuid::parse_str(&initial_graph_id).unwrap();
-        agent_fixture.expect_authorization(&prime_agent_id, &initial_graph_uuid);
+        validator.expect_authorization(&prime_agent_id, &initial_graph_uuid);
         
         // Test list_graphs tool
         {
@@ -62,16 +64,16 @@ pub fn test_agent_graph_management_tools() {
             assert!(data["response"].as_str().unwrap().contains("I've executed the list_graphs tool"));
             
             // Track conversation
-            agent_fixture.expect_user_message(
+            validator.expect_user_message(
                 &prime_agent_id,
                 MessagePattern::Exact("List all graphs".to_string())
             );
-            agent_fixture.expect_tool_message(
+            validator.expect_tool_message(
                 &prime_agent_id,
                 "list_graphs",
                 MessagePattern::Contains("✓ Tool 'list_graphs' executed successfully".to_string())
             );
-            agent_fixture.expect_assistant_message(
+            validator.expect_assistant_message(
                 &prime_agent_id,
                 MessagePattern::Exact("I've executed the list_graphs tool for you".to_string())
             );
@@ -90,16 +92,16 @@ pub fn test_agent_graph_management_tools() {
             // MockLLM returns the tool invocation message
             assert!(data["response"].as_str().unwrap().contains("I've executed the create_graph tool"));
             
-            agent_fixture.expect_user_message(
+            validator.expect_user_message(
                 &prime_agent_id,
                 MessagePattern::Exact("Create a new graph".to_string())
             );
-            agent_fixture.expect_tool_message(
+            validator.expect_tool_message(
                 &prime_agent_id,
                 "create_graph",
                 MessagePattern::Contains("✓ Tool 'create_graph' executed successfully".to_string())
             );
-            agent_fixture.expect_assistant_message(
+            validator.expect_assistant_message(
                 &prime_agent_id,
                 MessagePattern::Exact("I've executed the create_graph tool for you".to_string())
             );
@@ -125,7 +127,7 @@ pub fn test_agent_graph_management_tools() {
         };
         
         // Track the new graph creation
-        agent_fixture.expect_authorization(&prime_agent_id, &new_graph_id);
+        validator.expect_authorization(&prime_agent_id, &new_graph_id);
         
         // Test list_open_graphs tool
         {
@@ -139,16 +141,16 @@ pub fn test_agent_graph_management_tools() {
             
             assert!(data["response"].as_str().unwrap().contains("I've executed the list_open_graphs tool"));
             
-            agent_fixture.expect_user_message(
+            validator.expect_user_message(
                 &prime_agent_id,
                 MessagePattern::Exact("List open graphs".to_string())
             );
-            agent_fixture.expect_tool_message(
+            validator.expect_tool_message(
                 &prime_agent_id,
                 "list_open_graphs",
                 MessagePattern::Contains("✓ Tool 'list_open_graphs' executed successfully".to_string())
             );
-            agent_fixture.expect_assistant_message(
+            validator.expect_assistant_message(
                 &prime_agent_id,
                 MessagePattern::Exact("I've executed the list_open_graphs tool for you".to_string())
             );
@@ -166,16 +168,16 @@ pub fn test_agent_graph_management_tools() {
             
             assert!(data["response"].as_str().unwrap().contains("I've executed the close_graph tool"));
             
-            agent_fixture.expect_user_message(
+            validator.expect_user_message(
                 &prime_agent_id,
                 MessagePattern::Exact("Close the initial graph".to_string())
             );
-            agent_fixture.expect_tool_message(
+            validator.expect_tool_message(
                 &prime_agent_id,
                 "close_graph",
                 MessagePattern::Contains("✓ Tool 'close_graph' executed successfully".to_string())
             );
-            agent_fixture.expect_assistant_message(
+            validator.expect_assistant_message(
                 &prime_agent_id,
                 MessagePattern::Exact("I've executed the close_graph tool for you".to_string())
             );
@@ -193,16 +195,16 @@ pub fn test_agent_graph_management_tools() {
             
             assert!(data["response"].as_str().unwrap().contains("I've executed the open_graph tool"));
             
-            agent_fixture.expect_user_message(
+            validator.expect_user_message(
                 &prime_agent_id,
                 MessagePattern::Exact("Open the graph again".to_string())
             );
-            agent_fixture.expect_tool_message(
+            validator.expect_tool_message(
                 &prime_agent_id,
                 "open_graph",
                 MessagePattern::Contains("✓ Tool 'open_graph' executed successfully".to_string())
             );
-            agent_fixture.expect_assistant_message(
+            validator.expect_assistant_message(
                 &prime_agent_id,
                 MessagePattern::Exact("I've executed the open_graph tool for you".to_string())
             );
@@ -220,16 +222,16 @@ pub fn test_agent_graph_management_tools() {
             
             assert!(data["response"].as_str().unwrap().contains("I've executed the delete_graph tool"));
             
-            agent_fixture.expect_user_message(
+            validator.expect_user_message(
                 &prime_agent_id,
                 MessagePattern::Exact("Delete the new graph".to_string())
             );
-            agent_fixture.expect_tool_message(
+            validator.expect_tool_message(
                 &prime_agent_id,
                 "delete_graph",
                 MessagePattern::Contains("✓ Tool 'delete_graph' executed successfully".to_string())
             );
-            agent_fixture.expect_assistant_message(
+            validator.expect_assistant_message(
                 &prime_agent_id,
                 MessagePattern::Exact("I've executed the delete_graph tool for you".to_string())
             );
@@ -241,7 +243,7 @@ pub fn test_agent_graph_management_tools() {
         assert_phase(PostShutdown);
         
         // Validate final state
-        agent_fixture.validate_all(&test_env.data_dir);
+        validator.validate_all().expect("Validation failed");
         
         test_env
     });
@@ -268,11 +270,10 @@ pub fn test_agent_block_operations() {
         
         assert_phase(PreShutdown);
         
-        let mut agent_fixture = AgentValidationFixture::new();
-        let mut graph_fixture = GraphValidationFixture::new();
+        let mut validator = WalValidator::new(&data_dir);
         
         // Set up expectations for dummy graph
-        graph_fixture.expect_dummy_graph();
+        validator.expect_dummy_graph();
         
         // Connect and authenticate
         let mut ws = connect_websocket(port);
@@ -287,9 +288,9 @@ pub fn test_agent_block_operations() {
             Uuid::parse_str(data["agent_id"].as_str().unwrap()).unwrap()
         };
         
-        agent_fixture.expect_prime_agent(prime_agent_id);
+        validator.expect_prime_agent(prime_agent_id);
         let graph_uuid = Uuid::parse_str(&graph_id).unwrap();
-        agent_fixture.expect_authorization(&prime_agent_id, &graph_uuid);
+        validator.expect_authorization(&prime_agent_id, &graph_uuid);
         
         // Add debug logging to see conversation history
         use tracing::debug;
@@ -308,16 +309,16 @@ pub fn test_agent_block_operations() {
             assert!(data["response"].as_str().unwrap().contains("I've executed the add_block tool"));
             
             // Track conversation for this tool call (user → tool → assistant order)
-            agent_fixture.expect_user_message(
+            validator.expect_user_message(
                 &prime_agent_id,
                 MessagePattern::Exact("Add a new block with content".to_string())
             );
-            agent_fixture.expect_tool_message(
+            validator.expect_tool_message(
                 &prime_agent_id,
                 "add_block",
                 MessagePattern::Contains("✓ Tool 'add_block' executed successfully".to_string())
             );
-            agent_fixture.expect_assistant_message(
+            validator.expect_assistant_message(
                 &prime_agent_id,
                 MessagePattern::Exact("I've executed the add_block tool for you".to_string())
             );
@@ -339,22 +340,22 @@ pub fn test_agent_block_operations() {
             assert!(data["response"].as_str().unwrap().contains("I've executed the update_block tool"));
             
             // Track conversation for this tool call
-            agent_fixture.expect_user_message(
+            validator.expect_user_message(
                 &prime_agent_id,
                 MessagePattern::Exact("Update the block content".to_string())
             );
-            agent_fixture.expect_tool_message(
+            validator.expect_tool_message(
                 &prime_agent_id,
                 "update_block",
                 MessagePattern::Contains("✓ Tool 'update_block' executed successfully".to_string())
             );
-            agent_fixture.expect_assistant_message(
+            validator.expect_assistant_message(
                 &prime_agent_id,
                 MessagePattern::Exact("I've executed the update_block tool for you".to_string())
             );
             
             // Track update in graph fixture with the UUID that MockLLM generates (existing block from dummy graph)
-            graph_fixture.expect_update_block("67f9a190-985b-4dbf-90e4-c2abffb2ab51", "Test content from MockLLM");
+            validator.expect_update_block("67f9a190-985b-4dbf-90e4-c2abffb2ab51", "Test content from MockLLM");
         }
         
         // Test add_block with parent_id
@@ -371,16 +372,16 @@ pub fn test_agent_block_operations() {
             assert!(data["response"].as_str().unwrap().contains("I've executed the add_block tool"));
             
             // Track conversation for this tool call
-            agent_fixture.expect_user_message(
+            validator.expect_user_message(
                 &prime_agent_id,
                 MessagePattern::Exact("Add a child block".to_string())
             );
-            agent_fixture.expect_tool_message(
+            validator.expect_tool_message(
                 &prime_agent_id,
                 "add_block",
                 MessagePattern::Contains("✓ Tool 'add_block' executed successfully".to_string())
             );
-            agent_fixture.expect_assistant_message(
+            validator.expect_assistant_message(
                 &prime_agent_id,
                 MessagePattern::Exact("I've executed the add_block tool for you".to_string())
             );
@@ -400,16 +401,16 @@ pub fn test_agent_block_operations() {
             assert!(data["response"].as_str().unwrap().contains("I've executed the add_block tool"));
             
             // Track conversation for this tool call
-            agent_fixture.expect_user_message(
+            validator.expect_user_message(
                 &prime_agent_id,
                 MessagePattern::Exact("Add a block to a page".to_string())
             );
-            agent_fixture.expect_tool_message(
+            validator.expect_tool_message(
                 &prime_agent_id,
                 "add_block",
                 MessagePattern::Contains("✓ Tool 'add_block' executed successfully".to_string())
             );
-            agent_fixture.expect_assistant_message(
+            validator.expect_assistant_message(
                 &prime_agent_id,
                 MessagePattern::Exact("I've executed the add_block tool for you".to_string())
             );
@@ -428,22 +429,22 @@ pub fn test_agent_block_operations() {
             assert!(data["response"].as_str().unwrap().contains("I've executed the delete_block tool"));
             
             // Track conversation for this tool call
-            agent_fixture.expect_user_message(
+            validator.expect_user_message(
                 &prime_agent_id,
                 MessagePattern::Exact("Delete a block".to_string())
             );
-            agent_fixture.expect_tool_message(
+            validator.expect_tool_message(
                 &prime_agent_id,
                 "delete_block",
                 MessagePattern::Contains("✓ Tool 'delete_block' executed successfully".to_string())
             );
-            agent_fixture.expect_assistant_message(
+            validator.expect_assistant_message(
                 &prime_agent_id,
                 MessagePattern::Exact("I've executed the delete_block tool for you".to_string())
             );
             
             // Track deletion with the UUID that MockLLM generates (same as update_block)
-            graph_fixture.expect_delete("67f9a190-985b-4dbf-90e4-c2abffb2ab51");
+            validator.expect_delete_block("67f9a190-985b-4dbf-90e4-c2abffb2ab51");
         }
         
         // Debug: print conversation history before validation
@@ -469,8 +470,7 @@ pub fn test_agent_block_operations() {
         assert_phase(PostShutdown);
         
         // Validate final state - both agent conversation and graph changes
-        agent_fixture.validate_all(&test_env.data_dir);
-        graph_fixture.validate_graph(&test_env.data_dir, &graph_id);
+        validator.validate_all().expect("Validation failed");
         
         test_env
     });
@@ -496,9 +496,8 @@ pub fn test_agent_page_operations() {
         
         assert_phase(PreShutdown);
         
-        let mut agent_fixture = AgentValidationFixture::new();
-        let mut graph_fixture = GraphValidationFixture::new();
-        graph_fixture.expect_dummy_graph();
+        let mut validator = WalValidator::new(&data_dir);
+        validator.expect_dummy_graph();
         
         let mut ws = connect_websocket(port);
         let auth_token = read_auth_token(&data_dir);
@@ -511,9 +510,9 @@ pub fn test_agent_page_operations() {
             Uuid::parse_str(data["agent_id"].as_str().unwrap()).unwrap()
         };
         
-        agent_fixture.expect_prime_agent(prime_agent_id);
+        validator.expect_prime_agent(prime_agent_id);
         let graph_uuid = Uuid::parse_str(&graph_id).unwrap();
-        agent_fixture.expect_authorization(&prime_agent_id, &graph_uuid);
+        validator.expect_authorization(&prime_agent_id, &graph_uuid);
         
         // Test create_page tool
         {
@@ -528,7 +527,7 @@ pub fn test_agent_page_operations() {
             assert!(data["response"].as_str().unwrap().contains("I've executed the create_page tool"));
             
             // Track page creation
-            graph_fixture.expect_create_page("Test Page", None);
+            validator.expect_create_page("Test Page", None);
         }
         
         // Test delete_page tool
@@ -544,8 +543,7 @@ pub fn test_agent_page_operations() {
             assert!(data["response"].as_str().unwrap().contains("I've executed the delete_page tool"));
             
             // Track page deletion
-            // Note: expect_delete_page doesn't exist, would need to track page deletion
-            graph_fixture.expect_delete("Test Page");
+            validator.expect_delete_page("Test Page");
         }
         
         let _ = ws.close(None);
@@ -553,8 +551,7 @@ pub fn test_agent_page_operations() {
         
         assert_phase(PostShutdown);
         
-        agent_fixture.validate_all(&test_env.data_dir);
-        graph_fixture.validate_graph(&test_env.data_dir, &graph_id);
+        validator.validate_all().expect("Validation failed");
         
         test_env
     });
@@ -580,7 +577,7 @@ pub fn test_agent_query_operations() {
         
         assert_phase(PreShutdown);
         
-        let mut agent_fixture = AgentValidationFixture::new();
+        let mut validator = WalValidator::new(&data_dir);
         
         let mut ws = connect_websocket(port);
         let auth_token = read_auth_token(&data_dir);
@@ -593,9 +590,9 @@ pub fn test_agent_query_operations() {
             Uuid::parse_str(data["agent_id"].as_str().unwrap()).unwrap()
         };
         
-        agent_fixture.expect_prime_agent(prime_agent_id);
+        validator.expect_prime_agent(prime_agent_id);
         let graph_uuid = Uuid::parse_str(&graph_id).unwrap();
-        agent_fixture.expect_authorization(&prime_agent_id, &graph_uuid);
+        validator.expect_authorization(&prime_agent_id, &graph_uuid);
         
         // Test get_node tool
         {
@@ -618,7 +615,7 @@ pub fn test_agent_query_operations() {
         
         assert_phase(PostShutdown);
         
-        agent_fixture.validate_all(&test_env.data_dir);
+        validator.validate_all().expect("Validation failed");
         
         test_env
     });
@@ -644,7 +641,7 @@ pub fn test_agent_authorization_failures() {
         
         assert_phase(PreShutdown);
         
-        let mut agent_fixture = AgentValidationFixture::new();
+        let mut validator = WalValidator::new(&data_dir);
         
         let mut ws = connect_websocket(port);
         let auth_token = read_auth_token(&data_dir);
@@ -658,9 +655,9 @@ pub fn test_agent_authorization_failures() {
             Uuid::parse_str(data["agent_id"].as_str().unwrap()).unwrap()
         };
         
-        agent_fixture.expect_prime_agent(prime_agent_id);
+        validator.expect_prime_agent(prime_agent_id);
         let graph_uuid = Uuid::parse_str(&graph_id).unwrap();
-        agent_fixture.expect_authorization(&prime_agent_id, &graph_uuid);
+        validator.expect_authorization(&prime_agent_id, &graph_uuid);
         
         // Create a secondary agent without authorization
         let secondary_agent_id = {
@@ -673,7 +670,7 @@ pub fn test_agent_authorization_failures() {
             let id_str = data["agent_id"].as_str().unwrap();
             let id = Uuid::parse_str(id_str).unwrap();
             
-            agent_fixture.expect_agent_created(id, "Unauthorized Agent", false);
+            validator.expect_agent_created(id, "Unauthorized Agent", false);
             id
         };
         
@@ -747,7 +744,7 @@ pub fn test_agent_authorization_failures() {
             let response = send_command(&mut ws, cmd);
             expect_success(response);
             
-            agent_fixture.expect_authorization(&secondary_agent_id, &graph_uuid);
+            validator.expect_authorization(&secondary_agent_id, &graph_uuid);
         }
         
         // Now the same tool should succeed
@@ -770,7 +767,7 @@ pub fn test_agent_authorization_failures() {
         
         assert_phase(PostShutdown);
         
-        agent_fixture.validate_all(&test_env.data_dir);
+        validator.validate_all().expect("Validation failed");
         
         test_env
     });
@@ -796,7 +793,7 @@ pub fn test_agent_tool_validation_errors() {
         
         assert_phase(PreShutdown);
         
-        let mut agent_fixture = AgentValidationFixture::new();
+        let mut validator = WalValidator::new(&data_dir);
         
         let mut ws = connect_websocket(port);
         let auth_token = read_auth_token(&data_dir);
@@ -809,9 +806,9 @@ pub fn test_agent_tool_validation_errors() {
             Uuid::parse_str(data["agent_id"].as_str().unwrap()).unwrap()
         };
         
-        agent_fixture.expect_prime_agent(prime_agent_id);
+        validator.expect_prime_agent(prime_agent_id);
         let graph_uuid = Uuid::parse_str(&graph_id).unwrap();
-        agent_fixture.expect_authorization(&prime_agent_id, &graph_uuid);
+        validator.expect_authorization(&prime_agent_id, &graph_uuid);
         
         // Test with invalid tool name (validation happens before execution)
         // MockLLM will generate args, but validation should catch issues
@@ -838,7 +835,7 @@ pub fn test_agent_tool_validation_errors() {
         
         assert_phase(PostShutdown);
         
-        agent_fixture.validate_all(&test_env.data_dir);
+        validator.validate_all().expect("Validation failed");
         
         test_env
     });
@@ -865,7 +862,7 @@ pub fn test_agent_graph_management_tools_direct() {
         
         assert_phase(PreShutdown);
         
-        let mut agent_fixture = AgentValidationFixture::new();
+        let mut validator = WalValidator::new(&data_dir);
         
         // Connect and authenticate
         let mut ws = connect_websocket(port);
@@ -880,9 +877,9 @@ pub fn test_agent_graph_management_tools_direct() {
             Uuid::parse_str(data["agent_id"].as_str().unwrap()).unwrap()
         };
         
-        agent_fixture.expect_prime_agent(prime_agent_id);
+        validator.expect_prime_agent(prime_agent_id);
         let initial_graph_uuid = Uuid::parse_str(&initial_graph_id).unwrap();
-        agent_fixture.expect_authorization(&prime_agent_id, &initial_graph_uuid);
+        validator.expect_authorization(&prime_agent_id, &initial_graph_uuid);
         
         // Test get_default_graph - should be the initial graph (first authorized)
         {
@@ -897,16 +894,16 @@ pub fn test_agent_graph_management_tools_direct() {
             assert!(data["response"].as_str().unwrap().contains("I've executed the get_default_graph tool"));
             
             // Track conversation
-            agent_fixture.expect_user_message(
+            validator.expect_user_message(
                 &prime_agent_id,
                 MessagePattern::Exact("Get my default graph".to_string())
             );
-            agent_fixture.expect_tool_message(
+            validator.expect_tool_message(
                 &prime_agent_id,
                 "get_default_graph",
                 MessagePattern::Contains("✓ Tool 'get_default_graph' executed successfully".to_string())
             );
-            agent_fixture.expect_assistant_message(
+            validator.expect_assistant_message(
                 &prime_agent_id,
                 MessagePattern::Exact("I've executed the get_default_graph tool for you".to_string())
             );
@@ -924,16 +921,16 @@ pub fn test_agent_graph_management_tools_direct() {
             
             assert!(data["response"].as_str().unwrap().contains("I've executed the list_my_graphs tool"));
             
-            agent_fixture.expect_user_message(
+            validator.expect_user_message(
                 &prime_agent_id,
                 MessagePattern::Exact("List my authorized graphs".to_string())
             );
-            agent_fixture.expect_tool_message(
+            validator.expect_tool_message(
                 &prime_agent_id,
                 "list_my_graphs",
                 MessagePattern::Contains("✓ Tool 'list_my_graphs' executed successfully".to_string())
             );
-            agent_fixture.expect_assistant_message(
+            validator.expect_assistant_message(
                 &prime_agent_id,
                 MessagePattern::Exact("I've executed the list_my_graphs tool for you".to_string())
             );
@@ -951,16 +948,16 @@ pub fn test_agent_graph_management_tools_direct() {
             
             assert!(data["response"].as_str().unwrap().contains("I've executed the create_graph tool"));
             
-            agent_fixture.expect_user_message(
+            validator.expect_user_message(
                 &prime_agent_id,
                 MessagePattern::Exact("Create another graph".to_string())
             );
-            agent_fixture.expect_tool_message(
+            validator.expect_tool_message(
                 &prime_agent_id,
                 "create_graph",
                 MessagePattern::Contains("✓ Tool 'create_graph' executed successfully".to_string())
             );
-            agent_fixture.expect_assistant_message(
+            validator.expect_assistant_message(
                 &prime_agent_id,
                 MessagePattern::Exact("I've executed the create_graph tool for you".to_string())
             );
@@ -986,7 +983,7 @@ pub fn test_agent_graph_management_tools_direct() {
         };
         
         // Prime agent should be authorized for the new graph
-        agent_fixture.expect_authorization(&prime_agent_id, &second_graph_id);
+        validator.expect_authorization(&prime_agent_id, &second_graph_id);
         
         // Close the initial graph to leave only the new graph open (for smart default)
         {
@@ -1010,16 +1007,16 @@ pub fn test_agent_graph_management_tools_direct() {
             
             assert!(data["response"].as_str().unwrap().contains("I've executed the set_default_graph tool"));
             
-            agent_fixture.expect_user_message(
+            validator.expect_user_message(
                 &prime_agent_id,
                 MessagePattern::Exact("Set my default to the new graph".to_string())
             );
-            agent_fixture.expect_tool_message(
+            validator.expect_tool_message(
                 &prime_agent_id,
                 "set_default_graph",
                 MessagePattern::Contains("Tool 'set_default_graph'".to_string())
             );
-            agent_fixture.expect_assistant_message(
+            validator.expect_assistant_message(
                 &prime_agent_id,
                 MessagePattern::Exact("I've executed the set_default_graph tool for you".to_string())
             );
@@ -1037,16 +1034,16 @@ pub fn test_agent_graph_management_tools_direct() {
             
             assert!(data["response"].as_str().unwrap().contains("I've executed the get_default_graph tool"));
             
-            agent_fixture.expect_user_message(
+            validator.expect_user_message(
                 &prime_agent_id,
                 MessagePattern::Exact("Check my default graph again".to_string())
             );
-            agent_fixture.expect_tool_message(
+            validator.expect_tool_message(
                 &prime_agent_id,
                 "get_default_graph",
                 MessagePattern::Contains("✓ Tool 'get_default_graph' executed successfully".to_string())
             );
-            agent_fixture.expect_assistant_message(
+            validator.expect_assistant_message(
                 &prime_agent_id,
                 MessagePattern::Exact("I've executed the get_default_graph tool for you".to_string())
             );
@@ -1064,16 +1061,16 @@ pub fn test_agent_graph_management_tools_direct() {
             
             assert!(data["response"].as_str().unwrap().contains("I've executed the list_my_graphs tool"));
             
-            agent_fixture.expect_user_message(
+            validator.expect_user_message(
                 &prime_agent_id,
                 MessagePattern::Exact("List all my graphs again".to_string())
             );
-            agent_fixture.expect_tool_message(
+            validator.expect_tool_message(
                 &prime_agent_id,
                 "list_my_graphs",
                 MessagePattern::Contains("✓ Tool 'list_my_graphs' executed successfully".to_string())
             );
-            agent_fixture.expect_assistant_message(
+            validator.expect_assistant_message(
                 &prime_agent_id,
                 MessagePattern::Exact("I've executed the list_my_graphs tool for you".to_string())
             );
@@ -1084,31 +1081,11 @@ pub fn test_agent_graph_management_tools_direct() {
         
         assert_phase(PostShutdown);
         
-        // Debug: Check what's actually in the conversation history before validation
-        {
-            use tracing::debug;
-            use crate::common::agent_validation::AgentValidator;
-            let validator = AgentValidator::load(&test_env.data_dir, &prime_agent_id);
-            let actual_count = validator.get_message_count();
-            let expected_count = agent_fixture.expected_conversations.get(&prime_agent_id)
-                .map(|msgs| msgs.len())
-                .unwrap_or(0);
-            
-            debug!("Agent {} has {} actual messages, expected {}", 
-                prime_agent_id, actual_count, expected_count);
-            
-            // Print all actual messages
-            for (i, msg) in validator.conversation_history.iter().enumerate() {
-                debug!("Message {}: role={}, content={}", 
-                    i,
-                    msg["role"].as_str().unwrap_or("unknown"),
-                    msg["content"].as_str().unwrap_or("(no content)").chars().take(50).collect::<String>()
-                );
-            }
-        }
+        // Debug logging removed as WAL validator checks transactions directly
+        // rather than loading JSON files
         
         // Validate final state
-        agent_fixture.validate_all(&test_env.data_dir);
+        validator.validate_all().expect("Validation failed");
         
         test_env
     });
@@ -1123,6 +1100,7 @@ pub fn test_agent_graph_management_tools_direct() {
 }
 
 /// Test multiple tool calls in sequence (tool chaining)
+#[allow(deprecated)] // Using deprecated agent_chat_sync until CQRS refactor
 pub fn test_agent_tool_chaining() {
     let test_env = setup_test_env();
     let cleanup_env = test_env.clone();
@@ -1135,7 +1113,7 @@ pub fn test_agent_tool_chaining() {
         
         assert_phase(PreShutdown);
         
-        let mut agent_fixture = AgentValidationFixture::new();
+        let mut validator = WalValidator::new(&data_dir);
         
         let mut ws = connect_websocket(port);
         let auth_token = read_auth_token(&data_dir);
@@ -1148,63 +1126,39 @@ pub fn test_agent_tool_chaining() {
             Uuid::parse_str(data["agent_id"].as_str().unwrap()).unwrap()
         };
         
-        agent_fixture.expect_prime_agent(prime_agent_id);
+        validator.expect_prime_agent(prime_agent_id);
         
         // Chain: create_graph -> create_page -> add_block -> list_graphs
         
         // Step 1: Create a graph
         {
-            let cmd = json!({
-                "type": "agent_chat",
-                "message": "Create a test graph",
-                "echo_tool": "create_graph"
-            });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
+            let response = agent_chat_sync(&mut ws, "Create a test graph", None, Some("create_graph"));
             
             // MockLLM returns the tool invocation message
-            assert!(data["response"].as_str().unwrap().contains("I've executed the create_graph tool"));
+            assert!(response["response"].as_str().unwrap().contains("I've executed the create_graph tool"));
         }
         
         // Step 2: Create a page in the new graph
         {
-            let cmd = json!({
-                "type": "agent_chat",
-                "message": "Create a page in the graph",
-                "echo_tool": "create_page"
-            });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
+            let response = agent_chat_sync(&mut ws, "Create a page in the graph", None, Some("create_page"));
             
-            assert!(data["response"].as_str().unwrap().contains("I've executed the create_page tool"));
+            assert!(response["response"].as_str().unwrap().contains("I've executed the create_page tool"));
         }
         
         // Step 3: Add blocks to the page
         {
-            let cmd = json!({
-                "type": "agent_chat",
-                "message": "Add content to the page",
-                "echo_tool": "add_block"
-            });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
+            let response = agent_chat_sync(&mut ws, "Add content to the page", None, Some("add_block"));
             
             // MockLLM returns the tool invocation message
-            assert!(data["response"].as_str().unwrap().contains("I've executed the add_block tool"));
+            assert!(response["response"].as_str().unwrap().contains("I've executed the add_block tool"));
         }
         
         // Step 4: List the graphs to verify creation
         {
-            let cmd = json!({
-                "type": "agent_chat",
-                "message": "List all graphs",
-                "echo_tool": "list_graphs"
-            });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
+            let response = agent_chat_sync(&mut ws, "List all graphs", None, Some("list_graphs"));
             
             // MockLLM returns the tool invocation message
-            assert!(data["response"].as_str().unwrap().contains("I've executed the list_graphs tool"));
+            assert!(response["response"].as_str().unwrap().contains("I've executed the list_graphs tool"));
         }
         
         // Verify conversation has all the tool calls tracked
@@ -1225,7 +1179,7 @@ pub fn test_agent_tool_chaining() {
         
         assert_phase(PostShutdown);
         
-        agent_fixture.validate_all(&test_env.data_dir);
+        validator.validate_all().expect("Validation failed");
         
         test_env
     });

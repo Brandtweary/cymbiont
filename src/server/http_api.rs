@@ -75,7 +75,6 @@ use axum::{
 use std::sync::Arc;
 use tracing::{info, error};
 use serde::{Deserialize, Serialize};
-use crate::error::*;
 use crate::lock::AsyncRwLockExt;
 use crate::AppState;
 use crate::server::websocket::websocket_handler;
@@ -253,7 +252,7 @@ pub async fn get_websocket_status(
     
     // Get open graphs for context
     let open_graph_ids: Vec<String> = {
-        let registry = state.graph_registry.read_or_panic("read graph registry for status");
+        let registry = state.graph_registry.read_or_panic("read graph registry for status").await;
         registry.get_open_graphs().iter().map(|id| id.to_string()).collect()
     };
     

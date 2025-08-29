@@ -29,11 +29,10 @@
 //! the NodeData/EdgeData structures. Domain-specific logic (e.g., PKM operations)
 //! is implemented in separate modules that use GraphManager's generic API.
 //! 
-//! ### Auto-Save Mechanism
-//! Dual-trigger persistence strategy optimizes for both data safety and performance:
-//! - **Time-based**: Every 5 minutes (protects against data loss during low activity)
-//! - **Operation-based**: Every 10 operations (captures bursts of activity)
-//! - **Batch control**: `disable_auto_save()` / `enable_auto_save()` for bulk imports
+//! ### Persistence Strategy
+//! Graph state is persisted through the Write-Ahead Log (WAL) transaction system.
+//! All mutations are logged to WAL before execution, providing ACID guarantees.
+//! The graph structure is rebuilt from WAL replay on startup.
 //! 
 //! ## Data Structures
 //! 
@@ -72,12 +71,8 @@
 //! - `has_edge()`: Check edge existence by type
 //! 
 //! ### Persistence Operations
-//! - `new()`: Initialize manager, auto-load existing graph from disk
-//! - `save_graph()`: Explicit full serialization to JSON
-//! - `save_if_needed()`: Conditional save based on configured thresholds
-//! 
-//! ### Utility Operations
-//! - `disable_auto_save()` / `enable_auto_save()`: Batch operation support
+//! - `new()`: Initialize empty graph manager
+//! - Graph state rebuilt from WAL replay during recovery
 //! 
 //! ## Performance Characteristics
 //! 
@@ -93,13 +88,11 @@
 //! synchronization (typically a Mutex in the application layer):
 //! - All operations assume exclusive access
 //! - Batch operations should hold the lock for the entire sequence
-//! - Auto-save can be disabled during bulk operations to reduce I/O
 //! 
 //! ## Error Handling
 //! 
 //! - **Initialization failures**: Falls back to empty graph (non-fatal)
-//! - **Save failures**: Logged but operations continue (data retained in memory)
-//! - **Load failures**: Logged with graceful degradation to empty state
+//! - **Transaction failures**: Operations rolled back, state unchanged
 //! - **Archive failures**: Propagated to caller, graph state unchanged
 //! 
 //! ## Persistence Format
@@ -115,20 +108,19 @@
 //! 
 //! ## Integration Points
 //! 
-//! - **Storage Layer**: Delegates to `graph_persistence` module for I/O
+//! - **Transaction Layer**: All mutations go through WAL for durability
 //! - **Domain Layer**: Called by domain-specific modules (e.g., `pkm_data`)
 //! - **API Layer**: Wrapped by `graph_operations` for external access
-//! - **Transaction Layer**: Participates in transaction coordination
+//! - **Recovery Layer**: State rebuilt from WAL operations on startup
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::fs;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use petgraph::stable_graph::{StableGraph, NodeIndex};
-use petgraph::visit::EdgeRef;
-use tracing::{info, warn, error};
+use tracing::info;
 
-use crate::storage::graph_persistence;
 use crate::error::*;
 
 /// Type alias for our knowledge graph
@@ -218,112 +210,57 @@ impl Default for EdgeData {
 }
 
 /// Manages the knowledge graph
+#[derive(Debug)]
 pub struct GraphManager {
-    /// Base directory for storing data
-    data_dir: PathBuf,
-    
-    /// Graph ID for multi-graph support
-    graph_id: Option<String>,
-    
     /// The knowledge graph
     pub graph: KnowledgeGraph,
     
     /// Mapping from PKM IDs to graph node indices
     pub pkm_to_node: NodeMap,
     
-    
-    /// When the graph was last saved (for time-based saves)
-    last_save_time: DateTime<Utc>,
-    
-    /// Number of operations since last save (for operation-based saves)
-    operations_since_save: usize,
-    
-    /// Whether to perform automatic saves during operations (disabled during batch processing)
-    auto_save_enabled: bool,
 }
 
 impl GraphManager {
-    /// Create a new graph manager with the given data directory
+    /// Create a new empty graph manager
+    /// 
+    /// The graph state will be rebuilt from WAL replay during recovery.
+    /// No JSON loading occurs - the WAL is the source of truth.
     pub fn new<P: AsRef<Path>>(data_dir: P) -> Result<Self> {
-        let data_dir = data_dir.as_ref().to_path_buf();
-        
         // Ensure directories exist
-        graph_persistence::ensure_directories(&data_dir)
+        std::fs::create_dir_all(data_dir.as_ref())
             .map_err(|e| GraphError::lifecycle(format!("Failed to create directories: {}", e)))?;
         
-        // Extract graph ID from data directory path
-        let graph_id = data_dir.parent()
-            .and_then(|p| p.file_name())
-            .and_then(|n| n.to_str())
-            .filter(|s| *s == "graphs")
-            .and_then(|_| data_dir.file_name())
-            .and_then(|n| n.to_str())
-            .map(|s| s.to_string());
-        
-        let mut manager = Self {
-            data_dir: data_dir.clone(),
-            graph_id,
+        let manager = Self {
             graph: StableGraph::new(),
             pkm_to_node: HashMap::new(),
-            last_save_time: Utc::now(),
-            operations_since_save: 0,
-            auto_save_enabled: true,
         };
         
-        // Try to load existing graph
-        match graph_persistence::load_graph(&data_dir) {
-            Ok(data) => {
-                manager.graph = data.graph;
-                manager.pkm_to_node = data.pkm_to_node;
-            }
-            Err(_) => {
-                // This is expected for new graphs - they don't have a saved file yet
-                info!("🌐 Initializing new knowledge graph");
-                if let Err(e) = manager.save_graph() {
-                    warn!("Failed to save initial graph state: {}", e);
-                }
-            }
-        }
+        info!("🌐 Initialized empty knowledge graph (will be populated from WAL)");
         
         Ok(manager)
     }
     
     
-    /// Save the graph to disk
-    pub fn save_graph(&mut self) -> Result<()> {
-        graph_persistence::save_graph(
-            &self.data_dir,
-            &self.graph,
-            &self.pkm_to_node,
-        )
-        .map_err(|e| GraphError::lifecycle(format!("Failed to save graph: {}", e)))?;
+    /// Export the graph to JSON for debugging/inspection
+    /// 
+    /// Used by the test harness to validate graph state after operations.
+    /// The WAL is the authoritative source of truth for runtime.
+    pub fn export_json(&self, path: &Path) -> Result<()> {
+        let data = serde_json::json!({
+            "version": 1,
+            "graph": &self.graph,
+            "pkm_to_node": &self.pkm_to_node,
+        });
         
-        // Reset save tracking
-        self.last_save_time = Utc::now();
-        self.operations_since_save = 0;
+        let json = serde_json::to_string_pretty(&data)
+            .map_err(|e| GraphError::lifecycle(format!("Failed to serialize graph: {}", e)))?;
+        
+        fs::write(path, json)
+            .map_err(|e| GraphError::lifecycle(format!("Failed to write graph JSON: {}", e)))?;
         
         Ok(())
     }
     
-    
-    /// Save if needed based on time or operation count
-    fn save_if_needed(&mut self) {
-        if self.auto_save_enabled && graph_persistence::should_save(self.last_save_time, self.operations_since_save) {
-            if let Err(e) = self.save_graph() {
-                error!("Error during automatic save: {}", e);
-            }
-        }
-    }
-    
-    /// Disable automatic saves (useful during batch processing)
-    pub fn disable_auto_save(&mut self) {
-        self.auto_save_enabled = false;
-    }
-    
-    /// Enable automatic saves (default state)
-    pub fn enable_auto_save(&mut self) {
-        self.auto_save_enabled = true;
-    }
     
     /// Find a node by its PKM ID
     pub fn find_node(&self, pkm_id: &str) -> Option<NodeIndex> {
@@ -355,11 +292,6 @@ impl GraphManager {
         
         let idx = self.graph.add_node(node_data);
         self.pkm_to_node.insert(pkm_id, idx);
-        
-        // Increment operation counter
-        self.operations_since_save += 1;
-        self.save_if_needed();
-        
         idx
     }
     
@@ -398,11 +330,6 @@ impl GraphManager {
             self.pkm_to_node.insert(pkm_id, idx);
             idx
         };
-        
-        // Increment operation counter
-        self.operations_since_save += 1;
-        self.save_if_needed();
-        
         Ok(idx)
     }
     
@@ -424,56 +351,20 @@ impl GraphManager {
     }
     
     
-    
-    
-    
-    /// Archive nodes by their indices
-    pub fn archive_nodes(&mut self, nodes: Vec<(String, NodeIndex)>) -> Result<String> {
-        if nodes.is_empty() {
-            return Ok("No nodes to archive".to_string());
+    /// Delete nodes from the graph
+    /// 
+    /// Removes nodes and all their edges from the graph.
+    /// The deletion is logged to WAL for recovery/history.
+    pub fn delete_nodes(&mut self, nodes: Vec<(String, NodeIndex)>) -> Result<usize> {
+        let mut deleted_count = 0;
+        
+        for (pkm_id, node_idx) in nodes {
+            self.graph.remove_node(node_idx);
+            self.pkm_to_node.remove(&pkm_id);
+            deleted_count += 1;
         }
         
-        // Collect node data with edges for archiving
-        let archive_data: Vec<_> = nodes.iter()
-            .filter_map(|(pkm_id, node_idx)| {
-                self.graph.node_weight(*node_idx).map(|node| {
-                    let edges_out: Vec<_> = self.graph.edges(*node_idx)
-                        .map(|edge| serde_json::json!({
-                            "target": edge.target().index(),
-                            "edge_type": edge.weight()
-                        }))
-                        .collect();
-                    
-                    let edges_in: Vec<_> = self.graph.edges_directed(*node_idx, petgraph::Direction::Incoming)
-                        .map(|edge| serde_json::json!({
-                            "source": edge.source().index(),
-                            "edge_type": edge.weight()
-                        }))
-                        .collect();
-                    
-                    (pkm_id.clone(), node.clone(), edges_out, edges_in)
-                })
-            })
-            .collect();
-        
-        // Archive through persistence utilities
-        let result = graph_persistence::archive_nodes(
-            &self.data_dir,
-            self.graph_id.as_deref(),
-            &archive_data,
-        )
-        .map_err(|e| GraphError::lifecycle(format!("Failed to archive nodes: {}", e)))?;
-        
-        // Remove nodes from graph
-        for (pkm_id, node_idx) in &nodes {
-            self.graph.remove_node(*node_idx);
-            self.pkm_to_node.remove(pkm_id);
-        }
-        
-        // Save updated graph
-        self.save_graph()?;
-        
-        Ok(result)
+        Ok(deleted_count)
     }
     
     
@@ -631,105 +522,6 @@ mod tests {
         
         // Should not find non-existent node
         assert_eq!(manager.find_node("not-found"), None);
-    }
-    
-    
-    #[test]
-    fn test_save_and_load_graph() {
-        let temp_dir = TempDir::new().unwrap();
-        let node_count;
-        let edge_count;
-        
-        // Create and populate graph
-        {
-            let mut manager = GraphManager::new(temp_dir.path()).unwrap();
-            
-            // Add some nodes
-            let node1 = manager.create_node(
-                "node-1".to_string(),
-                "internal-1".to_string(),
-                NodeType::Page,
-                "Page content".to_string(),
-                None,
-                HashMap::new(),
-                Utc::now(),
-                Utc::now(),
-            );
-            
-            let node2 = manager.create_node(
-                "node-2".to_string(),
-                "internal-2".to_string(),
-                NodeType::Block,
-                "Block content".to_string(),
-                None,
-                HashMap::new(),
-                Utc::now(),
-                Utc::now(),
-            );
-            
-            // Add an edge
-            manager.add_edge(node1, node2, EdgeType::PageToBlock, 1.0);
-            
-            // Force save
-            manager.save_graph().unwrap();
-            
-            node_count = manager.graph.node_count();
-            edge_count = manager.graph.edge_count();
-        }
-        
-        // Load graph in new manager
-        {
-            let manager = GraphManager::new(temp_dir.path()).unwrap();
-            
-            // Verify data was loaded
-            assert_eq!(manager.graph.node_count(), node_count);
-            assert_eq!(manager.graph.edge_count(), edge_count);
-            assert!(manager.find_node("node-1").is_some());
-            assert!(manager.find_node("node-2").is_some());
-        }
-    }
-    
-    #[test]
-    fn test_operation_based_save() {
-        let (mut manager, temp_dir) = create_test_manager();
-        
-        // Reset operations counter
-        manager.operations_since_save = 0;
-        
-        // Add 9 nodes - should not trigger save
-        for i in 0..9 {
-            manager.create_node(
-                format!("node-{}", i),
-                format!("internal-{}", i),
-                NodeType::Block,
-                "Content".to_string(),
-                None,
-                HashMap::new(),
-                Utc::now(),
-                Utc::now(),
-            );
-        }
-        
-        // Verify no save yet
-        assert_eq!(manager.operations_since_save, 9);
-        
-        // Add 10th node - should trigger save
-        manager.create_node(
-            "node-9".to_string(),
-            "internal-9".to_string(),
-            NodeType::Block,
-            "Content".to_string(),
-            None,
-            HashMap::new(),
-            Utc::now(),
-            Utc::now(),
-        );
-        
-        // Verify save was triggered (counter reset)
-        assert_eq!(manager.operations_since_save, 0);
-        
-        // Verify file exists
-        assert!(temp_dir.path().join("knowledge_graph.json").exists());
     }
     
 }

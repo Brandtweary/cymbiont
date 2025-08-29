@@ -15,13 +15,11 @@
 //!
 //! ## Architecture Overview
 //!
-//! The Agent struct owns its complete state and handles persistence through the
-//! agent_persistence module. It acts as a stateful context manager, bundling:
+//! The Agent struct owns its complete state. It acts as a stateful context manager, bundling:
 //! - **Conversation History**: Full chat context with sliding window management
 //! - **LLM Configuration**: Model selection, parameters, and backend settings
 //! - **System Prompts**: Custom instructions and behavioral guidelines
 //! - **Context Management**: Automatic history trimming and continuity preservation
-//! - **Auto-save Logic**: Time and message-based persistence triggers
 //!
 //! Agents do not directly track graph authorizations - this is managed by the
 //! AgentRegistry as the single source of truth to prevent synchronization issues
@@ -47,13 +45,11 @@
 //! - Chat messages processed through `process_message()`
 //! - LLM backend called for response generation
 //! - Conversation history maintained with automatic trimming
-//! - Auto-save triggers monitor time (5min) and message count (10)
 //!
 //! ### Deactivation Phase
-//! - Agent saved to disk with complete state preservation
 //! - Removed from AppState's active agents HashMap
 //! - AgentRegistry updated to mark agent as "inactive" 
-//! - Memory freed, but agent data remains on disk
+//! - Memory freed
 //!
 //! ### Deletion/Archival Phase
 //! - Agent moved to `{data_dir}/archived_agents/` with timestamp
@@ -91,8 +87,7 @@
 //! 3. **LLM Invocation**: Backend called with full conversation context
 //! 4. **Response Processing**: Assistant response validated and timestamped
 //! 5. **History Recording**: Response added to conversation history
-//! 6. **Auto-save Check**: Persistence thresholds evaluated
-//! 7. **Context Trimming**: Window size enforced if necessary
+//! 6. **Context Trimming**: Window size enforced if necessary
 //!
 //! ## LLM Backend Integration
 //!
@@ -105,26 +100,6 @@
 //! Per-agent configuration allows different models for different agents.
 //! Runtime switching supported via `set_llm_config()` with graceful fallback
 //! handling for backend failures.
-//!
-//! ## Persistence and Durability
-//!
-//! Agent state is comprehensively persisted to `{data_dir}/agents/{agent-id}/agent.json`:
-//!
-//! ### Persistence Triggers
-//! - **Time-based**: Every 5 minutes of activity
-//! - **Message-based**: Every 10 messages processed
-//! - **Configuration changes**: Immediate save on system prompt/LLM config updates
-//! - **Manual**: Explicit save() calls
-//! - **Shutdown**: Guaranteed save during graceful shutdown
-//! - **Deactivation**: Save before removing from memory
-//!
-//! ### State Serialization
-//! - Full conversation history with timestamps
-//! - Complete LLM configuration and parameters
-//! - System prompts and custom instructions
-//! - Context window settings and metadata
-//! - Creation and last activity timestamps
-//! - Agent name and display preferences
 //!
 //! ## Authorization and Security
 //!
@@ -140,14 +115,12 @@
 //! ## Error Handling and Recovery
 //!
 //! Comprehensive error handling ensures system resilience:
-//! - **Persistence Errors**: Disk I/O failures during save/load
 //! - **LLM Errors**: Backend communication failures with auto-retry
 //! - **Authorization Errors**: Graph access denied
 //! - **Configuration Errors**: Invalid LLM settings
 //!
-//! Recovery strategies include graceful degradation when backends unavailable,
-//! conversation history preservation during errors, and atomic save operations
-//! to prevent partial state corruption.
+//! Recovery strategies include graceful degradation when backends unavailable
+//! and conversation history preservation during errors.
 //!
 //! ## Future Extensibility
 //!
@@ -159,32 +132,44 @@
 //! - **Collaborative**: Multi-agent coordination and handoffs
 //!
 //! Extension points include pluggable LLM backends via LLMBackend trait,
-//! custom message types, configurable persistence strategies, and custom
-//! context window management algorithms.
+//! custom message types, and custom context window management algorithms.
 //!
 //! ## Performance Considerations
 //!
 //! The agent system is optimized for responsive interaction:
 //! - Active agents loaded in memory for fast access
-//! - Inactive agents persist on disk only
 //! - Context window limits prevent unbounded memory growth
-//! - Auto-save prevents excessive disk writes
-//! - Atomic file operations ensure consistency
 //! - Agent state protected by async RwLock in AppState
-//! - Thread-safe message processing and persistence
+//! - Thread-safe message processing
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::fs;
 use std::sync::Arc;
 use chrono::{DateTime, Utc};
-use tracing::{info, error};
+use tracing::info;
 use uuid::Uuid;
 use serde_json::Value;
 
-use crate::storage::agent_persistence;
-use crate::agent::llm::{LLMConfig, LLMBackend, Message, AgentContext, create_llm_backend};
+use crate::agent::llm::{LLMConfig, LLMBackend, LLMResponse, Message, AgentContext, create_llm_backend};
 use crate::agent::kg_tools;
 use crate::app_state::AppState;
 use crate::error::*;
+use crate::storage::{TransactionCoordinator, Operation};
+use crate::storage::transaction_log::AgentOperation;
+
+/// Context for LLM processing without holding agent locks
+pub struct LLMContext {
+    pub conversation_history: Vec<Message>,
+    pub llm_backend: Box<dyn LLMBackend>,
+}
+
+/// Result of tool execution for Phase 4 processing
+#[derive(Debug, Clone)]
+pub struct ToolResult {
+    pub name: String,
+    pub arguments: Value,
+    pub result: AgentContext,
+}
 
 /// Tool argument validation result with detailed error information
 #[derive(Debug)]
@@ -401,7 +386,6 @@ fn value_type_name(value: &Value) -> String {
 }
 
 
-
 /// Main Agent struct containing full state
 /// 
 /// This struct manages the complete agent state including conversation
@@ -436,14 +420,8 @@ pub struct Agent {
     /// Last activity timestamp
     pub last_active: DateTime<Utc>,
     
-    /// Path to agent data directory
-    data_path: PathBuf,
-    
-    /// Track messages since last save for auto-save
-    messages_since_save: usize,
-    
-    /// Last save time for auto-save
-    last_save_time: DateTime<Utc>,
+    /// Transaction coordinator for WAL operations
+    pub transaction_coordinator: Arc<TransactionCoordinator>,
 }
 
 impl Agent {
@@ -452,8 +430,8 @@ impl Agent {
         id: Uuid,
         name: String,
         llm_config: LLMConfig,
-        data_path: PathBuf,
         system_prompt: Option<String>,
+        transaction_coordinator: Arc<TransactionCoordinator>,
     ) -> Self {
         let now = Utc::now();
         Agent {
@@ -466,63 +444,54 @@ impl Agent {
             default_graph_id: None,  // Will be set when first authorized for a graph
             created: now,
             last_active: now,
-            data_path,
-            messages_since_save: 0,
-            last_save_time: now,
+            transaction_coordinator,
         }
     }
     
-    /// Load agent from disk
-    pub fn load(agent_dir: &Path) -> Result<Self> {
-        let loaded = agent_persistence::load_agent(agent_dir)?;
+    /// Create empty agent for WAL rebuild
+    /// 
+    /// This creates a minimal agent that will be populated through WAL replay.
+    /// Used during system startup to rebuild from transaction log.
+    pub fn new_empty(
+        id: Uuid, 
+        name: String, 
+        transaction_coordinator: Arc<TransactionCoordinator>
+    ) -> Self {
+        let now = Utc::now();
         
+        Agent {
+            id,
+            name,
+            llm_config: LLMConfig::default(),
+            conversation_history: Vec::new(),
+            context_window_limit: 100,
+            system_prompt: None,
+            default_graph_id: None,
+            created: now,
+            last_active: now,
+            transaction_coordinator,
+        }
+    }
+    
+    /// Load agent from JSON (legacy path, will be removed)
+    /// 
+    /// Agent state will be rebuilt from WAL replay.
+    pub fn load(_agent_dir: &Path, transaction_coordinator: Arc<TransactionCoordinator>) -> Result<Self> {
+        // Create minimal agent - state rebuilt from WAL
         Ok(Agent {
-            id: loaded.id,
-            name: loaded.name,
-            llm_config: loaded.llm_config,
-            conversation_history: loaded.conversation_history,
-            context_window_limit: loaded.context_window_limit,
-            system_prompt: loaded.system_prompt,
-            default_graph_id: loaded.default_graph_id,
-            created: loaded.created,
-            last_active: loaded.last_active,
-            data_path: agent_dir.to_path_buf(),
-            messages_since_save: 0,
-            last_save_time: Utc::now(),
+            id: Uuid::new_v4(), // Overwritten during recovery
+            name: String::new(),
+            llm_config: LLMConfig::default(),
+            conversation_history: Vec::new(),
+            context_window_limit: 100,
+            system_prompt: None,
+            default_graph_id: None,
+            created: Utc::now(),
+            last_active: Utc::now(),
+            transaction_coordinator,
         })
     }
     
-    /// Save agent to disk
-    pub fn save(&mut self) -> Result<()> {
-        agent_persistence::save_agent(
-            &self.data_path,
-            self.id,
-            &self.name,
-            &self.llm_config,
-            &self.conversation_history,
-            self.context_window_limit,
-            self.system_prompt.as_deref(),
-            self.default_graph_id,
-            self.created,
-            self.last_active,
-        )?;
-        
-        self.messages_since_save = 0;
-        self.last_save_time = Utc::now();
-        
-        Ok(())
-    }
-    
-    /// Check if auto-save is needed and perform if necessary
-    /// 
-    /// Uses time-based (5 minutes) and message-based (10 messages) thresholds
-    /// to determine when to persist agent state.
-    pub fn auto_save_if_needed(&mut self) -> Result<()> {
-        if agent_persistence::should_save(self.last_save_time, self.messages_since_save) {
-            self.save()?;
-        }
-        Ok(())
-    }
     
     /// Get the LLM backend for this agent
     pub fn get_llm_backend(&self) -> Box<dyn LLMBackend> {
@@ -530,38 +499,55 @@ impl Agent {
     }
     
     /// Add a message to conversation history
-    pub fn add_message(&mut self, message: Message) {
+    pub async fn add_message(&mut self, message: Message, skip_wal: bool) -> Result<()> {
+        // Create WAL operation conditionally
+        let operation = if skip_wal {
+            None
+        } else {
+            Some(Operation::Agent(AgentOperation::AddMessage {
+                agent_id: self.id,
+                message: serde_json::to_value(&message)?,
+            }))
+        };
+        
+        // Execute with transaction
+        let coordinator = self.transaction_coordinator.clone();
+        let tx = coordinator.begin(operation).await?;
+        
+        // Do the actual work
         self.conversation_history.push(message);
         self.last_active = Utc::now();
-        self.messages_since_save += 1;
         
         // Trim if we exceed the context window
         self.trim_context();
+        
+        // Commit the transaction
+        tx.commit().await
     }
     
     /// Add a user message with optional echo for testing
-    pub fn add_user_message(&mut self, content: String, echo: Option<String>, echo_tool: Option<String>) {
+    pub async fn add_user_message(&mut self, content: String, echo: Option<String>, echo_tool: Option<String>) -> Result<()> {
         self.add_message(Message::User {
             content,
             echo,
             echo_tool,
             timestamp: Utc::now(),
-        });
+        }, false).await
     }
     
     /// Add an assistant message
-    pub fn add_assistant_message(&mut self, content: String) {
+    pub async fn add_assistant_message(&mut self, content: String) -> Result<()> {
         self.add_message(Message::Assistant {
             content,
             timestamp: Utc::now(),
-        });
+        }, false).await
     }
     
     /// Add a tool execution result
     /// 
     /// Formats the tool result in a way that helps the LLM understand
     /// what happened and continue the conversation appropriately.
-    pub fn add_tool_result(&mut self, name: String, args: serde_json::Value, result: AgentContext) {
+    pub async fn add_tool_result(&mut self, name: String, args: serde_json::Value, result: AgentContext) -> Result<()> {
         // Create a formatted result that's easier for LLMs to understand
         let formatted_result = AgentContext {
             success: result.success,
@@ -578,14 +564,15 @@ impl Agent {
             args,
             result: formatted_result,
             timestamp: Utc::now(),
-        });
+        }, false).await
     }
     
-    /// Trim conversation history to stay within context window
+    /// Trim conversation history to stay within context window (internal helper)
     /// 
     /// Keeps the most recent messages up to the limit. System messages
     /// and initial context are preserved if possible.
-    pub fn trim_context(&mut self) {
+    /// This is called automatically by add_message when needed.
+    fn trim_context(&mut self) {
         if self.conversation_history.len() <= self.context_window_limit {
             return;
         }
@@ -600,11 +587,27 @@ impl Agent {
               to_remove, self.name);
     }
     
+    /// Explicitly trim conversation history to stay within context window
+    
     /// Clear conversation history
-    pub fn clear_history(&mut self) {
+    pub async fn clear_history(&mut self, skip_wal: bool) -> Result<()> {
+        let operation = if skip_wal {
+            None
+        } else {
+            Some(Operation::Agent(AgentOperation::ClearHistory {
+                agent_id: self.id,
+            }))
+        };
+        
+        let coordinator = self.transaction_coordinator.clone();
+        let tx = coordinator.begin(operation).await?;
+        
+        // Do the actual work
         self.conversation_history.clear();
-        self.messages_since_save += 1;
         info!("Cleared conversation history for agent '{}'", self.name);
+        
+        // Commit the transaction
+        tx.commit().await
     }
     
     
@@ -617,12 +620,24 @@ impl Agent {
     /// 
     /// This is typically called when the agent is first authorized for a graph,
     /// or when the agent explicitly switches its default using the set_default_graph tool.
-    pub fn set_default_graph_id(&mut self, graph_id: Option<Uuid>) {
+    pub async fn set_default_graph_id(&mut self, graph_id: Option<Uuid>, skip_wal: bool) -> Result<()> {
+        let operation = if skip_wal {
+            None
+        } else {
+            Some(Operation::Agent(AgentOperation::SetDefaultGraph {
+                agent_id: self.id,
+                graph_id,
+            }))
+        };
+        
+        let coordinator = self.transaction_coordinator.clone();
+        let tx = coordinator.begin(operation).await?;
+        
+        // Do the actual work
         self.default_graph_id = graph_id;
-        // Auto-save configuration changes
-        if let Err(e) = self.save() {
-            error!("Failed to save agent after default graph change: {}", e);
-        }
+        
+        // Commit the transaction
+        tx.commit().await
     }
     
     /// Set system prompt
@@ -630,12 +645,24 @@ impl Agent {
     /// TODO: Add WebSocket/CLI command for setting system prompt.
     /// This will be useful for customizing agent behavior.
     #[allow(dead_code)]
-    pub fn set_system_prompt(&mut self, prompt: String) {
+    pub async fn set_system_prompt(&mut self, prompt: String, skip_wal: bool) -> Result<()> {
+        let operation = if skip_wal {
+            None
+        } else {
+            Some(Operation::Agent(AgentOperation::SetSystemPrompt {
+                agent_id: self.id,
+                prompt: prompt.clone(),
+            }))
+        };
+        
+        let coordinator = self.transaction_coordinator.clone();
+        let tx = coordinator.begin(operation).await?;
+        
+        // Do the actual work
         self.system_prompt = Some(prompt);
-        // Auto-save configuration changes
-        if let Err(e) = self.save() {
-            error!("Failed to save agent after system prompt change: {}", e);
-        }
+        
+        // Commit the transaction
+        tx.commit().await
     }
     
     /// Update LLM configuration
@@ -643,12 +670,24 @@ impl Agent {
     /// TODO: Add WebSocket/CLI command for updating LLM config.
     /// This will allow switching between different LLM backends.
     #[allow(dead_code)]
-    pub fn set_llm_config(&mut self, config: LLMConfig) {
+    pub async fn set_llm_config(&mut self, config: LLMConfig, skip_wal: bool) -> Result<()> {
+        let operation = if skip_wal {
+            None
+        } else {
+            Some(Operation::Agent(AgentOperation::SetLLMConfig {
+                agent_id: self.id,
+                config: serde_json::to_value(&config)?,
+            }))
+        };
+        
+        let coordinator = self.transaction_coordinator.clone();
+        let tx = coordinator.begin(operation).await?;
+        
+        // Do the actual work
         self.llm_config = config;
-        // Auto-save configuration changes
-        if let Err(e) = self.save() {
-            error!("Failed to save agent after LLM config change: {}", e);
-        }
+        
+        // Commit the transaction
+        tx.commit().await
     }
     
     /// Get recent messages for context
@@ -704,53 +743,103 @@ impl Agent {
         Ok(context)
     }
     
-    /// Process an incoming message and generate a response
+    /// Phase 1: Add user message and prepare context (brief agent lock)
     /// 
-    /// This is the main chat interaction method. It:
-    /// 1. Adds the user message to history
-    /// 2. Calls the LLM backend for a response
-    /// 3. Handles any tool calls
-    /// 4. Adds the assistant response to history
-    /// 5. Returns the response to the user
-    pub async fn process_message(&mut self, app_state: &Arc<AppState>, content: String, echo: Option<String>, echo_tool: Option<String>) -> Result<String> {
-        
+    /// Returns LLM context needed for Phase 2 processing without holding locks
+    pub async fn add_user_message_and_get_context(&mut self, content: String, echo: Option<String>, echo_tool: Option<String>) -> Result<LLMContext> {
         // Add user message to conversation history
-        self.add_user_message(content, echo, echo_tool.clone());
+        self.add_user_message(content, echo, echo_tool.clone()).await?;
         
-        // Get the LLM backend for this agent
-        let llm = self.get_llm_backend();
+        // Get LLM backend while we have the agent lock
+        let llm_backend = self.get_llm_backend();
+        
+        // Return context needed for LLM processing (no locks held)
+        Ok(LLMContext {
+            conversation_history: self.conversation_history.clone(),
+            llm_backend,
+        })
+    }
+    
+    /// Phase 2: Get LLM response (no agent locks held)
+    /// 
+    /// Static method that doesn't require agent access - prevents lock contention
+    pub async fn get_llm_response(context: LLMContext) -> Result<LLMResponse> {
+        // Use the LLM backend from context (obtained during Phase 1 while holding agent lock)
+        let llm = context.llm_backend;
         
         // Get tool schemas
-        // TODO: Add tool filtering/selection based on context or agent capabilities
-        // For now we pass all tools on every call which works but may overwhelm smaller models
         let tool_schemas = kg_tools::get_tool_schemas();
         
         // Call LLM with conversation history and tools
-        let response = llm.complete(&self.conversation_history, &tool_schemas)
+        let response = llm.complete(&context.conversation_history, &tool_schemas)
             .await
             .map_err(|e| AgentError::llm(format!("LLM backend error: {}", e)))?;
         
+        Ok(response)
+    }
+    
+    /// Phase 4: Add response to conversation and return final content (brief agent lock)
+    /// 
+    /// Adds assistant response and any tool results to conversation history.
+    /// Also handles setting default graph if agent authorized a new graph.
+    pub async fn add_response_to_conversation(&mut self, response: LLMResponse, tool_results: Vec<ToolResult>) -> Result<String> {
+        // Check if any tool authorized a graph and this agent needs a default
+        // This was moved here from agent_registry.rs to avoid deadlock
+        if self.default_graph_id.is_none() {
+            for tool_result in &tool_results {
+                if tool_result.name == "create_graph" || tool_result.name == "authorize_agent" {
+                    // Check if result contains a graph_id
+                    if let Some(data) = &tool_result.result.data {
+                        if let Some(graph_id) = data.get("graph_id").and_then(|v| v.as_str()) {
+                            if let Ok(graph_uuid) = uuid::Uuid::parse_str(graph_id) {
+                                // Set as default since agent has no default yet
+                                self.set_default_graph_id(Some(graph_uuid), false).await?;
+                                break; // Only set the first one
+                            }
+                        }
+                    }
+                }
+            }
+        }
         
-        // Handle tool calls
-        if let Some(tool_call) = response.tool_call {
-            // Execute the tool and add result to conversation BEFORE the assistant message
-            // This matches the realistic flow: user asks → tool executes → assistant responds
-            let result = self.execute_tool(app_state, &tool_call.name, tool_call.arguments.clone()).await?;
-            self.add_tool_result(tool_call.name, tool_call.arguments, result);
-            
-            // Note: With MockLLM, the response still says "I'll use the X tool" even though
-            // the tool has already been executed. This is a limitation of the test backend.
-            // Real LLMs would generate a response that acknowledges the tool result.
+        // Add tool results to conversation BEFORE assistant message
+        for tool_result in tool_results {
+            self.add_tool_result(tool_result.name, tool_result.arguments, tool_result.result).await?;
         }
         
         // Add assistant response to conversation history AFTER any tool results
-        self.add_assistant_message(response.content.clone());
-        
-        // Auto-save if needed (based on time/message thresholds)
-        self.auto_save_if_needed()?;
+        self.add_assistant_message(response.content.clone()).await?;
         
         // Return the response content
         Ok(response.content)
+    }
+    
+    /// Export the agent to JSON for debugging/inspection
+    /// 
+    /// Note: This is NOT for persistence - WAL is the source of truth
+    /// The test harness (tests/common/agent_validation.rs) reads this file for validation
+    pub fn export_json(&self, path: &Path) -> Result<()> {
+        // Create a serializable version without transaction_coordinator
+        let data = serde_json::json!({
+            "version": 1,
+            "id": self.id,
+            "name": self.name,
+            "llm_config": self.llm_config,
+            "conversation_history": self.conversation_history,
+            "context_window_limit": self.context_window_limit,
+            "system_prompt": self.system_prompt,
+            "default_graph_id": self.default_graph_id,
+            "created": self.created,
+            "last_active": self.last_active,
+        });
+        
+        let json = serde_json::to_string_pretty(&data)
+            .map_err(|e| AgentError::serialization(format!("Failed to serialize agent: {}", e)))?;
+        
+        fs::write(path, json)
+            .map_err(|e| AgentError::serialization(format!("Failed to write agent JSON: {}", e)))?;
+        
+        Ok(())
     }
 }
 

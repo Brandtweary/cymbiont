@@ -58,6 +58,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 use crate::app_state::AppState;
 use crate::graph_operations::GraphOps;
+use crate::lock::AsyncRwLockExt;
 use crate::error::*;
 use crate::agent::schemas::ToolDefinition;
 use crate::agent::agent::Agent;
@@ -118,6 +119,52 @@ pub async fn execute_tool(
     tool(app_state, agent, args).await
 }
 
+/// Phase 3: Execute tools without holding agent locks
+/// 
+/// Static function that executes tools by getting agent data as needed
+/// without maintaining locks during tool execution
+pub async fn execute_tools_stateless(
+    app_state: &Arc<AppState>,
+    agent_id: Uuid,
+    tool_calls: Vec<crate::agent::llm::ToolCall>,
+) -> Result<Vec<crate::agent::agent::ToolResult>> {
+    use crate::agent::agent::ToolResult;
+    use crate::lock::AsyncRwLockExt;
+    
+    tracing::debug!("Phase 3: Executing {} tools for agent {}", tool_calls.len(), agent_id);
+    
+    let mut results = Vec::new();
+    
+    for tool_call in tool_calls {
+        tracing::debug!("Phase 3: Executing tool '{}' for agent {}", tool_call.name, agent_id);
+        
+        // Get agent briefly to execute tool
+        let result = {
+            let agents = app_state.agents.read_or_panic("execute tools stateless").await;
+            match agents.get(&agent_id) {
+                Some(agent_arc) => {
+                    // Lock agent only during tool execution, not for registry operations
+                    let mut agent = agent_arc.write_or_panic("execute tool").await;
+                    agent.execute_tool(app_state, &tool_call.name, tool_call.arguments.clone()).await?
+                }
+                None => {
+                    return Err(AgentError::tool(format!("Agent {} not found", agent_id)).into());
+                }
+            }
+        };
+        
+        results.push(ToolResult {
+            name: tool_call.name.clone(),
+            arguments: tool_call.arguments,
+            result,
+        });
+        
+        tracing::debug!("Phase 3: Tool '{}' completed for agent {}", tool_call.name, agent_id);
+    }
+    
+    Ok(results)
+}
+
 /// Get tool schemas for the LLM
 pub fn get_tool_schemas() -> Vec<ToolDefinition> {
     crate::agent::schemas::all_tool_definitions()
@@ -128,7 +175,7 @@ pub fn get_tool_schemas() -> Vec<ToolDefinition> {
 /// Supports both graph_id (UUID) and graph_name (string) parameters.
 /// Falls back to the agent's default graph or smart default if no graph is specified.
 /// Uses the GraphRegistry to resolve names to IDs.
-fn parse_graph_target(app_state: &Arc<AppState>, agent: &Agent, args: &Value, use_smart_default: bool) -> Result<Uuid> {
+async fn parse_graph_target(app_state: &Arc<AppState>, agent: &Agent, args: &Value, use_smart_default: bool) -> Result<Uuid> {
     // Try to get graph_id first
     let graph_id = args.get("graph_id")
         .and_then(|v| v.as_str())
@@ -142,7 +189,7 @@ fn parse_graph_target(app_state: &Arc<AppState>, agent: &Agent, args: &Value, us
     if graph_id.is_none() && graph_name.is_none() {
         if use_smart_default {
             // Use smart default (for set_default_graph)
-            let registry = app_state.graph_registry.read_or_panic("parse graph target - smart default");
+            let registry = app_state.graph_registry.read_or_panic("parse graph target - smart default").await;
             return registry.resolve_graph_target(None, None, true)
                 .map_err(|e| AgentError::tool(format!("Failed to resolve graph target: {}", e)).into());
         } else {
@@ -155,7 +202,7 @@ fn parse_graph_target(app_state: &Arc<AppState>, agent: &Agent, args: &Value, us
     }
     
     // Use the registry to resolve the target
-    let registry = app_state.graph_registry.read_or_panic("parse graph target");
+    let registry = app_state.graph_registry.read_or_panic("parse graph target").await;
     registry.resolve_graph_target(
         graph_id.as_ref(),
         graph_name,
@@ -186,9 +233,9 @@ fn add_block<'a>(
         
         let properties = args.get("properties").cloned();
         
-        let graph_id = parse_graph_target(app_state, agent, &args, false)?;
+        let graph_id = parse_graph_target(app_state, agent, &args, false).await?;
         
-        match app_state.add_block(agent.id, content, parent_id, page_name, properties, &graph_id).await {
+        match app_state.add_block(agent.id, content, parent_id, page_name, properties, &graph_id, false).await {
             Ok(block_id) => Ok(json!({
                 "success": true,
                 "block_id": block_id
@@ -217,9 +264,9 @@ fn update_block<'a>(
             .ok_or_else(|| AgentError::tool("Missing required parameter: content"))?
             .to_string();
         
-        let graph_id = parse_graph_target(app_state, agent, &args, false)?;
+        let graph_id = parse_graph_target(app_state, agent, &args, false).await?;
         
-        match app_state.update_block(agent.id, block_id, content, &graph_id).await {
+        match app_state.update_block(agent.id, block_id, content, &graph_id, false).await {
             Ok(()) => Ok(json!({
                 "success": true
             })),
@@ -242,9 +289,9 @@ fn delete_block<'a>(
             .ok_or_else(|| AgentError::tool("Missing required parameter: block_id"))?
             .to_string();
         
-        let graph_id = parse_graph_target(app_state, agent, &args, false)?;
+        let graph_id = parse_graph_target(app_state, agent, &args, false).await?;
         
-        match app_state.delete_block(agent.id, block_id, &graph_id).await {
+        match app_state.delete_block(agent.id, block_id, &graph_id, false).await {
             Ok(()) => Ok(json!({
                 "success": true
             })),
@@ -271,9 +318,9 @@ fn create_page<'a>(
         
         let properties = args.get("properties").cloned();
         
-        let graph_id = parse_graph_target(app_state, agent, &args, false)?;
+        let graph_id = parse_graph_target(app_state, agent, &args, false).await?;
         
-        match app_state.create_page(agent.id, page_name, properties, &graph_id).await {
+        match app_state.create_page(agent.id, page_name, properties, &graph_id, false).await {
             Ok(()) => Ok(json!({
                 "success": true
             })),
@@ -296,9 +343,9 @@ fn delete_page<'a>(
             .ok_or_else(|| AgentError::tool("Missing required parameter: page_name"))?
             .to_string();
         
-        let graph_id = parse_graph_target(app_state, agent, &args, false)?;
+        let graph_id = parse_graph_target(app_state, agent, &args, false).await?;
         
-        match app_state.delete_page(agent.id, page_name, &graph_id).await {
+        match app_state.delete_page(agent.id, page_name, &graph_id, false).await {
             Ok(()) => Ok(json!({
                 "success": true
             })),
@@ -322,7 +369,7 @@ fn get_node<'a>(
             .and_then(|v| v.as_str())
             .ok_or_else(|| AgentError::tool("Missing required parameter: node_id"))?;
         
-        let graph_id = parse_graph_target(app_state, agent, &args, false)?;
+        let graph_id = parse_graph_target(app_state, agent, &args, false).await?;
         
         match app_state.get_node(agent.id, node_id, &graph_id).await {
             Ok(node_data) => Ok(node_data),
@@ -348,10 +395,10 @@ fn query_graph_bfs<'a>(
             .and_then(|v| v.as_u64())
             .unwrap_or(3) as usize;
         
-        let graph_id = parse_graph_target(app_state, agent, &args, false)?;
+        let graph_id = parse_graph_target(app_state, agent, &args, false).await?;
         
-        // This is actually a sync operation wrapped in async
-        match app_state.query_graph_bfs(agent.id, start_id, max_depth, &graph_id) {
+        // This is now an async operation
+        match app_state.query_graph_bfs(agent.id, start_id, max_depth, &graph_id).await {
             Ok(nodes) => Ok(json!({
                 "success": true,
                 "nodes": nodes
@@ -410,7 +457,7 @@ fn open_graph<'a>(
     args: Value,
 ) -> Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>> {
     Box::pin(async move {
-        let graph_id = parse_graph_target(app_state, agent, &args, false)?;
+        let graph_id = parse_graph_target(app_state, agent, &args, false).await?;
         
         match app_state.open_graph(graph_id).await {
             Ok(graph_info) => Ok(json!({
@@ -432,7 +479,7 @@ fn close_graph<'a>(
     args: Value,
 ) -> Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>> {
     Box::pin(async move {
-        let graph_id = parse_graph_target(app_state, agent, &args, false)?;
+        let graph_id = parse_graph_target(app_state, agent, &args, false).await?;
         
         match app_state.close_graph(graph_id).await {
             Ok(()) => Ok(json!({
@@ -469,7 +516,9 @@ fn create_graph<'a>(
                     .unwrap();
                 
                 if agent.get_default_graph_id().is_none() {
-                    agent.set_default_graph_id(Some(graph_id));
+                    tracing::debug!("create_graph: Setting default graph for agent {}", agent.id);
+                    agent.set_default_graph_id(Some(graph_id), false).await?;
+                    tracing::debug!("create_graph: Default graph set successfully");
                     tracing::info!("Set default graph for agent {} to new graph {}", agent.id, graph_id);
                 }
                 
@@ -493,7 +542,7 @@ fn delete_graph<'a>(
     args: Value,
 ) -> Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>> {
     Box::pin(async move {
-        let graph_id = parse_graph_target(app_state, agent, &args, false)?;
+        let graph_id = parse_graph_target(app_state, agent, &args, false).await?;
         
         match app_state.delete_graph(&graph_id).await {
             Ok(()) => Ok(json!({
@@ -516,11 +565,11 @@ fn set_default_graph<'a>(
 ) -> Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>> {
     Box::pin(async move {
         
-        let graph_id = parse_graph_target(app_state, agent, &args, true)?;
+        let graph_id = parse_graph_target(app_state, agent, &args, true).await?;
         
         // Check if agent is authorized for this graph
         let is_authorized = {
-            let agent_registry = app_state.agent_registry.read_or_panic("set default graph");
+            let agent_registry = app_state.agent_registry.read_or_panic("set default graph").await;
             agent_registry.is_agent_authorized(&agent.id, &graph_id)
         };
         
@@ -532,15 +581,7 @@ fn set_default_graph<'a>(
         }
         
         // Update the agent's default graph directly (we already have mutable access)
-        agent.set_default_graph_id(Some(graph_id));
-        
-        // Save the agent directly
-        if let Err(e) = agent.save() {
-            return Ok(json!({
-                "success": false,
-                "error": format!("Failed to save agent: {}", e)
-            }));
-        }
+        agent.set_default_graph_id(Some(graph_id), false).await?;
         
         Ok(json!({
             "success": true,
@@ -558,7 +599,7 @@ fn get_default_graph<'a>(
         // Get default graph directly from agent reference
         if let Some(default_id) = agent.get_default_graph_id() {
             // Get graph name if available
-            let graph_registry = app_state.graph_registry.read_or_panic("get default graph");
+            let graph_registry = app_state.graph_registry.read_or_panic("get default graph").await;
             let graph_name = graph_registry.get_graph(&default_id)
                 .map(|info| info.name.clone());
             drop(graph_registry);
@@ -586,8 +627,8 @@ fn list_my_graphs<'a>(
     Box::pin(async move {
         // Get authorized graphs and build list (drop sync locks before await)
         let graphs = {
-            let agent_registry = app_state.agent_registry.read_or_panic("list my graphs");
-            let graph_registry = app_state.graph_registry.read_or_panic("list my graphs");
+            let agent_registry = app_state.agent_registry.read_or_panic("list my graphs").await;
+            let graph_registry = app_state.graph_registry.read_or_panic("list my graphs").await;
             
             // Get authorized graph IDs for this agent
             let authorized_graphs = agent_registry

@@ -81,52 +81,43 @@ pub async fn import_logseq_graph(
     
     info!("📊 Using graph: {} ({})", graph_name, graph_id);
     
-    // Import the data
-    let (page_count, block_count, errors) = {
-        let resources = app_state.graph_resources.read_or_panic("apply PKM data - read resources").await;
-        
-        let graph_resources = resources.get(&graph_id)
-            .ok_or_else(|| ImportError::validation(format!("Graph not found for ID: {}", graph_id)))?;
-        
-        let mut graph_manager = graph_resources.manager.write_or_panic("apply PKM data - write manager").await;
-        
-        // Disable auto-save during bulk import for performance
-        graph_manager.disable_auto_save();
-        
-        let mut errors = Vec::new();
-        
-        let mut page_count = 0;
-        for page in pages {
-            match page.apply_to_graph(&mut *graph_manager) {
-                Ok(_) => page_count += 1,
-                Err(e) => {
-                    let err_msg = format!("Failed to import page {}: {}", page.name, e);
-                    error!("{}", err_msg);
-                    errors.push(err_msg);
-                }
-            }
-        }
-        
-        let mut block_count = 0;
-        for block in blocks {
-            match block.apply_to_graph(&mut *graph_manager) {
-                Ok(_) => block_count += 1,
-                Err(e) => {
-                    let err_msg = format!("Failed to import block {}: {}", block.id, e);
-                    error!("{}", err_msg);
-                    errors.push(err_msg);
-                }
-            }
-        }
-        
-        // Re-enable auto-save and force save
-        graph_manager.enable_auto_save();
-        
-        graph_manager.save_graph()?;
-        
-        // Return the collected data
-        (page_count, block_count, errors)
+    // Get the prime agent ID for import authorization
+    let prime_agent_id = {
+        let agent_registry = app_state.agent_registry.read_or_panic("get prime agent for import").await;
+        agent_registry.get_prime_agent_id()
+            .ok_or_else(|| ImportError::validation("Prime agent not found".to_string()))?
     };
+    
+    info!("🔑 Using Prime Agent {} for import authorization", prime_agent_id);
+    
+    // Import the data using GraphOps (which logs to WAL)
+    let mut errors = Vec::new();
+    let mut page_count = 0;
+    let mut block_count = 0;
+    
+    // Import pages first
+    for page in pages {
+        match page.apply_to_graph(app_state, prime_agent_id, &graph_id).await {
+            Ok(_) => page_count += 1,
+            Err(e) => {
+                let err_msg = format!("Failed to import page {}: {}", page.name, e);
+                error!("{}", err_msg);
+                errors.push(err_msg);
+            }
+        }
+    }
+    
+    // Import blocks after pages (so parent pages exist)
+    for block in blocks {
+        match block.apply_to_graph(app_state, prime_agent_id, &graph_id).await {
+            Ok(_) => block_count += 1,
+            Err(e) => {
+                let err_msg = format!("Failed to import block {}: {}", block.id, e);
+                error!("{}", err_msg);
+                errors.push(err_msg);
+            }
+        }
+    }
     
     info!("✅ Imported {} pages and {} blocks", page_count, block_count);
     

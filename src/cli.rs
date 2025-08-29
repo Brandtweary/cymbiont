@@ -106,7 +106,7 @@ use clap::Parser;
 use tracing::{info, error};
 use uuid::Uuid;
 use crate::error::*;
-use crate::lock::{RwLockExt, AsyncRwLockExt, lock_registries_for_write};
+use crate::lock::{AsyncRwLockExt, lock_registries_for_write};
 use crate::app_state::AppState;
 use crate::graph_operations::GraphOps;
 use crate::import;
@@ -287,11 +287,13 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
         // Don't return true - continue running
     }
     
+    // TODO: Add CLI command for creating a graph (should call GraphOps::create_graph)
+    
     // Handle graph deletion if requested (continues running after)
     if let Some(graph_identifier) = &args.delete_graph {
         // Resolve the graph using centralized logic
         let graph_uuid = {
-            let registry = app_state.graph_registry.read_or_panic("delete graph - read registry");
+            let registry = app_state.graph_registry.read_or_panic("delete graph - read registry").await;
             
             // Try to parse as UUID first
             let uuid_opt = Uuid::parse_str(&graph_identifier).ok();
@@ -317,41 +319,13 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
     
     // Create agent
     if let Some(agent_name) = &args.create_agent {
-        let agent_info = {
-            let mut registry = app_state.agent_registry.write_or_panic("create agent - write registry");
-            
-            registry.register_agent(
-                None,  // Let it generate a new UUID
-                Some(agent_name.clone()),
-                args.agent_description.clone(),
-            )?
-        };
-        
-        // Create the actual Agent instance
-        {
-            use crate::agent::{agent::Agent, llm::LLMConfig};
-            
-            // Ensure agent directory exists
-            std::fs::create_dir_all(&agent_info.data_path)?;
-            
-            // Create agent with default MockLLM config
-            let mut agent = Agent::new(
-                agent_info.id,
-                agent_name.clone(),
-                LLMConfig::default(),  // MockLLM by default
-                agent_info.data_path.clone(),
-                args.agent_description.clone().or(Some("An intelligent assistant".to_string())),
-            );
-            
-            // Save the agent to disk
-            agent.save()?;
-        }
-        
-        // Save the registry after creating agent
-        {
-            let registry = app_state.agent_registry.read_or_panic("create agent - read registry for save");
-            registry.save()?;
-        }
+        // Use the complete workflow method
+        let agent_info = crate::storage::AgentRegistry::create_agent_complete(
+            app_state.agent_registry.clone(),
+            Some(agent_name.clone()),
+            args.agent_description.clone(),
+            args.agent_description.clone().or(Some("An intelligent assistant".to_string())),
+        ).await?;
         
         info!("✅ Created agent '{}' with ID: {}", agent_info.name, agent_info.id);
     }
@@ -359,7 +333,7 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
     // Delete agent
     if let Some(agent_identifier) = &args.delete_agent {
         let resolved_id = {
-            let registry = app_state.agent_registry.read_or_panic("delete agent - read registry");
+            let registry = app_state.agent_registry.read_or_panic("delete agent - read registry").await;
             
             // Try to parse as UUID first
             let uuid_opt = Uuid::parse_str(&agent_identifier).ok();
@@ -373,26 +347,26 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
         
         // Don't allow deleting the prime agent
         {
-            let registry = app_state.agent_registry.read_or_panic("delete agent - check prime");
+            let registry = app_state.agent_registry.read_or_panic("delete agent - check prime").await;
             if Some(resolved_id) == registry.get_prime_agent_id() {
                 return Err("Cannot delete the prime agent".into());
             }
         }
         
         // Remove agent from memory if loaded
-        app_state.deactivate_agent(&resolved_id).await?;
+        {
+            let mut registry = app_state.agent_registry.write_or_panic("deactivate agent").await;
+            registry.deactivate_agent(&resolved_id, false).await?;
+        }
         
         // Remove from registry and archive data
         {
-            let mut registry = app_state.agent_registry.write_or_panic("delete agent - write registry");
-            registry.remove_agent(&resolved_id)?;
+            let mut registry = app_state.agent_registry.write_or_panic("delete agent - write registry").await;
+            registry.remove_agent(&resolved_id, false).await?;
         }
         
         // Save registry after deletion
-        {
-            let registry = app_state.agent_registry.read_or_panic("delete agent - save registry");
-            registry.save()?;
-        }
+        // Registry persisted through WAL, no need for JSON save
         
         info!("✅ Deleted agent: {}", resolved_id);
     }
@@ -400,7 +374,7 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
     // Activate agent
     if let Some(agent_identifier) = &args.activate_agent {
         let resolved_id = {
-            let registry = app_state.agent_registry.read_or_panic("read agent registry");
+            let registry = app_state.agent_registry.read_or_panic("read agent registry").await;
             
             // Try to parse as UUID first
             let uuid_opt = Uuid::parse_str(&agent_identifier).ok();
@@ -412,8 +386,10 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
             )?
         };
         
-        app_state.activate_agent(&resolved_id).await
-            ?;
+        {
+            let mut registry = app_state.agent_registry.write_or_panic("activate agent").await;
+            registry.activate_agent(&resolved_id, false).await?
+        };
         
         info!("✅ Activated agent: {}", resolved_id);
     }
@@ -421,7 +397,7 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
     // Deactivate agent
     if let Some(agent_identifier) = &args.deactivate_agent {
         let resolved_id = {
-            let registry = app_state.agent_registry.read_or_panic("read agent registry");
+            let registry = app_state.agent_registry.read_or_panic("read agent registry").await;
             
             // Try to parse as UUID first
             let uuid_opt = Uuid::parse_str(&agent_identifier).ok();
@@ -435,7 +411,7 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
         
         // Don't allow deactivating the prime agent if it's the only active agent
         {
-            let registry = app_state.agent_registry.read_or_panic("read agent registry");
+            let registry = app_state.agent_registry.read_or_panic("read agent registry").await;
             if Some(resolved_id) == registry.get_prime_agent_id() {
                 let active_agents = registry.get_active_agents();
                 if active_agents.len() == 1 {
@@ -444,8 +420,10 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
             }
         }
         
-        app_state.deactivate_agent(&resolved_id).await
-            ?;
+        {
+            let mut registry = app_state.agent_registry.write_or_panic("deactivate agent").await;
+            registry.deactivate_agent(&resolved_id, false).await?
+        };
         
         info!("✅ Deactivated agent: {}", resolved_id);
     }
@@ -454,7 +432,7 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
     if let Some(agent_identifier) = &args.authorize_agent {
         // Resolve agent (no smart default for authorize)
         let resolved_agent_id = {
-            let registry = app_state.agent_registry.read_or_panic("read agent registry");
+            let registry = app_state.agent_registry.read_or_panic("read agent registry").await;
             
             // Try to parse as UUID first
             let uuid_opt = Uuid::parse_str(&agent_identifier).ok();
@@ -471,7 +449,7 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
             .ok_or_else(|| "Must specify --for-graph with --authorize-agent")?;
         
         let resolved_graph_id = {
-            let registry = app_state.graph_registry.read_or_panic("read graph registry");
+            let registry = app_state.graph_registry.read_or_panic("read graph registry").await;
             
             // Try to parse as UUID first
             let uuid_opt = Uuid::parse_str(&graph_identifier).ok();
@@ -484,7 +462,11 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
         };
         
         // Authorize agent for graph using the complete workflow
-        app_state.authorize_agent_for_graph(&resolved_agent_id, &resolved_graph_id).await?;
+        crate::storage::AgentRegistry::authorize_agent_for_graph_complete(
+            app_state.agent_registry.clone(),
+            resolved_agent_id,
+            resolved_graph_id,
+        ).await?;
         
         info!("✅ Authorized agent {} for graph {}", resolved_agent_id, resolved_graph_id);
     }
@@ -493,7 +475,7 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
     if let Some(agent_identifier) = &args.deauthorize_agent {
         // Resolve agent (no smart default for deauthorize)
         let resolved_agent_id = {
-            let registry = app_state.agent_registry.read_or_panic("read agent registry");
+            let registry = app_state.agent_registry.read_or_panic("read agent registry").await;
             
             // Try to parse as UUID first
             let uuid_opt = Uuid::parse_str(&agent_identifier).ok();
@@ -510,7 +492,7 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
             .ok_or_else(|| "Must specify --from-graph with --deauthorize-agent")?;
         
         let resolved_graph_id = {
-            let registry = app_state.graph_registry.read_or_panic("read graph registry");
+            let registry = app_state.graph_registry.read_or_panic("read graph registry").await;
             
             // Try to parse as UUID first
             let uuid_opt = Uuid::parse_str(&graph_identifier).ok();
@@ -527,27 +509,18 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
             let (mut graph_registry, mut agent_registry) = lock_registries_for_write(
                 &app_state.graph_registry,
                 &app_state.agent_registry
-            )
-                ?;
+            ).await?;
             
             agent_registry.deauthorize_agent_from_graph(
                 &resolved_agent_id,
                 &resolved_graph_id,
                 &mut graph_registry,
-            )?;
+                false,
+            ).await?;
         }
         
         // Save both registries
-        {
-            let registry = app_state.agent_registry.read_or_panic("read agent registry");
-            registry.save()
-                ?;
-        }
-        {
-            let registry = app_state.graph_registry.read_or_panic("read graph registry");
-            registry.save()
-                ?;
-        }
+        // Registries persisted through WAL, no need for JSON save
         
         info!("✅ Deauthorized agent {} from graph {}", resolved_agent_id, resolved_graph_id);
     }
@@ -556,7 +529,7 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
     if let Some(agent_identifier) = &args.agent_info {
         // Resolve agent (allows smart default to prime if not specified)
         let resolved_id = {
-            let registry = app_state.agent_registry.read_or_panic("read agent registry");
+            let registry = app_state.agent_registry.read_or_panic("read agent registry").await;
             
             // Try to parse as UUID first
             let uuid_opt = Uuid::parse_str(&agent_identifier).ok();
@@ -570,7 +543,7 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
         
         // Get agent info from registry
         let (agent_info, is_active) = {
-            let registry = app_state.agent_registry.read_or_panic("read agent registry");
+            let registry = app_state.agent_registry.read_or_panic("read agent registry").await;
             
             let info = registry.get_agent(&resolved_id)
                 .ok_or_else(|| format!("Agent {} not found", resolved_id))?
@@ -594,7 +567,7 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
         // Show authorized graphs
         if !agent_info.authorized_graphs.is_empty() {
             info!("  Authorized Graphs:");
-            let graph_registry = app_state.graph_registry.read_or_panic("read graph registry");
+            let graph_registry = app_state.graph_registry.read_or_panic("read graph registry").await;
             
             for graph_id in &agent_info.authorized_graphs {
                 if let Some(graph) = graph_registry.get_graph(graph_id) {
@@ -609,10 +582,13 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
         
         // Show conversation stats if agent is loaded
         if is_active {
-            let agents = app_state.agents.read_or_panic("show agent status - read agents").await;
-            if let Some(agent_arc) = agents.get(&resolved_id) {
-                let agent = agent_arc.read_or_panic("show agent status - read agent").await;
-                info!("  Conversation Messages: {}", agent.conversation_history.len());
+            let registry = app_state.agent_registry.read_or_panic("show agent status - read registry").await;
+            if let Some(agents) = registry.get_agents() {
+                let agents = agents.read().await;
+                if let Some(agent_arc) = agents.get(&resolved_id) {
+                    let agent = agent_arc.read_or_panic("show agent status - read agent").await;
+                    info!("  Conversation Messages: {}", agent.conversation_history.len());
+                }
             }
         }
         
@@ -649,7 +625,7 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
 /// Show CLI status information
 pub async fn show_cli_status(app_state: &Arc<AppState>) -> Result<()> {
     let graphs = {
-        let registry_guard = app_state.graph_registry.read_or_panic("show cli status - graph registry");
+        let registry_guard = app_state.graph_registry.read_or_panic("show cli status - graph registry").await;
         registry_guard.get_all_graphs()
     };
     
@@ -665,7 +641,7 @@ pub async fn show_cli_status(app_state: &Arc<AppState>) -> Result<()> {
     
     if !open_graphs.is_empty() {
         {
-            let registry_guard = app_state.graph_registry.read_or_panic("show cli status - graph registry");
+            let registry_guard = app_state.graph_registry.read_or_panic("show cli status - graph registry").await;
             info!("📂 {} open graph(s):", open_graphs.len());
             for graph_id in &open_graphs {
                 if let Some(graph_info) = registry_guard.get_graph(graph_id) {

@@ -14,7 +14,6 @@
 //! ## Data Processing
 //!
 //! Utilities for parsing and converting data formats:
-//! - `parse_datetime()`: Multi-format datetime parsing with fallback
 //! - `parse_properties()`: JSON to HashMap conversion for metadata
 //!
 //! ## Process Coordination
@@ -39,12 +38,6 @@
 //! - Fallback scanning within configured range prevents startup failures
 //! - TCP binding tests ensure ports are genuinely available
 //!
-//! ## DateTime Handling
-//!
-//! Multi-format datetime parsing supports various PKM and export formats:
-//! - RFC 3339 timestamps (ISO 8601 compliant)
-//! - Unix timestamps (both seconds and milliseconds)
-//! - Fallback to current time with warning for unparseable formats
 //!
 //! ## JSON Processing
 //!
@@ -58,7 +51,6 @@ use std::fs;
 use std::net::TcpListener;
 use std::collections::HashMap;
 use std::time::Duration;
-use chrono::{DateTime, Utc};
 use serde::{Serialize, Deserialize};
 use serde_json;
 use tracing::{error, trace, warn};
@@ -236,40 +228,8 @@ pub fn find_available_port(config: &BackendConfig) -> Result<u16> {
     Err("Could not find an available port".into())
 }
 
-// ===== DateTime and JSON Utilities =====
+// ===== JSON Utilities =====
 
-/// Parse a datetime string from PKM with multiple format support
-pub fn parse_datetime(datetime_str: &str) -> DateTime<Utc> {
-    // Try parsing with different formats
-    if let Ok(dt) = DateTime::parse_from_rfc3339(datetime_str) {
-        return dt.with_timezone(&Utc);
-    }
-    
-    // Try ISO 8601 format
-    if let Ok(dt) = DateTime::parse_from_str(datetime_str, "%Y-%m-%dT%H:%M:%S%.fZ") {
-        return dt.with_timezone(&Utc);
-    }
-    
-    // Try Unix timestamp (milliseconds)
-    if let Ok(timestamp_millis) = datetime_str.parse::<i64>() {
-        // Handle both millisecond and second timestamps
-        let timestamp_millis = if timestamp_millis > 1_000_000_000_000 {
-            // Already in milliseconds
-            timestamp_millis
-        } else {
-            // Convert seconds to milliseconds
-            timestamp_millis * 1000
-        };
-        
-        if let Some(dt) = DateTime::from_timestamp_millis(timestamp_millis) {
-            return dt;
-        }
-    }
-    
-    // If all parsing attempts fail, log the issue and use current time
-    warn!("Could not parse datetime '{datetime_str}', using current time");
-    Utc::now()
-}
 
 /// Parse properties from a JSON value into a HashMap
 pub fn parse_properties(properties_json: &serde_json::Value) -> HashMap<String, String> {
@@ -295,7 +255,6 @@ pub fn parse_properties(properties_json: &serde_json::Value) -> HashMap<String, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Datelike;
 
     #[test]
     fn test_server_info_serialization() {
@@ -316,22 +275,6 @@ mod tests {
         assert_eq!(deserialized.pid, 12345);
         assert_eq!(deserialized.host, "127.0.0.1");
         assert_eq!(deserialized.port, 8888);
-    }
-
-    #[test]
-    fn test_parse_datetime_rfc3339() {
-        let dt_str = "2023-10-20T15:30:45Z";
-        let dt = parse_datetime(dt_str);
-        assert_eq!(dt.year(), 2023);
-        assert_eq!(dt.month(), 10);
-        assert_eq!(dt.day(), 20);
-    }
-
-    #[test]
-    fn test_parse_datetime_timestamp() {
-        let timestamp_millis = "1697817045000";
-        let dt = parse_datetime(timestamp_millis);
-        assert_eq!(dt.year(), 2023);
     }
 
     #[test]

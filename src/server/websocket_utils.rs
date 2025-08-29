@@ -18,7 +18,7 @@ pub async fn resolve_graph_for_command(
     graph_name: Option<&str>,
     allow_smart_default: bool,
 ) -> Result<uuid::Uuid> {
-    let registry = state.graph_registry.read_or_panic("read graph registry");
+    let registry = state.graph_registry.read_or_panic("read graph registry").await;
     
     let graph_uuid = if let Some(id_str) = graph_id {
         Some(uuid::Uuid::parse_str(id_str)

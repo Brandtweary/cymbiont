@@ -85,7 +85,7 @@ pub async fn handle(
                 }
             };
             
-            let block_id = state.add_block(agent_id, content, parent_id, page_name, None, &resolved_graph_id).await?;
+            let block_id = state.add_block(agent_id, content, parent_id, page_name, None, &resolved_graph_id, false).await?;
             let data = serde_json::json!({ "block_id": block_id });
             send_success_response(connection_id, state, Some(data)).await?;
         }
@@ -107,7 +107,7 @@ pub async fn handle(
                 }
             };
             
-            state.update_block(agent_id, block_id.clone(), content, &resolved_graph_id).await?;
+            state.update_block(agent_id, block_id.clone(), content, &resolved_graph_id, false).await?;
             let data = serde_json::json!({ "block_id": block_id });
             send_success_response(connection_id, state, Some(data)).await?;
         }
@@ -129,7 +129,7 @@ pub async fn handle(
                 }
             };
             
-            state.delete_block(agent_id, block_id.clone(), &resolved_graph_id).await?;
+            state.delete_block(agent_id, block_id.clone(), &resolved_graph_id, false).await?;
             let data = serde_json::json!({ "block_id": block_id });
             send_success_response(connection_id, state, Some(data)).await?;
         }
@@ -160,7 +160,7 @@ pub async fn handle(
                 )
             });
             
-            state.create_page(agent_id, name.clone(), properties_json, &resolved_graph_id).await?;
+            state.create_page(agent_id, name.clone(), properties_json, &resolved_graph_id, false).await?;
             let data = serde_json::json!({ "page_name": name });
             send_success_response(connection_id, state, Some(data)).await?;
         }
@@ -182,7 +182,7 @@ pub async fn handle(
                 }
             };
             
-            state.delete_page(agent_id, page_name.clone(), &resolved_graph_id).await?;
+            state.delete_page(agent_id, page_name.clone(), &resolved_graph_id, false).await?;
             let data = serde_json::json!({ "page_name": page_name });
             send_success_response(connection_id, state, Some(data)).await?;
         }

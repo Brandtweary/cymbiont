@@ -78,7 +78,6 @@
 //! - Maintains connection state for agent selection persistence
 
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use uuid::Uuid;
 use crate::error::*;
 use crate::AppState;
@@ -97,15 +96,17 @@ pub async fn handle(
         Command::AgentChat { message, echo, echo_tool } => {
             
             // Get the current agent for this connection (defaults to prime if none selected)
+            // Get prime agent ID first
+            let prime_agent_id = {
+                let registry = state.agent_registry.read_or_panic("read agent registry").await;
+                registry.get_prime_agent_id()
+            };
+            
             let agent_id = {
                 if let Some(ref connections) = state.ws_connections {
                     let conns = connections.read_or_panic("agent chat - read connections").await;
                     if let Some(conn) = conns.get(connection_id) {
-                        conn.current_agent_id.or_else(|| {
-                            // Use prime agent if none selected
-                            let registry = state.agent_registry.read().ok()?;
-                            registry.get_prime_agent_id()
-                        })
+                        conn.current_agent_id.or(prime_agent_id)
                     } else {
                         None
                     }
@@ -117,38 +118,31 @@ pub async fn handle(
             // Ensure we have an agent ID
             let agent_id = agent_id.ok_or_else(|| ServerError::websocket("No agent available for chat"))?;
             
-            // Get the agent Arc from the map (brief lock)
-            let agent_arc = {
-                let agents = state.agents.read_or_panic("agent chat - get agent").await;
-                agents.get(&agent_id).cloned()
+            // Generate request ID for async tracking
+            let request_id = Uuid::new_v4();
+            
+            // Queue the message for async processing
+            #[allow(deprecated)] // Temporary until CQRS refactor
+            let request = crate::server::message_queue::AgentRequest {
+                request_id,
+                connection_id: connection_id.to_string(),
+                message,
+                echo,
+                echo_tool,
             };
             
-            // Process message with just this agent's lock
-            let response = match agent_arc {
-                Some(agent_arc) => {
-                    let mut agent = agent_arc.write_or_panic("agent chat - process message").await;
-                    agent.process_message(state, message, echo, echo_tool).await?
-                }
-                None => {
-                    send_error_response(connection_id, state, &format!("Agent {} not found", agent_id)).await?;
-                    return Ok(());
-                }
-            };
+            // Queue message for async processing - ACK will be sent in Phase 1
+            #[allow(deprecated)] // Temporary until CQRS refactor
+            crate::server::message_queue::queue_agent_message(agent_id, request).await?;
             
-            // Send response back to client
-            let data = serde_json::json!({
-                "response": response,
-                "agent_id": agent_id.to_string()
-            });
-            
-            send_success_response(connection_id, state, Some(data)).await?;
+            // No immediate response - the message queue handles ACK and async response
         }
         
         Command::AgentSelect { agent_id, agent_name } => {
             
             // Resolve the agent using the registry's resolution function
             let selected_id = {
-                let registry = state.agent_registry.read_or_panic("read agent registry");
+                let registry = state.agent_registry.read_or_panic("read agent registry").await;
                 
                 // Parse UUID if provided
                 let agent_uuid = agent_id.as_ref()
@@ -165,9 +159,17 @@ pub async fn handle(
             };
             
             // Verify the agent exists and is active
-            if !state.is_agent_active(&selected_id) {
-                // Try to activate the agent
-                state.activate_agent(&selected_id).await?;
+            {
+                let registry = state.agent_registry.read_or_panic("check agent active").await;
+                if !registry.is_agent_active(&selected_id) {
+                    drop(registry);
+                    // Try to activate the agent using the complete workflow
+                    crate::storage::AgentRegistry::activate_agent_complete(
+                        state.agent_registry.clone(),
+                        selected_id,
+                        false  // don't skip_wal - this is a real activation
+                    ).await?;
+                }
             }
             
             // Update the connection's current agent
@@ -180,7 +182,7 @@ pub async fn handle(
             
             // Get agent info for response
             let agent_info = {
-                let registry = state.agent_registry.read_or_panic("read agent registry");
+                let registry = state.agent_registry.read_or_panic("read agent registry").await;
                 let agent = registry.get_agent(&selected_id)
                     .ok_or_else(|| ServerError::websocket(format!("Agent {} not found", selected_id)))?;
                 serde_json::json!({
@@ -195,18 +197,21 @@ pub async fn handle(
         Command::AgentList => {
             
             let agents_list = {
-                let registry = state.agent_registry.read_or_panic("read agent registry");
+                let registry = state.agent_registry.read_or_panic("read agent registry").await;
                 let agents = registry.get_all_agents();
                 let prime_id = registry.get_prime_agent_id();
                 
-                agents.into_iter().map(|agent| {
-                    serde_json::json!({
+                let mut agent_list = Vec::new();
+                for agent in agents {
+                    let is_active = registry.is_agent_active(&agent.id);
+                    agent_list.push(serde_json::json!({
                         "id": agent.id.to_string(),
                         "name": agent.name,
                         "is_prime": Some(agent.id) == prime_id,
-                        "is_active": state.is_agent_active(&agent.id)
-                    })
-                }).collect::<Vec<_>>()
+                        "is_active": is_active
+                    }));
+                }
+                agent_list
             };
             
             let data = serde_json::json!({ "agents": agents_list });
@@ -218,7 +223,7 @@ pub async fn handle(
             // Resolve the agent - if none specified, use current connection's agent or prime
             let resolved_id = if agent_id.is_some() || agent_name.is_some() {
                 // Explicit agent specified
-                let registry = state.agent_registry.read_or_panic("read agent registry");
+                let registry = state.agent_registry.read_or_panic("read agent registry").await;
                 
                 let agent_uuid = agent_id.as_ref()
                     .map(|id| Uuid::parse_str(id))
@@ -231,15 +236,17 @@ pub async fn handle(
                     false  // No smart default when explicitly specified
                 )?
             } else {
+                // Get prime agent ID first
+                let prime_agent_id = {
+                    let registry = state.agent_registry.read_or_panic("read agent registry").await;
+                    registry.get_prime_agent_id()
+                };
+                
                 // No agent specified, use current connection's agent or prime
                 if let Some(ref connections) = state.ws_connections {
                     let conns = connections.read_or_panic("agent chat - read connections").await;
                     if let Some(conn) = conns.get(connection_id) {
-                        conn.current_agent_id.or_else(|| {
-                            // Use prime agent if none selected
-                            let registry = state.agent_registry.read().ok()?;
-                            registry.get_prime_agent_id()
-                        })
+                        conn.current_agent_id.or(prime_agent_id)
                     } else {
                         None
                     }
@@ -250,7 +257,10 @@ pub async fn handle(
             
             // Get conversation history
             let history = {
-                let agents = state.agents.read_or_panic("agent history - read agents").await;
+                let registry = state.agent_registry.read_or_panic("agent history - get registry").await;
+                let agents = registry.get_agents()
+                    .ok_or_else(|| ServerError::websocket("No agents available"))?;
+                let agents = agents.read().await;
                 if let Some(agent_arc) = agents.get(&resolved_id) {
                     let agent = agent_arc.read_or_panic("agent history - read agent").await;
                     let messages = if let Some(limit) = limit {
@@ -305,7 +315,7 @@ pub async fn handle(
             // Resolve the agent - if none specified, use current connection's agent or prime
             let resolved_id = if agent_id.is_some() || agent_name.is_some() {
                 // Explicit agent specified
-                let registry = state.agent_registry.read_or_panic("read agent registry");
+                let registry = state.agent_registry.read_or_panic("read agent registry").await;
                 
                 let agent_uuid = agent_id.as_ref()
                     .map(|id| Uuid::parse_str(id))
@@ -318,15 +328,17 @@ pub async fn handle(
                     false  // No smart default when explicitly specified
                 )?
             } else {
+                // Get prime agent ID first  
+                let prime_agent_id = {
+                    let registry = state.agent_registry.read_or_panic("read agent registry").await;
+                    registry.get_prime_agent_id()
+                };
+                
                 // No agent specified, use current connection's agent or prime
                 if let Some(ref connections) = state.ws_connections {
                     let conns = connections.read_or_panic("agent chat - read connections").await;
                     if let Some(conn) = conns.get(connection_id) {
-                        conn.current_agent_id.or_else(|| {
-                            // Use prime agent if none selected
-                            let registry = state.agent_registry.read().ok()?;
-                            registry.get_prime_agent_id()
-                        })
+                        conn.current_agent_id.or(prime_agent_id)
                     } else {
                         None
                     }
@@ -337,12 +349,13 @@ pub async fn handle(
             
             // Clear the agent's conversation history
             {
-                let agents = state.agents.read_or_panic("agent reset - get agent").await;
+                let registry = state.agent_registry.read_or_panic("agent reset - get registry").await;
+                let agents = registry.get_agents()
+                    .ok_or_else(|| ServerError::websocket("No agents available"))?;
+                let agents = agents.read().await;
                 if let Some(agent_arc) = agents.get(&resolved_id) {
                     let mut agent = agent_arc.write_or_panic("agent reset - clear history").await;
-                    agent.clear_history();
-                    // Save after clearing
-                    agent.save()?;
+                    agent.clear_history(false).await?;
                 } else {
                     send_error_response(connection_id, state, &format!("Agent {} not found", resolved_id)).await?;
                     return Ok(());
@@ -360,46 +373,16 @@ pub async fn handle(
         // Admin Commands
         Command::CreateAgent { name, description } => {
             
-            let agent_info = {
-                let mut registry = state.agent_registry.write_or_panic("write agent registry");
-                
-                registry.register_agent(
-                    None,  // Let it generate a new UUID
-                    Some(name.clone()),
-                    description.clone(),
-                )?
-            };
-            
-            // Create the actual Agent instance
-            {
-                use crate::agent::agent::Agent;
-                use crate::agent::llm::LLMConfig;
-                
-                // Ensure agent directory exists
-                std::fs::create_dir_all(&agent_info.data_path)?;
-                
-                // Create agent with default MockLLM config
-                let mut agent = Agent::new(
-                    agent_info.id,
-                    name.clone(),
-                    LLMConfig::default(),  // MockLLM by default
-                    agent_info.data_path.clone(),
-                    description.clone().or(Some("An intelligent assistant".to_string())),
-                );
-                
-                // Save the agent to disk
-                agent.save()?;
-                
-                // Add to active agents map
-                let mut agents = state.agents.write_or_panic("create agent - insert").await;
-                agents.insert(agent_info.id, Arc::new(RwLock::new(agent)));
-            }
+            // Use the complete workflow method to create agent
+            let agent_info = crate::storage::AgentRegistry::create_agent_complete(
+                state.agent_registry.clone(),
+                Some(name.clone()),
+                description.clone(),
+                description.clone().or(Some("An intelligent assistant".to_string())),
+            ).await?;
             
             // Save the registry after creating agent
-            {
-                let registry = state.agent_registry.read_or_panic("read agent registry");
-                registry.save()?;
-            }
+            // Registry persisted through WAL, no need for JSON save
             
             let data = serde_json::json!({
                 "agent_id": agent_info.id.to_string(),
@@ -416,7 +399,7 @@ pub async fn handle(
             
             // Resolve agent (no smart default for destructive operations)
             let resolved_id = {
-                let registry = state.agent_registry.read_or_panic("read agent registry");
+                let registry = state.agent_registry.read_or_panic("read agent registry").await;
                 
                 let agent_uuid = agent_id.as_ref()
                     .map(|id| Uuid::parse_str(id))
@@ -433,7 +416,7 @@ pub async fn handle(
             // Don't allow deleting the prime agent
             {
                 let is_prime = {
-                    let registry = state.agent_registry.read_or_panic("read agent registry");
+                    let registry = state.agent_registry.read_or_panic("read agent registry").await;
                     Some(resolved_id) == registry.get_prime_agent_id()
                 };
                 
@@ -444,21 +427,20 @@ pub async fn handle(
             }
             
             // Remove agent from memory if loaded
-            state.deactivate_agent(&resolved_id).await
-                ?;
+            {
+                let mut registry = state.agent_registry.write_or_panic("deactivate agent").await;
+                registry.deactivate_agent(&resolved_id, false).await?;
+            }
             
             // Remove from registry and archive data
             {
-                let mut registry = state.agent_registry.write_or_panic("write agent registry");
-                registry.remove_agent(&resolved_id)
+                let mut registry = state.agent_registry.write_or_panic("write agent registry").await;
+                registry.remove_agent(&resolved_id, false).await
                     ?;
             }
             
             // Save registry after deletion
-            {
-                let registry = state.agent_registry.read_or_panic("read agent registry");
-                registry.save()?;
-            }
+            // Registry persisted through WAL, no need for JSON save
             
             let data = serde_json::json!({
                 "agent_id": resolved_id.to_string(),
@@ -472,7 +454,7 @@ pub async fn handle(
             
             // Resolve agent (no smart default for explicit operations)
             let resolved_id = {
-                let registry = state.agent_registry.read_or_panic("read agent registry");
+                let registry = state.agent_registry.read_or_panic("read agent registry").await;
                 
                 let agent_uuid = agent_id.as_ref()
                     .map(|id| Uuid::parse_str(id))
@@ -486,9 +468,12 @@ pub async fn handle(
                 )?
             };
             
-            // Activate the agent
-            state.activate_agent(&resolved_id).await
-                ?;
+            // Activate the agent using the complete workflow
+            crate::storage::AgentRegistry::activate_agent_complete(
+                state.agent_registry.clone(),
+                resolved_id,
+                false  // don't skip_wal - this is a real activation
+            ).await?;
             
             let data = serde_json::json!({
                 "agent_id": resolved_id.to_string(),
@@ -502,7 +487,7 @@ pub async fn handle(
             
             // Resolve agent (no smart default for explicit operations)
             let resolved_id = {
-                let registry = state.agent_registry.read_or_panic("read agent registry");
+                let registry = state.agent_registry.read_or_panic("read agent registry").await;
                 
                 let agent_uuid = agent_id.as_ref()
                     .map(|id| Uuid::parse_str(id))
@@ -517,8 +502,10 @@ pub async fn handle(
             };
             
             // Deactivate the agent
-            state.deactivate_agent(&resolved_id).await
-                ?;
+            {
+                let mut registry = state.agent_registry.write_or_panic("deactivate agent").await;
+                registry.deactivate_agent(&resolved_id, false).await?;
+            }
             
             let data = serde_json::json!({
                 "agent_id": resolved_id.to_string(),
@@ -532,7 +519,7 @@ pub async fn handle(
             
             // Resolve agent (must be explicitly specified)
             let resolved_agent_id = {
-                let registry = state.agent_registry.read_or_panic("read agent registry");
+                let registry = state.agent_registry.read_or_panic("read agent registry").await;
                 
                 let agent_uuid = agent_id.as_ref()
                     .map(|id| Uuid::parse_str(id))
@@ -548,7 +535,7 @@ pub async fn handle(
             
             // Resolve graph (must be explicitly specified)
             let resolved_graph_id = {
-                let registry = state.graph_registry.read_or_panic("read graph registry");
+                let registry = state.graph_registry.read_or_panic("read graph registry").await;
                 
                 let graph_uuid = graph_id.as_ref()
                     .map(|id| Uuid::parse_str(id))
@@ -563,7 +550,11 @@ pub async fn handle(
             };
             
             // Authorize agent for graph using the complete workflow
-            state.authorize_agent_for_graph(&resolved_agent_id, &resolved_graph_id).await?;
+            crate::storage::AgentRegistry::authorize_agent_for_graph_complete(
+                state.agent_registry.clone(),
+                resolved_agent_id,
+                resolved_graph_id,
+            ).await?;
             
             let data = serde_json::json!({
                 "agent_id": resolved_agent_id.to_string(),
@@ -578,7 +569,7 @@ pub async fn handle(
             
             // Resolve agent (must be explicitly specified)
             let resolved_agent_id = {
-                let registry = state.agent_registry.read_or_panic("read agent registry");
+                let registry = state.agent_registry.read_or_panic("read agent registry").await;
                 
                 let agent_uuid = agent_id.as_ref()
                     .map(|id| Uuid::parse_str(id))
@@ -594,7 +585,7 @@ pub async fn handle(
             
             // Resolve graph (must be explicitly specified)
             let resolved_graph_id = {
-                let registry = state.graph_registry.read_or_panic("read graph registry");
+                let registry = state.graph_registry.read_or_panic("read graph registry").await;
                 
                 let graph_uuid = graph_id.as_ref()
                     .map(|id| Uuid::parse_str(id))
@@ -613,25 +604,20 @@ pub async fn handle(
                 let (mut graph_registry, mut agent_registry) = lock_registries_for_write(
                     &state.graph_registry,
                     &state.agent_registry
-                )
+                ).await
                     ?;
                 
                 agent_registry.deauthorize_agent_from_graph(
                     &resolved_agent_id,
                     &resolved_graph_id,
                     &mut graph_registry,
-                )?;
+                    false,
+                ).await?;
             }
             
             // Save both registries
-            {
-                let registry = state.agent_registry.read_or_panic("read agent registry");
-                registry.save()?;
-            }
-            {
-                let registry = state.graph_registry.read_or_panic("read graph registry");
-                registry.save()?;
-            }
+            // Registry persisted through WAL, no need for JSON save
+            // Registry persisted through WAL, no need for JSON save
             
             let data = serde_json::json!({
                 "agent_id": resolved_agent_id.to_string(),
@@ -646,7 +632,7 @@ pub async fn handle(
             
             // Resolve agent (defaults to prime if not specified)
             let resolved_id = {
-                let registry = state.agent_registry.read_or_panic("read agent registry");
+                let registry = state.agent_registry.read_or_panic("read agent registry").await;
                 
                 let agent_uuid = agent_id.as_ref()
                     .map(|id| Uuid::parse_str(id))
@@ -662,7 +648,7 @@ pub async fn handle(
             
             // Get agent info from registry
             let (agent_info, is_active) = {
-                let registry = state.agent_registry.read_or_panic("read agent registry");
+                let registry = state.agent_registry.read_or_panic("read agent registry").await;
                 
                 let info = registry.get_agent(&resolved_id)
                     .ok_or_else(|| ServerError::websocket(format!("Agent {} not found", resolved_id)))?
@@ -673,8 +659,10 @@ pub async fn handle(
             
             // Get conversation stats if agent is loaded
             let conversation_stats = if is_active {
-                let agents = state.agents.read_or_panic("agent info - read agents").await;
-                match agents.get(&resolved_id) {
+                let registry = state.agent_registry.read_or_panic("read agent registry").await;
+                let agents = registry.get_agents().ok_or_else(|| ServerError::websocket("Agents map not initialized".to_string()))?;
+                let agents_map = agents.read_or_panic("agent info - read agents").await;
+                match agents_map.get(&resolved_id) {
                     Some(agent_arc) => {
                         let agent = agent_arc.read_or_panic("agent info - read agent").await;
                         Some(serde_json::json!({
@@ -690,7 +678,7 @@ pub async fn handle(
             
             // Get authorized graph names
             let authorized_graph_names = {
-                let graph_registry = state.graph_registry.read_or_panic("read graph registry");
+                let graph_registry = state.graph_registry.read_or_panic("read graph registry").await;
                 
                 agent_info.authorized_graphs.iter()
                     .filter_map(|graph_id| {

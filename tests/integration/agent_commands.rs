@@ -1,12 +1,11 @@
 use serde_json::json;
 use uuid::Uuid;
-use crate::common::{setup_test_env, cleanup_test_env, AgentValidationFixture};
+use crate::common::{setup_test_env, cleanup_test_env, WalValidator, MessagePattern};
 use crate::common::test_harness::{
     PreShutdown, PostShutdown, assert_phase,
     connect_websocket, send_command, expect_success, 
     authenticate_websocket, setup_with_graph, read_auth_token
 };
-use crate::common::agent_validation::MessagePattern;
 
 /// Test agent chat commands (chat, select, history, reset, list)
 pub fn test_agent_chat_commands() {
@@ -24,8 +23,8 @@ pub fn test_agent_chat_commands() {
         // === Phase 1: Server Running (PreShutdown) ===
         assert_phase(PreShutdown);
         
-        // Initialize the agent validation fixture
-        let mut agent_fixture = AgentValidationFixture::new();
+        // Initialize the WAL validator
+        let mut validator = WalValidator::new(&data_dir);
         
         // Connect WebSocket client
         let mut ws = connect_websocket(port);
@@ -48,7 +47,7 @@ pub fn test_agent_chat_commands() {
         };
         
         // Set up prime agent expectations
-        agent_fixture.expect_prime_agent(prime_agent_id);
+        validator.expect_prime_agent(prime_agent_id);
         
         // Test AgentList - should show prime agent
         {
@@ -78,11 +77,11 @@ pub fn test_agent_chat_commands() {
             assert_eq!(response_text, expected_response, "MockLLM should echo the provided response");
             
             // Record expected message in fixture
-            agent_fixture.expect_user_message(
+            validator.expect_user_message(
                 &prime_agent_id, 
                 MessagePattern::Exact("Hello, agent!".to_string())
             );
-            agent_fixture.expect_assistant_message(
+            validator.expect_assistant_message(
                 &prime_agent_id,
                 MessagePattern::Exact(expected_response.to_string())
             );
@@ -103,11 +102,11 @@ pub fn test_agent_chat_commands() {
             assert_eq!(response_text, expected_response, 
                    "MockLLM should echo the provided response");
             
-            agent_fixture.expect_user_message(
+            validator.expect_user_message(
                 &prime_agent_id, 
                 MessagePattern::Exact("What is 2+2?".to_string())
             );
-            agent_fixture.expect_assistant_message(
+            validator.expect_assistant_message(
                 &prime_agent_id,
                 MessagePattern::Exact(expected_response.to_string())
             );
@@ -165,7 +164,7 @@ pub fn test_agent_chat_commands() {
             assert!(data["success"].as_bool().unwrap_or(false));
             
             // Update fixture expectations
-            agent_fixture.expect_chat_reset(&prime_agent_id);
+            validator.expect_chat_reset(&prime_agent_id);
         }
         
         // Verify history is cleared
@@ -189,8 +188,8 @@ pub fn test_agent_chat_commands() {
         // === Phase 3: Server Shutdown (PostShutdown) ===
         assert_phase(PostShutdown);
         
-        // Validate agent state using the fixture
-        agent_fixture.validate_all(&test_env.data_dir);
+        // Validate agent state using the validator
+        validator.validate_all().expect("Validation failed");
         
         // Return test_env for cleanup
         test_env
@@ -225,8 +224,8 @@ pub fn test_agent_admin_commands() {
         // === Phase 1: Server Running (PreShutdown) ===
         assert_phase(PreShutdown);
         
-        // Initialize the agent validation fixture
-        let mut agent_fixture = AgentValidationFixture::new();
+        // Initialize the WAL validator
+        let mut validator = WalValidator::new(&data_dir);
         
         // Connect WebSocket client
         let mut ws = connect_websocket(port);
@@ -248,8 +247,8 @@ pub fn test_agent_admin_commands() {
         let graph_uuid = Uuid::parse_str(&graph_id).expect("Invalid graph UUID");
         
         // Set up prime agent expectations
-        agent_fixture.expect_prime_agent(prime_agent_id);
-        agent_fixture.expect_authorization(&prime_agent_id, &graph_uuid);
+        validator.expect_prime_agent(prime_agent_id);
+        validator.expect_authorization(&prime_agent_id, &graph_uuid);
         
         // Test CreateAgent - create a secondary agent
         let secondary_agent_id = {
@@ -267,7 +266,7 @@ pub fn test_agent_admin_commands() {
             let id_str = data["agent_id"].as_str().expect("No agent_id in response");
             let id = Uuid::parse_str(id_str).expect("Invalid UUID");
             
-            agent_fixture.expect_agent_created(id, "Test Agent", false);
+            validator.expect_agent_created(id, "Test Agent", false);
             id
         };
         
@@ -314,11 +313,11 @@ pub fn test_agent_admin_commands() {
             // Verify it went to the correct agent
             assert_eq!(data["agent_id"].as_str(), Some(secondary_agent_id.to_string().as_str()));
             
-            agent_fixture.expect_user_message(
+            validator.expect_user_message(
                 &secondary_agent_id,
                 MessagePattern::Exact("Hello from test!".to_string())
             );
-            agent_fixture.expect_assistant_message(
+            validator.expect_assistant_message(
                 &secondary_agent_id,
                 MessagePattern::Exact("Hello! I'm Test Agent, ready to assist.".to_string())
             );
@@ -336,7 +335,7 @@ pub fn test_agent_admin_commands() {
             
             assert!(data["success"].as_bool().unwrap_or(false));
             
-            agent_fixture.expect_authorization(&secondary_agent_id, &graph_uuid);
+            validator.expect_authorization(&secondary_agent_id, &graph_uuid);
         }
         
         // Verify authorization with AgentInfo
@@ -366,7 +365,7 @@ pub fn test_agent_admin_commands() {
             
             assert!(data["success"].as_bool().unwrap_or(false));
             
-            agent_fixture.expect_deauthorization(&secondary_agent_id, &graph_uuid);
+            validator.expect_deauthorization(&secondary_agent_id, &graph_uuid);
         }
         
         // Test DeactivateAgent
@@ -380,7 +379,7 @@ pub fn test_agent_admin_commands() {
             
             assert!(data["success"].as_bool().unwrap_or(false));
             
-            agent_fixture.expect_agent_deactivated(&secondary_agent_id);
+            validator.expect_agent_deactivated(&secondary_agent_id);
         }
         
         // Verify agent is deactivated in list
@@ -405,7 +404,7 @@ pub fn test_agent_admin_commands() {
             
             assert!(data["success"].as_bool().unwrap_or(false));
             
-            agent_fixture.expect_agent_activated(&secondary_agent_id);
+            validator.expect_agent_activated(&secondary_agent_id);
         }
         
         // Test that we CAN deactivate the prime agent (no protection)
@@ -419,7 +418,7 @@ pub fn test_agent_admin_commands() {
             
             assert!(data["success"].as_bool().unwrap_or(false));
             
-            agent_fixture.expect_agent_deactivated(&prime_agent_id);
+            validator.expect_agent_deactivated(&prime_agent_id);
         }
         
         // Reactivate prime agent for deletion test
@@ -431,7 +430,7 @@ pub fn test_agent_admin_commands() {
             let response = send_command(&mut ws, cmd);
             expect_success(response);
             
-            agent_fixture.expect_agent_activated(&prime_agent_id);
+            validator.expect_agent_activated(&prime_agent_id);
         }
         
         // Test DeleteAgent - should work for secondary agent
@@ -445,7 +444,7 @@ pub fn test_agent_admin_commands() {
             
             assert!(data["success"].as_bool().unwrap_or(false));
             
-            agent_fixture.expect_agent_deleted(&secondary_agent_id);
+            validator.expect_agent_deleted(&secondary_agent_id);
         }
         
         // Test DeleteAgent - should FAIL for prime agent (protection)
@@ -506,8 +505,8 @@ pub fn test_agent_admin_commands() {
         // === Phase 3: Server Shutdown (PostShutdown) ===
         assert_phase(PostShutdown);
         
-        // Validate agent state using the fixture
-        agent_fixture.validate_all(&test_env.data_dir);
+        // Validate agent state using the validator
+        validator.validate_all().expect("Validation failed");
         
         // Return test_env for cleanup
         test_env

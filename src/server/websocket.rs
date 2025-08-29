@@ -243,6 +243,14 @@ pub enum Response {
         message: String,
     },
     Heartbeat,
+    /// Immediate ACK for agent chat with request_id
+    AgentChatAck {
+        request_id: String,
+    },
+    /// Async response from agent processing
+    AgentChatResponse {
+        data: serde_json::Value,  // Contains request_id, response, agent_id
+    },
 }
 
 /// WebSocket upgrade handler

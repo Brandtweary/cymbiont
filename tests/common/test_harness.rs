@@ -449,8 +449,8 @@ impl TestServer {
             }
         }
         
-        // Additional wait for any remaining file operations
-        thread::sleep(Duration::from_millis(500));
+        // Additional wait for WAL flush and file operations
+        thread::sleep(Duration::from_millis(1000));
         
         // Clone before moving out (since we implement Drop)
         let test_env = self.test_env.clone();
@@ -473,8 +473,8 @@ impl TestServer {
         // Just wait for the process to exit on its own
         let _ = self.process.wait().expect("Failed to wait for process");
         
-        // Additional wait for any remaining file operations
-        thread::sleep(Duration::from_millis(500));
+        // Additional wait for WAL flush and file operations
+        thread::sleep(Duration::from_millis(1000));
         
         // Clone before moving out (since we implement Drop)
         let test_env = self.test_env.clone();
@@ -590,8 +590,15 @@ pub fn send_command(ws: &mut WsConnection, command: Value) -> Value {
     let msg = Message::Text(command.to_string());
     ws.send(msg).expect("Failed to send WebSocket message");
     
-    // Wait for response
+    // Wait for response with timeout
+    let timeout = Duration::from_secs(10);
+    let start = Instant::now();
+    
     loop {
+        if start.elapsed() > timeout {
+            panic!("Timeout waiting for response to command: {}", command);
+        }
+        
         match ws.read() {
             Ok(Message::Text(text)) => {
                 let response: Value = serde_json::from_str(&text)
@@ -608,7 +615,14 @@ pub fn send_command(ws: &mut WsConnection, command: Value) -> Value {
                 panic!("WebSocket connection closed unexpectedly");
             }
             Ok(_) => continue,  // Skip other message types
-            Err(e) => panic!("WebSocket read error: {}", e),
+            Err(e) => {
+                // Check if this is a timeout/would-block error
+                if e.to_string().contains("would block") {
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+                panic!("WebSocket read error: {}", e);
+            }
         }
     }
 }
@@ -636,22 +650,49 @@ pub fn authenticate_websocket(ws: &mut WsConnection, token: &str) -> bool {
 
 // ===== Common Test Setup Functions =====
 
-/// Import dummy graph via CLI and return the graph ID
-pub fn import_dummy_graph(test_env: &TestEnv) -> String {
-    let output = Command::new(get_cymbiont_binary())
-        .env("CYMBIONT_TEST_MODE", "1")
-        .args(&["--config", test_env.config_path.to_str().unwrap(),
-            "--import-logseq", "logseq_databases/dummy_graph/"])
-        .output()
-        .expect("Failed to run cymbiont import");
+// DELETED: import_dummy_graph() - Migrating to HTTP import to avoid 2-process architecture
+// Use import_dummy_graph_http() or setup_with_graph() instead
+
+/// Import dummy graph via HTTP (requires running server)
+/// This replaces the old CLI-based import to avoid 2-process architecture issues
+pub async fn import_dummy_graph_http(port: u16, data_dir: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    // Read auth token for HTTP authentication
+    let token = read_auth_token(data_dir);
     
-    assert!(output.status.success(), 
-        "Import failed with exit code: {:?}", 
-        output.status.code());
+    // Make HTTP POST request to import endpoint
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://127.0.0.1:{}/import/logseq", port))
+        .header("Authorization", format!("Bearer {}", token))
+        .json(&serde_json::json!({
+            "path": "logseq_databases/dummy_graph/"
+        }))
+        .send()
+        .await?;
     
-    // Get the imported graph ID from registry
-    // Since we just imported one graph and tests start fresh, it should be the only open graph
-    get_single_open_graph_id(&test_env.data_dir)
+    // Check status
+    if !response.status().is_success() {
+        let text = response.text().await?;
+        return Err(format!("Import failed: {}", text).into());
+    }
+    
+    // Parse response
+    let import_response: serde_json::Value = response.json().await?;
+    
+    // Extract graph_id
+    let graph_id = import_response["graph_id"]
+        .as_str()
+        .ok_or("No graph_id in response")?
+        .to_string();
+    
+    Ok(graph_id)
+}
+
+/// Run async code in tests - helper for tests that aren't async
+pub fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(future)
 }
 
 /// Read auth token from test data directory
@@ -665,33 +706,61 @@ pub fn read_auth_token(data_dir: &Path) -> String {
 
 /// Get the single open graph ID from registry (panics if not exactly one open graph)
 pub fn get_single_open_graph_id(data_dir: &Path) -> String {
+    // Wait a bit for registry to be flushed after import
+    thread::sleep(Duration::from_millis(200));
+    
     let registry_path = data_dir.join("graph_registry.json");
-    let registry_content = fs::read_to_string(&registry_path)
-        .expect("Failed to read graph registry");
-    let registry: Value = serde_json::from_str(&registry_content)
-        .expect("Failed to parse graph registry");
     
-    let open_graphs = registry["open_graphs"].as_array()
-        .expect("No open_graphs array in registry");
+    // Retry a few times in case the registry isn't written yet
+    let mut attempts = 0;
+    const MAX_ATTEMPTS: u32 = 10;
     
-    assert_eq!(open_graphs.len(), 1, 
-        "Expected exactly one open graph, found {}", open_graphs.len());
-    
-    open_graphs[0].as_str()
-        .expect("Graph ID is not a string")
-        .to_string()
+    loop {
+        attempts += 1;
+        
+        if registry_path.exists() {
+            if let Ok(registry_content) = fs::read_to_string(&registry_path) {
+                if let Ok(registry) = serde_json::from_str::<Value>(&registry_content) {
+                    if let Some(open_graphs) = registry["open_graphs"].as_array() {
+                        if open_graphs.len() == 1 {
+                            if let Some(graph_id) = open_graphs[0].as_str() {
+                                return graph_id.to_string();
+                            }
+                        } else if open_graphs.len() > 1 {
+                            panic!("Expected exactly one open graph, found {}", open_graphs.len());
+                        }
+                    }
+                }
+            }
+        }
+        
+        if attempts >= MAX_ATTEMPTS {
+            panic!("Failed to find single open graph after {} attempts. Registry may not be flushed yet.", MAX_ATTEMPTS);
+        }
+        
+        thread::sleep(Duration::from_millis(100));
+    }
 }
 
-/// Combined setup: import graph + start server
+/// Combined setup: start server + import graph via HTTP
+/// This replaces the old version that used CLI import
 pub fn setup_with_graph(test_env: TestEnv) -> (TestServer, String) {
-    // Import dummy graph first
-    let graph_id = import_dummy_graph(&test_env);
-    
-    // Start server
+    // Start server FIRST - creates prime agent
     let server = TestServer::start(test_env);
+    let port = server.port();
+    let data_dir = server.test_env().data_dir.clone();
+    
+    // Import graph via HTTP - uses existing prime agent
+    let graph_id = block_on(async {
+        // Wait for server to be ready
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        
+        import_dummy_graph_http(port, &data_dir).await
+    }).expect("Failed to import dummy graph");
     
     (server, graph_id)
 }
+
 
 // ===== Freeze Operation Utilities =====
 
@@ -767,6 +836,123 @@ pub fn read_pending_response(ws: &mut WsConnection) -> Value {
             }
         }
     }
+}
+
+/// Send agent chat and get request_id (for async processing)
+/// 
+/// TODO: This function is DEPRECATED and will be replaced by the CQRS refactor.
+/// The async agent chat pattern was a band-aid fix for deadlock issues.
+/// See docs/cqrs_refactor_plan.md for the new architecture.
+/// 
+/// DO NOT extend this function or use it as a pattern for other features.
+#[deprecated(
+    since = "0.1.0",
+    note = "Will be replaced by CQRS-based agent commands. See docs/cqrs_refactor_plan.md"
+)]
+#[allow(deprecated)] // Allow use within the test harness
+pub fn send_agent_chat(ws: &mut WsConnection, message: &str, echo: Option<&str>, echo_tool: Option<&str>) -> String {
+    let cmd = json!({
+        "type": "agent_chat",
+        "message": message,
+        "echo": echo,
+        "echo_tool": echo_tool,
+    });
+    
+    let msg = Message::Text(cmd.to_string());
+    ws.send(msg).expect("Failed to send agent chat");
+    
+    // Read ACK response
+    let timeout = Duration::from_secs(5);
+    let start = Instant::now();
+    
+    loop {
+        match ws.read() {
+            Ok(Message::Text(text)) => {
+                let response: Value = serde_json::from_str(&text)
+                    .expect("Failed to parse response");
+                
+                // Check for ACK response
+                if response["type"] == "agent_chat_ack" {
+                    return response["request_id"].as_str()
+                        .expect("No request_id in ACK")
+                        .to_string();
+                }
+                
+                // Skip other messages
+                if response["type"] == "heartbeat" {
+                    continue;
+                }
+            }
+            Ok(_) => continue,
+            Err(e) => {
+                if start.elapsed() > timeout {
+                    panic!("Timeout waiting for agent chat ACK: {}", e);
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+}
+
+/// Wait for specific agent response by request_id
+/// 
+/// TODO: This function is DEPRECATED and will be replaced by the CQRS refactor.
+/// The async agent chat pattern was a band-aid fix for deadlock issues.
+/// See docs/cqrs_refactor_plan.md for the new architecture.
+/// 
+/// DO NOT extend this function or use it as a pattern for other features.
+#[deprecated(
+    since = "0.1.0",
+    note = "Will be replaced by CQRS-based agent commands. See docs/cqrs_refactor_plan.md"
+)]
+#[allow(deprecated)] // Allow use within the test harness
+pub fn wait_for_agent_response(ws: &mut WsConnection, request_id: &str) -> Value {
+    let timeout = Duration::from_secs(30); // Generous for tool execution
+    let start = Instant::now();
+    
+    loop {
+        match ws.read() {
+            Ok(Message::Text(text)) => {
+                let msg: Value = serde_json::from_str(&text)
+                    .expect("Failed to parse response");
+                
+                // Check if this is our response
+                if msg["type"] == "agent_chat_response" {
+                    if msg["data"]["request_id"] == request_id {
+                        return msg["data"].clone();
+                    }
+                }
+                // Skip other messages (heartbeats, other responses)
+            }
+            Ok(Message::Close(_)) => {
+                panic!("WebSocket connection closed while waiting for agent response {}", request_id);
+            }
+            Ok(_) => {}
+            Err(e) => {
+                if start.elapsed() > timeout {
+                    panic!("Timeout waiting for agent response {}: {}", request_id, e);
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+}
+
+/// Helper for simple agent chat (combines send + wait)
+/// 
+/// TODO: This function is DEPRECATED and will be replaced by the CQRS refactor.
+/// The async agent chat pattern was a band-aid fix for deadlock issues.
+/// See docs/cqrs_refactor_plan.md for the new architecture.
+/// 
+/// DO NOT extend this function or use it as a pattern for other features.
+#[deprecated(
+    since = "0.1.0",
+    note = "Will be replaced by CQRS-based agent commands. See docs/cqrs_refactor_plan.md"
+)]
+#[allow(deprecated)] // Allow use within the test harness
+pub fn agent_chat_sync(ws: &mut WsConnection, message: &str, echo: Option<&str>, echo_tool: Option<&str>) -> Value {
+    let request_id = send_agent_chat(ws, message, echo, echo_tool);
+    wait_for_agent_response(ws, &request_id)
 }
 
 

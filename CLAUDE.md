@@ -88,6 +88,7 @@ RUST_LOG=debug cargo run         # Run cymbiont with debug logging (do not chang
 - Whenever you update `config.example.yaml` ensure that you also update `config.yaml`
 - Don't make live LLM calls during tests
 - When modifying startup logic in `main.rs`, ensure BOTH the CLI path and server path are updated equally. Extract shared logic into functions to avoid divergence.
+- Don't ever delete TODO comments unless the user gives permission first
 
 ### Log Level Guidelines
 - **INFO**: Use sparingly, only for messages you would want to see on every single run
@@ -99,3 +100,7 @@ RUST_LOG=debug cargo run         # Run cymbiont with debug logging (do not chang
 ### Autodebugger Commands
 - **Remove debug! calls**: `autodebugger remove-debug` (default: targets src/ and tests/ directories)
 - **Validate documentation**: `autodebugger validate-docs` (checks module docs meet complexity thresholds)
+
+## Architectural Direction (CQRS Refactor)
+
+**IMPORTANT**: Cymbiont is transitioning from a lock-based concurrency model to a CQRS (Command Query Responsibility Segregation) architecture with a global command queue. This addresses persistent deadlock issues and creates a more maintainable, LLM-friendly codebase. Until this refactor is complete (see `docs/cqrs_refactor_plan.md`), avoid adding complex lock interactions and apply tactical fixes to work around existing deadlocks. The goal is to make all mutations explicit commands that flow through the transaction log, eliminating lock reentrancy issues while preserving read performance. When encountering new deadlock bugs, consider temporary workarounds rather than complex lock-based solutions, as the entire locking strategy will be replaced.

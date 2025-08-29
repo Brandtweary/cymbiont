@@ -1,3 +1,9 @@
+// TODO: This module was gutted during the import refactor. Consider what needs to be kept:
+// - Keep PKM data structures as pure data types
+// - Remove transformation logic that's been moved elsewhere
+// - Decide on the future of reference resolution functions
+#![allow(dead_code)]
+
 //! # PKM Data Structures and Graph Transformation
 //!
 //! This module defines the core PKM (Personal Knowledge Management) data structures
@@ -93,14 +99,17 @@
 //! 5. **Error Propagation**: Reports transformation errors through centralized error system
 
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::sync::Arc;
 use chrono::Utc;
 use petgraph::stable_graph::NodeIndex;
+use uuid::Uuid;
 use crate::graph_manager::{GraphManager, NodeType, EdgeType};
-use crate::utils::{parse_datetime, parse_properties};
-use crate::import::reference_resolver::resolve_block_references;
+use crate::graph_operations::GraphOps;
+// use crate::utils::parse_properties; // Removed: unused after refactor
 use crate::import::logseq::extract_references;
 use crate::error::*;
+use crate::AppState;
 use serde_json::json;
 
 /// PKM block data received from the frontend
@@ -270,65 +279,43 @@ impl PKMBlockData {
                 
                 Ok(())
             } else {
-                Err(GraphError::node_operation(format!("Node not found: {}", block_id)).into())
+                Err(GraphError::not_found(format!("Node not found: {}", block_id)).into())
             }
         } else {
-            Err(GraphError::node_operation(format!("Node not found: {}", block_id)).into())
+            Err(GraphError::not_found(format!("Node not found: {}", block_id)).into())
         }
     }
-    /// Apply this block to the graph, creating/updating the node and edges
-    pub fn apply_to_graph(&self, graph: &mut GraphManager) -> Result<NodeIndex> {
-        // Generate internal ID
-        let internal_id = if let Some(existing_idx) = graph.find_node(&self.id) {
-            // Node exists, get its internal ID
-            graph.get_node(existing_idx)
-                .map(|node| node.id.clone())
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+    /// Apply this block to the graph using GraphOps for proper WAL logging
+    pub async fn apply_to_graph(
+        &self,
+        app_state: &Arc<AppState>,
+        agent_id: Uuid,
+        graph_id: &Uuid,
+    ) -> Result<String> {
+        // Convert properties to JSON (already a Value, just need to parse)
+        let properties = if self.properties.is_null() || self.properties == json!({}) {
+            None
         } else {
-            uuid::Uuid::new_v4().to_string()
+            Some(self.properties.clone())
         };
         
-        // Resolve references if not already resolved
-        let resolved_content = if self.reference_content.is_some() {
-            self.reference_content.clone()
-        } else {
-            // Build block map for reference resolution
-            let block_map = build_block_content_map(graph);
-            let mut visited = HashSet::new();
-            Some(resolve_block_references(&self.content, &block_map, &mut visited, Some(&self.id)))
-        };
-        
-        // 1. Create/update the block node
-        let node_idx = graph.create_or_update_node(
-            self.id.clone(),
-            internal_id,
-            NodeType::Block,
+        // Create the block using GraphOps (which logs to WAL)
+        // Note: add_block will handle page creation and parent-child relationships
+        let block_id = app_state.add_block(
+            agent_id,
             self.content.clone(),
-            resolved_content,
-            parse_properties(&self.properties),
-            parse_datetime(&self.created),
-            parse_datetime(&self.updated),
-        )?;
+            self.parent.clone(),     // Parent block ID
+            self.page.clone(),       // Page name (will create page if needed)
+            properties,
+            graph_id,
+            false, // don't skip WAL
+        ).await?;
         
-        // 2. Handle parent-child relationship
-        if let Some(parent_id) = &self.parent {
-            if let Some(parent_idx) = graph.find_node(parent_id) {
-                graph.add_edge(parent_idx, node_idx, EdgeType::ParentChild, 1.0);
-            }
-        }
+        // Note: References (tags, page refs, block refs) are handled by
+        // the content parsing in add_block. The references field is metadata
+        // from the import that we don't need to process separately.
         
-        // 3. Handle page relationship
-        if let Some(page_name) = &self.page {
-            let page_idx = ensure_page_exists(graph, page_name)?;
-            graph.add_edge(page_idx, node_idx, EdgeType::PageToBlock, 1.0);
-        }
-        
-        // 4. Process references
-        for reference in &self.references {
-            process_reference(graph, node_idx, reference)?;
-        }
-        
-        Ok(node_idx)
+        Ok(block_id)
     }
 }
 
@@ -351,89 +338,33 @@ impl PKMPageData {
             blocks: vec![],
         }
     }
-    
-    /// Create or update a page with smart existence checking and property updates
-    /// Returns the result of the operation - used by graph operations layer
-    pub fn create_or_update_page(
-        page_name: String,
-        properties: Option<serde_json::Value>,
-        graph_manager: &mut GraphManager,
+    /// Apply this page to the graph using GraphOps for proper WAL logging
+    pub async fn apply_to_graph(
+        &self,
+        app_state: &Arc<AppState>,
+        agent_id: Uuid,
+        graph_id: &Uuid,
     ) -> Result<()> {
-        let normalized_name = page_name.to_lowercase();
-        
-        // Check if page already exists
-        if let Some(node_idx) = graph_manager.find_node(&page_name)
-            .or_else(|| graph_manager.find_node(&normalized_name)) {
-            
-            // Page exists - just update properties if provided
-            if let Some(existing_node) = graph_manager.get_node(node_idx) {
-                if properties.is_some() {
-                    // Update only properties and timestamp
-                    let mut node_data = existing_node.clone();
-                    node_data.properties = crate::utils::parse_properties(&properties.unwrap_or(json!({})));
-                    node_data.updated_at = chrono::Utc::now();
-                    
-                    graph_manager.create_or_update_node(
-                        node_data.pkm_id,
-                        node_data.id,
-                        node_data.node_type,
-                        node_data.content,
-                        node_data.reference_content,
-                        node_data.properties,
-                        node_data.created_at,
-                        node_data.updated_at,
-                    )?;
-                }
-                // Page exists and no properties to update
-                Ok(())
-            } else {
-                Err(GraphError::node_operation("Failed to get existing page node").into())
-            }
+        // Convert properties to JSON (already a Value, just need to parse)
+        let properties = if self.properties.is_null() || self.properties == json!({}) {
+            None
         } else {
-            // Page doesn't exist - create it using factory method
-            let page_data = PKMPageData::new_page(page_name, properties);
-            
-            // Add to graph
-            page_data.apply_to_graph(graph_manager)?;
-            Ok(())
-        }
-    }
-    /// Apply this page to the graph, creating/updating the node and edges
-    pub fn apply_to_graph(&self, graph: &mut GraphManager) -> Result<NodeIndex> {
-        let normalized_name_owned = self.name.to_lowercase();
-        let normalized_name = self.normalized_name.as_ref()
-            .unwrap_or(&normalized_name_owned);
-        
-        // Generate internal ID
-        let internal_id = if let Some(existing_idx) = graph.find_node(&normalized_name) {
-            // Node exists, get its internal ID
-            graph.get_node(existing_idx)
-                .map(|node| node.id.clone())
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
-        } else {
-            uuid::Uuid::new_v4().to_string()
+            Some(self.properties.clone())
         };
-            
-        // 1. Create/update the page node
-        let node_idx = graph.create_or_update_node(
-            normalized_name.clone(),
-            internal_id,
-            NodeType::Page,
+        
+        // Create the page using GraphOps (which logs to WAL)
+        app_state.create_page(
+            agent_id,
             self.name.clone(),
-            None, // Pages don't have reference content
-            parse_properties(&self.properties),
-            parse_datetime(&self.created),
-            parse_datetime(&self.updated),
-        )?;
+            properties,
+            graph_id,
+            false, // don't skip WAL
+        ).await?;
         
-        // 2. Connect to root blocks
-        for block_id in &self.blocks {
-            if let Some(block_idx) = graph.find_node(block_id) {
-                graph.add_edge(node_idx, block_idx, EdgeType::PageToBlock, 1.0);
-            }
-        }
+        // Note: PageToBlock edges will be created when blocks are added
+        // with this page as their page_name
         
-        Ok(node_idx)
+        Ok(())
     }
 }
 
@@ -517,332 +448,10 @@ fn process_reference(
             // So we don't need to do anything here
         }
         _ => {
-            return Err(ImportError::reference_resolution(
+            return Err(ImportError::validation(
                 format!("Unknown reference type: {}", reference.r#type)
             ).into());
         }
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::TempDir;
-    use serde_json::json;
-
-    /// Create a test GraphManager with a temporary directory
-    fn create_test_manager() -> (GraphManager, TempDir) {
-        let temp_dir = TempDir::new().unwrap();
-        let manager = GraphManager::new(temp_dir.path()).unwrap();
-        (manager, temp_dir)
-    }
-    
-    /// Create test block data
-    fn create_test_block(id: &str, content: &str) -> PKMBlockData {
-        PKMBlockData {
-            id: id.to_string(),
-            content: content.to_string(),
-            created: "2024-01-01T00:00:00Z".to_string(),
-            updated: "2024-01-01T00:00:00Z".to_string(),
-            parent: None,
-            children: vec![],
-            page: Some("TestPage".to_string()),
-            properties: json!({}),
-            references: vec![],
-            reference_content: None,
-        }
-    }
-    
-    /// Create test page data
-    fn create_test_page(name: &str) -> PKMPageData {
-        PKMPageData {
-            name: name.to_string(),
-            normalized_name: Some(name.to_lowercase()),
-            created: "2024-01-01T00:00:00Z".to_string(),
-            updated: "2024-01-01T00:00:00Z".to_string(),
-            properties: json!({}),
-            blocks: vec![],
-        }
-    }
-
-    #[test]
-    fn test_pkm_reference_struct() {
-        let page_ref = PKMReference {
-            r#type: "page".to_string(),
-            name: "TestPage".to_string(),
-            id: "".to_string(),
-        };
-        
-        let block_ref = PKMReference {
-            r#type: "block".to_string(),
-            name: "".to_string(),
-            id: "block-id".to_string(),
-        };
-        
-        assert_eq!(page_ref.r#type, "page");
-        assert_eq!(page_ref.name, "TestPage");
-        assert_eq!(block_ref.r#type, "block");
-        assert_eq!(block_ref.id, "block-id");
-    }
-
-    #[test]
-    fn test_create_page_node() {
-        let (mut manager, _temp_dir) = create_test_manager();
-        let page = create_test_page("TestPage");
-        
-        let node_idx = page.apply_to_graph(&mut manager).unwrap();
-        
-        // Verify node was created
-        let node = manager.get_node(node_idx).unwrap();
-        assert_eq!(node.pkm_id, "testpage"); // Normalized
-        assert_eq!(node.content, "TestPage");
-        assert_eq!(node.node_type, NodeType::Page);
-        
-        // Verify mapping was created with normalized name
-        assert!(manager.find_node("testpage").is_some());
-    }
-    
-    #[test]
-    fn test_create_block_node() {
-        let (mut manager, _temp_dir) = create_test_manager();
-        let block = create_test_block("block-123", "Test content");
-        
-        let node_idx = block.apply_to_graph(&mut manager).unwrap();
-        
-        // Verify node was created
-        let node = manager.get_node(node_idx).unwrap();
-        assert_eq!(node.pkm_id, "block-123");
-        assert_eq!(node.content, "Test content");
-        assert_eq!(node.node_type, NodeType::Block);
-        
-        // Verify page was auto-created
-        assert!(manager.find_node("testpage").is_some());
-    }
-    
-    #[test]
-    fn test_parent_child_relationship() {
-        let (mut manager, _temp_dir) = create_test_manager();
-        
-        // Create parent block
-        let parent = create_test_block("parent-123", "Parent content");
-        let parent_idx = parent.apply_to_graph(&mut manager).unwrap();
-        
-        // Create child block
-        let mut child = create_test_block("child-456", "Child content");
-        child.parent = Some("parent-123".to_string());
-        let child_idx = child.apply_to_graph(&mut manager).unwrap();
-        
-        // Verify edge exists using public graph access
-        assert!(manager.has_edge(parent_idx, child_idx, &EdgeType::ParentChild));
-    }
-    
-    #[test]
-    fn test_page_to_block_relationship() {
-        let (mut manager, _temp_dir) = create_test_manager();
-        
-        // Create page first
-        let page = create_test_page("TestPage");
-        let page_idx = page.apply_to_graph(&mut manager).unwrap();
-        
-        // Create block without parent (root block)
-        let block = create_test_block("block-123", "Root block");
-        let block_idx = block.apply_to_graph(&mut manager).unwrap();
-        
-        // Verify page-to-block edge exists
-        assert!(manager.has_edge(page_idx, block_idx, &EdgeType::PageToBlock));
-    }
-    
-    #[test]
-    fn test_tag_reference() {
-        let (mut manager, _temp_dir) = create_test_manager();
-        
-        let mut block = create_test_block("block-123", "Content with #philosophy");
-        block.references = vec![
-            PKMReference {
-                r#type: "tag".to_string(),
-                name: "philosophy".to_string(),
-                id: String::new(),
-            }
-        ];
-        
-        let block_idx = block.apply_to_graph(&mut manager).unwrap();
-        
-        // Verify tag page was created
-        let tag_idx = manager.find_node("philosophy").unwrap();
-        
-        // Verify tag edge exists
-        assert!(manager.has_edge(block_idx, tag_idx, &EdgeType::Tag));
-    }
-    
-    #[test]
-    fn test_page_reference() {
-        let (mut manager, _temp_dir) = create_test_manager();
-        
-        let mut block = create_test_block("block-123", "See [[Another Page]]");
-        block.references = vec![
-            PKMReference {
-                r#type: "page".to_string(),
-                name: "Another Page".to_string(),
-                id: String::new(),
-            }
-        ];
-        
-        let block_idx = block.apply_to_graph(&mut manager).unwrap();
-        
-        // Verify referenced page was created (normalized to lowercase)
-        let ref_page_idx = manager.find_node("another page").unwrap();
-        
-        // Verify page reference edge exists
-        assert!(manager.has_edge(block_idx, ref_page_idx, &EdgeType::PageRef));
-    }
-    
-    #[test]
-    fn test_block_reference() {
-        let (mut manager, _temp_dir) = create_test_manager();
-        
-        // Create target block first
-        let target = create_test_block("target-789", "Target content");
-        let target_idx = target.apply_to_graph(&mut manager).unwrap();
-        
-        // Create block with reference
-        let mut source = create_test_block("source-123", "See ((target-789))");
-        source.references = vec![
-            PKMReference {
-                r#type: "block".to_string(),
-                name: String::new(),
-                id: "target-789".to_string(),
-            }
-        ];
-        
-        let source_idx = source.apply_to_graph(&mut manager).unwrap();
-        
-        // Verify block reference edge exists
-        assert!(manager.has_edge(source_idx, target_idx, &EdgeType::BlockRef));
-    }
-    
-    #[test]
-    fn test_properties_storage() {
-        let (mut manager, _temp_dir) = create_test_manager();
-        
-        let mut block = create_test_block("block-123", "Task content");
-        block.properties = json!({
-            "status": "in-progress",
-            "priority": "high"
-        });
-        
-        let node_idx = block.apply_to_graph(&mut manager).unwrap();
-        
-        // Verify properties were stored
-        let node = manager.get_node(node_idx).unwrap();
-        assert_eq!(node.properties.get("status"), Some(&"in-progress".to_string()));
-        assert_eq!(node.properties.get("priority"), Some(&"high".to_string()));
-    }
-    
-    #[test]
-    fn test_update_existing_node() {
-        let (mut manager, _temp_dir) = create_test_manager();
-        
-        // Create initial block
-        let block1 = create_test_block("block-123", "Original content");
-        let idx1 = block1.apply_to_graph(&mut manager).unwrap();
-        
-        // Update the same block
-        let mut block2 = create_test_block("block-123", "Updated content");
-        block2.updated = "2024-01-02T00:00:00Z".to_string();
-        let idx2 = block2.apply_to_graph(&mut manager).unwrap();
-        
-        // Should be the same node index
-        assert_eq!(idx1, idx2);
-        
-        // Content should be updated
-        let node = manager.get_node(idx1).unwrap();
-        assert_eq!(node.content, "Updated content");
-    }
-    
-    #[test]
-    fn test_no_duplicate_edges() {
-        let (mut manager, _temp_dir) = create_test_manager();
-        
-        // Create blocks with same reference twice
-        let mut block1 = create_test_block("block-1", "See [[Target]]");
-        block1.references = vec![
-            PKMReference {
-                r#type: "page".to_string(),
-                name: "Target".to_string(),
-                id: String::new(),
-            }
-        ];
-        
-        let mut block2 = create_test_block("block-2", "Also see [[Target]]");
-        block2.references = vec![
-            PKMReference {
-                r#type: "page".to_string(),
-                name: "Target".to_string(),
-                id: String::new(),
-            }
-        ];
-        
-        let idx1 = block1.apply_to_graph(&mut manager).unwrap();
-        let _idx2 = block2.apply_to_graph(&mut manager).unwrap();
-        let target_idx = manager.find_node("target").unwrap();
-        
-        // Each block should have exactly one edge to Target
-        assert!(manager.has_edge(idx1, target_idx, &EdgeType::PageRef));
-        
-        // Update block1 with same reference - should not create duplicate edge
-        block1.apply_to_graph(&mut manager).unwrap();
-        // Still only one edge (has_edge would be false if there were multiple)
-        assert!(manager.has_edge(idx1, target_idx, &EdgeType::PageRef));
-    }
-    
-    #[test]
-    fn test_build_block_content_map() {
-        let (mut manager, _temp_dir) = create_test_manager();
-        
-        // Create some blocks
-        create_test_block("block-1", "Block 1 content")
-            .apply_to_graph(&mut manager).unwrap();
-        
-        create_test_page("TestPage")
-            .apply_to_graph(&mut manager).unwrap();
-        
-        create_test_block("block-2", "Block 2 content")
-            .apply_to_graph(&mut manager).unwrap();
-        
-        // Build map - should only contain blocks
-        let map = build_block_content_map(&manager);
-        assert_eq!(map.len(), 2);
-        assert_eq!(map.get("block-1"), Some(&"Block 1 content".to_string()));
-        assert_eq!(map.get("block-2"), Some(&"Block 2 content".to_string()));
-        assert_eq!(map.get("testpage"), None); // Pages should not be in the map
-    }
-
-    #[test]
-    fn test_reference_resolution() {
-        let (mut manager, _temp_dir) = create_test_manager();
-        
-        // Create target block with content
-        let target = create_test_block("target-123", "This is the target content");
-        target.apply_to_graph(&mut manager).unwrap();
-        
-        // Create block that references the target
-        let mut source = create_test_block("source-456", "See ((target-123)) for details");
-        source.references = vec![
-            PKMReference {
-                r#type: "block".to_string(),
-                name: String::new(),
-                id: "target-123".to_string(),
-            }
-        ];
-        
-        let source_idx = source.apply_to_graph(&mut manager).unwrap();
-        
-        // Verify reference was resolved
-        let node = manager.get_node(source_idx).unwrap();
-        assert_eq!(
-            node.reference_content.as_ref().unwrap(),
-            "See This is the target content for details"
-        );
-    }
 }

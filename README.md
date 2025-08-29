@@ -14,6 +14,12 @@ Imagine local AI agents that can:
 - **Learn your thinking patterns** and proactively surface relevant information as you work
 - **Maintain graph health** by identifying orphaned nodes, broken links, and redundant information
 
+## Graph Consensus
+
+At its core, Cymbiont implements a self-organizing graph consensus system. Multiple agents—whether AI models, import scripts, or API clients—propose changes to shared knowledge graphs through a unified transaction system. Each agent operates with specific authorization scopes, and the system resolves concurrent modifications through deterministic transaction ordering. This creates a substrate for collective intelligence where diverse sources contribute to an evolving knowledge structure.
+
+Like a colony of social insects coordinating, Cymbiont enables distributed actors to reach consensus on a shared information state. Each agent contributes its specialized knowledge while the system maintains coherence across the whole. The result is software that doesn't just store data—it accumulates collective understanding through structured collaboration.
+
 ## Current Foundation
 
 Cymbiont currently provides the core engine that makes this vision possible:
@@ -30,10 +36,12 @@ Cymbiont currently provides the core engine that makes this vision possible:
 ## Future Capabilities
 
 The roadmap includes:
-- **Terminal-first interface** for Unix-style composition and piping
-- **Additional import adapters** for Obsidian, Roam Research, and more
 - **Natural language queries** powered by integrated local LLM agents
+- **Terminal chat interface** for interactive graph exploration and querying
+- **Additional import adapters** for Obsidian, Roam Research, and more
 - **Export formats** for interoperability with existing tools
+- **High-performance distributed multi-actor consensus** for massively parallel knowledge operations
+- **Quorum-replicated backups** with automatic data corruption detection and recovery
 
 ## Getting Started
 

@@ -1,41 +1,45 @@
-//! Storage Layer
+//! Storage Layer - WAL-Only Architecture
 //!
-//! This module contains all persistence-related functionality for Cymbiont's
-//! knowledge graph system. It provides the foundation for durable storage,
-//! transaction management, and multi-graph registry operations.
+//! This module implements a pure Write-Ahead Logging (WAL) system for all
+//! Cymbiont persistence. The WAL is the single source of truth, with all
+//! state reconstructed from transaction replay.
 //!
 //! ## Architecture Overview
 //!
-//! The storage layer is designed around three core principles:
-//! - **Durability**: All graph mutations are logged before execution
-//! - **Isolation**: Each graph has its own storage directory and transaction log
-//! - **Consistency**: ACID guarantees through write-ahead logging with sled
+//! The storage layer follows these core principles:
+//! - **Single Source of Truth**: WAL contains all state changes
+//! - **Transaction-First**: All mutations go through the transaction system
+//! - **In-Memory State**: Registries and graphs live in memory, rebuilt from WAL
+//! - **On-Demand Snapshots**: JSONs generated only for debugging/testing
 //!
 //! ## Components
 //!
-//! ### Graph Registry (`graph_registry.rs`)
-//! Multi-graph management and metadata persistence:
-//! - Graph UUID registration and lookup with collision handling
-//! - Graph switching and lifecycle management with timestamps
-//! - Registry persistence to `graph_registry.json` with atomic writes
-//! - Graph archival and removal with data preservation
-//! - Open/closed graph state tracking for session management
-//!
 //! ### Transaction Log (`transaction_log.rs`)
 //! Write-ahead logging with ACID guarantees using sled embedded database:
-//! - Transaction persistence with three logical trees (transactions, hash index, pending)
+//! - Comprehensive operation types: Graph, Agent, Registry operations
 //! - Content hash deduplication to prevent duplicate processing
-//! - Crash recovery with pending transaction enumeration
+//! - Three logical trees: transactions, content_hash_index, pending_index
 //! - State transitions: Active → Committed | Aborted
-//! - Performance optimizations: 64MB cache, 100ms flush intervals
 //!
 //! ### Transaction Coordinator (`transaction.rs`) 
 //! High-level transaction lifecycle management:
-//! - Transaction begin/commit/abort operations with error handling
-//! - Duplicate content detection via SHA-256 content hashing
-//! - Unified transaction execution patterns with `execute_with_transaction()`
-//! - Operation-level transaction wrapping for graph mutations
-//! - Recovery coordination for incomplete transactions on startup
+//! - Global coordinator for all operation types
+//! - Duplicate detection via SHA-256 content hashing
+//! - Graceful shutdown with transaction completion
+//! - Recovery coordination for pending transactions
+//!
+//! ### Recovery System (`recovery.rs`)
+//! Unified recovery for all operation types:
+//! - RecoveryContext bundles all necessary resources
+//! - Replays entire WAL on startup
+//! - Rebuilds complete state from operations
+//! - Handles graph, agent, and registry operations
+//!
+//! ### Registries (In-Memory Only)
+//! - **Graph Registry (`graph_registry.rs`)**: Graph metadata and open/closed states
+//! - **Agent Registry (`agent_registry.rs`)**: Agent metadata and authorization
+//! - No automatic JSON persistence - state lives in memory
+//! - JSON generation available on-demand for debugging
 //!
 //! ## Data Flow
 //!
@@ -44,35 +48,34 @@
 //!     ↓
 //! Transaction Coordinator
 //!     ↓
-//! Content Hash Check → [Duplicate? Return existing]
+//! Log to WAL (sled)
 //!     ↓
-//! Transaction Log (sled)
+//! Update In-Memory State
 //!     ↓
-//! Graph Manager Operation
-//!     ↓
-//! Success/Error Response
-//!     ↓
-//! Transaction Commit/Abort
+//! Success Response
 //! ```
 //!
-//! ## Error Handling
+//! ## Recovery Flow
 //!
-//! The storage layer implements fail-safe patterns:
-//! - Non-fatal errors (duplicate content) return existing data
-//! - Fatal errors (I/O failures) bubble up with context
-//! - Transaction rollback on any operation failure
-//! - Registry corruption recovery through backup restoration
+//! ```text
+//! Startup
+//!     ↓
+//! Replay WAL
+//!     ↓
+//! Rebuild All State
+//!     ↓
+//! Ready to Serve
+//! ```
 
 pub mod registry_utils;
-pub mod agent_persistence;
 pub mod agent_registry;
-pub mod graph_persistence;
 pub mod graph_registry;
 pub mod transaction;
 pub mod transaction_log;
+pub mod recovery;
 
 // Re-export commonly used types
 pub use graph_registry::GraphRegistry;
 pub use agent_registry::AgentRegistry;
-pub use transaction_log::{TransactionLog, Operation, OperationExecutor};
+pub use transaction_log::{TransactionLog, Operation};
 pub use transaction::TransactionCoordinator;

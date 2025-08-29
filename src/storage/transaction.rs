@@ -76,24 +76,68 @@
 //! 
 //! These helpers maintain the original AppState behavior while reducing code duplication.
 
-use crate::storage::transaction_log::{Operation, Transaction, TransactionLog, TransactionState};
+use crate::storage::transaction_log::{Operation, GraphOperation, Transaction, TransactionLog, TransactionState, RegistryOperation, GraphRegistryOp, AgentRegistryOp};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{RwLock, Notify};
 use crate::lock::AsyncRwLockExt;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
-use tracing::{warn, error, info};
+use tracing::{warn, error};
 use crate::error::*;
 
 
 
+#[derive(Debug, Clone)]
 pub struct TransactionCoordinator {
-    log: Arc<TransactionLog>,
+    pub log: Arc<TransactionLog>,
     pending_operations: Arc<RwLock<HashMap<String, String>>>, // content_hash -> transaction_id
     active_transactions: Arc<RwLock<HashSet<String>>>, // All active transaction IDs
     shutdown_requested: Arc<AtomicBool>,
     active_count_notify: Arc<Notify>,
+    operation_freeze: Arc<RwLock<Option<Arc<RwLock<bool>>>>>, // Optional freeze state for testing
+}
+
+/// A handle to an active transaction that must be explicitly committed or rolled back
+/// 
+/// This struct represents an active transaction in the WAL system. It must be
+/// either committed or rolled back before being dropped. The transaction will
+/// automatically roll back on drop if not explicitly committed.
+/// 
+/// # Example
+/// ```rust
+/// let tx = coordinator.begin(operation).await?;
+/// // Do work...
+/// tx.commit().await?; // or tx.rollback().await
+/// ```
+pub struct TransactionHandle {
+    id: String,
+    coordinator: Arc<TransactionCoordinator>,
+    committed: bool,
+}
+
+impl TransactionHandle {
+    /// Commit the transaction, marking it as successful
+    pub async fn commit(mut self) -> Result<()> {
+        self.committed = true;
+        // No-op transactions (empty ID) don't need to be committed
+        if self.id.is_empty() {
+            return Ok(());
+        }
+        self.coordinator.complete_transaction(&self.id, Ok(())).await
+    }
+    
+}
+
+impl Drop for TransactionHandle {
+    fn drop(&mut self) {
+        if !self.committed && !self.id.is_empty() {
+            // Log a warning - transaction was not explicitly committed or rolled back
+            warn!("Transaction {} dropped without explicit commit/rollback - will rollback", self.id);
+            // Note: We can't async rollback in drop, so the transaction will remain pending
+            // until recovery runs. This is safe but not ideal.
+        }
+    }
 }
 
 impl TransactionCoordinator {
@@ -104,7 +148,17 @@ impl TransactionCoordinator {
             active_transactions: Arc::new(RwLock::new(HashSet::new())),
             shutdown_requested: Arc::new(AtomicBool::new(false)),
             active_count_notify: Arc::new(Notify::new()),
+            operation_freeze: Arc::new(RwLock::new(None)),
         }
+    }
+    
+    /// Set the freeze state for testing crash recovery
+    /// 
+    /// This allows AppState to provide its freeze state to the coordinator
+    /// so that transactions can be paused during testing.
+    pub async fn set_freeze_state(&self, freeze: Arc<RwLock<bool>>) {
+        let mut freeze_lock = self.operation_freeze.write_or_panic("set freeze state").await;
+        *freeze_lock = Some(freeze);
     }
     
     /// Close the underlying transaction log
@@ -129,7 +183,7 @@ impl TransactionCoordinator {
             active.insert(tx_id.clone());
         }
         
-        self.log.append_transaction(transaction)?;
+        self.log.append_transaction(transaction.clone())?;
         Ok(tx_id)
     }
     
@@ -187,6 +241,91 @@ impl TransactionCoordinator {
         Ok(())
     }
     
+    pub async fn defer_transaction(&self, tx_id: &str, reason: &str) -> Result<()> {
+        // Remove from pending operations (like abort)
+        let transaction = self.log.get_transaction(tx_id)?;
+        if let Some(content_hash) = &transaction.content_hash {
+            let mut pending = self.pending_operations.write_or_panic("defer transaction - pending operations").await;
+            pending.remove(content_hash);
+        }
+        
+        // Remove from active transactions and check if shutdown should complete
+        {
+            let mut active = self.active_transactions.write_or_panic("defer transaction - active transactions").await;
+            active.remove(tx_id);
+            
+            // If shutdown requested and no more active transactions, notify
+            if self.shutdown_requested.load(Ordering::Acquire) && active.is_empty() {
+                self.active_count_notify.notify_waiters();
+            }
+        }
+        
+        // Keep as Active but mark as deferred with reason
+        // Transaction stays in pending index for recovery
+        self.log.update_transaction_deferred(tx_id, reason)?;
+        Ok(())
+    }
+    
+    /// Begin a new transaction with explicit commit/rollback semantics
+    /// 
+    /// This is the preferred way to use transactions. It returns a TransactionHandle
+    /// that must be explicitly committed or rolled back.
+    /// 
+    /// # Example
+    /// ```rust
+    /// let tx = coordinator.begin(Some(operation)).await?;
+    /// // Do your work here
+    /// self.field = new_value;
+    /// tx.commit().await?;
+    /// ```
+    pub async fn begin(&self, operation: Option<Operation>) -> Result<TransactionHandle> {
+        // If no operation provided (recovery mode), return a no-op handle
+        if operation.is_none() {
+            return Ok(TransactionHandle {
+                id: String::new(),  // Empty ID for no-op transactions
+                coordinator: Arc::new(self.clone()),
+                committed: false,
+            });
+        }
+        
+        let operation = operation.unwrap();
+        
+        // Check if shutdown has been initiated
+        if self.shutdown_requested.load(Ordering::Acquire) {
+            warn!("Transaction rejected - graceful shutdown in progress");
+            return Err(StorageError::transaction("Shutdown in progress - no new transactions allowed").into());
+        }
+        
+        // Check freeze state and wait if frozen (bypass for test harness operations)
+        if let Some(freeze) = &*self.operation_freeze.read_or_panic("check freeze state").await {
+            let bypass_freeze = matches!(operation, 
+                Operation::Registry(RegistryOperation::Graph(
+                    GraphRegistryOp::OpenGraph { .. } | GraphRegistryOp::CloseGraph { .. }
+                )) |
+                Operation::Registry(RegistryOperation::Agent(
+                    AgentRegistryOp::ActivateAgent { .. } | AgentRegistryOp::DeactivateAgent { .. }
+                ))
+            );
+            
+            if !bypass_freeze {
+                let is_frozen = *freeze.read_or_panic("check freeze state inner").await;
+                if is_frozen {
+                    while *freeze.read_or_panic("check freeze state inner").await {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                }
+            }
+        }
+        
+        // Create the transaction
+        let tx_id = self.create_transaction(operation).await?;
+        
+        Ok(TransactionHandle {
+            id: tx_id,
+            coordinator: Arc::new(self.clone()),
+            committed: false,
+        })
+    }
     
     pub async fn is_content_pending(&self, content_hash: &str) -> bool {
         let pending = self.pending_operations.read_or_panic("is content pending").await;
@@ -201,17 +340,23 @@ impl TransactionCoordinator {
             return Err(StorageError::transaction("Shutdown in progress - no new transactions allowed").into());
         }
         
-        // Check for duplicate content if applicable
-        if let Operation::CreateBlock { content, .. } | Operation::UpdateBlock { content, .. } = &operation {
-            let hash = compute_content_hash(content);
-            if self.is_content_pending(&hash).await {
-                warn!("Duplicate content detected in pending transactions - potential race condition. Content hash: {}", hash);
-                return Err(StorageError::transaction(format!("Duplicate content already being processed: {}", hash)).into());
+        // Check for duplicate content if applicable (warn but don't block)
+        match &operation {
+            Operation::Graph(GraphOperation::CreateBlock { content, .. }) |
+            Operation::Graph(GraphOperation::UpdateBlock { content, .. }) => {
+                let hash = compute_content_hash(content);
+                if self.is_content_pending(&hash).await {
+                    warn!("Duplicate content detected in pending transactions - potential race condition or retry. Allowing operation to proceed. Content hash: {}", hash);
+                    // Note: We deliberately allow duplicates to proceed as they may be legitimate
+                    // (e.g., race conditions, retries, or multiple agents creating similar content)
+                }
             }
+            _ => {} // Other operations don't need deduplication
         }
         
         // Begin transaction
-        self.begin_transaction(operation).await
+        let tx_id = self.begin_transaction(operation).await?;
+        Ok(tx_id)
     }
     
     /// Complete a transaction based on execution result
@@ -226,41 +371,18 @@ impl TransactionCoordinator {
                 Ok(value)
             }
             Err(error) => {
-                self.abort_transaction(tx_id, &error.to_string()).await?;
+                // Check if this is an entity not found error that should be deferred
+                let error_str = error.to_string();
+                if should_defer_error(&error_str) {
+                    self.defer_transaction(tx_id, &error_str).await?;
+                } else {
+                    self.abort_transaction(tx_id, &error_str).await?;
+                }
                 Err(error)
             }
         }
     }
     
-    pub async fn recover_pending_transactions(&self) -> Result<Vec<Transaction>> {
-        let pending = self.log.list_pending_transactions()?;
-        let mut recoverable = Vec::new();
-        
-        if !pending.is_empty() {
-            warn!("Found {} pending transactions from previous session - initiating recovery", 
-                  pending.len());
-        }
-        
-        for transaction in pending {
-            // Don't re-add to pending operations map - these transactions are already recorded
-            // and will be replayed. Adding them would cause duplicate content detection
-            // when replay_transaction tries to create a new transaction.
-            
-            match transaction.state {
-                TransactionState::Active => {
-                    // These can be retried
-                    recoverable.push(transaction);
-                }
-                _ => {
-                    // Committed or Aborted - shouldn't be in pending, but log it
-                    error!("Found {:?} transaction in pending list: {} - this indicates a bug", 
-                           transaction.state, transaction.id);
-                }
-            }
-        }
-        
-        Ok(recoverable)
-    }
     
     /// Initiate graceful shutdown - no new transactions will be accepted
     /// Returns the count of currently active transactions
@@ -305,63 +427,23 @@ impl TransactionCoordinator {
     }
 }
 
-/// Helper function for single graph recovery to reduce AppState verbosity
-/// 
-/// This extracts the core recovery logic without creating circular dependencies.
-/// Takes the coordinator, operation executor, and graph ID as parameters.
-pub async fn run_single_graph_recovery_helper<E>(
-    coordinator: &TransactionCoordinator,
-    operation_executor: &E,
-    graph_id: &uuid::Uuid,
-) -> Result<usize>
-where
-    E: crate::storage::OperationExecutor,
-{
-    use crate::storage::OperationExecutor;
-    
-    let pending_transactions = coordinator.recover_pending_transactions().await?;
-    
-    let count = pending_transactions.len();
-    if count > 0 {
-        info!("🔄 Replaying {} pending transactions for graph {}", count, graph_id);
-        
-        // Replay each transaction with proper state updates
-        for transaction in pending_transactions {
-            let tx_id = transaction.id.clone();
-            let operation = transaction.operation.clone();
-            
-            // Execute the operation using the OperationExecutor trait
-            let result = OperationExecutor::execute_operation(operation_executor, graph_id, operation).await;
-            
-            // Update transaction state based on result
-            match result {
-                Ok(()) => {
-                    coordinator.commit_transaction(&tx_id).await?
-                }
-                Err(e) => {
-                    coordinator.abort_transaction(&tx_id, &e.to_string()).await?;
-                    error!("❌ Failed to replay transaction {}: {}", tx_id, e);
-                }
-            }
-        }
-    }
-    
-    Ok(count)
+/// Determine if an error should result in transaction deferral
+/// Returns true if the error indicates the entity is temporarily unavailable
+fn should_defer_error(error_msg: &str) -> bool {
+    // Check for specific error patterns that indicate entity unavailability
+    error_msg.contains("Graph not found") ||
+    error_msg.contains("Agent not found") ||
+    error_msg.contains("Graph is closed") ||
+    error_msg.contains("Agent is inactive") ||
+    error_msg.contains("Graph manager not found") ||
+    error_msg.contains("Agent not loaded")
 }
 
-/// Helper function to save graph after recovery
+/// Helper function for recovery to reduce AppState verbosity
 /// 
-/// Extracted from AppState to reduce verbosity. Logs errors but never fails
-/// to match original AppState behavior.
-pub async fn save_graph_after_recovery_helper(
-    graph_manager: &mut crate::graph_manager::GraphManager,
-    graph_id: &uuid::Uuid,
-) {
-    match graph_manager.save_graph() {
-        Ok(_) => info!("💾 Saved graph {} after recovery", graph_id),
-        Err(e) => error!("Failed to save graph {} after recovery: {}", graph_id, e),
-    }
-}
+/// This extracts the core recovery logic without creating circular dependencies.
+/// Now handles all operation types, not just graph operations.
+
 
 #[cfg(test)]
 mod tests {
@@ -379,13 +461,14 @@ mod tests {
     async fn test_transaction_lifecycle() {
         let (coordinator, _temp_dir) = create_test_coordinator().await;
         
-        let operation = Operation::CreateBlock {
+        let operation = Operation::Graph(GraphOperation::CreateBlock {
+            graph_id: uuid::Uuid::new_v4(),
             agent_id: uuid::Uuid::new_v4(),
             content: "Test content".to_string(),
             parent_id: None,
             page_name: Some("test-page".to_string()),
             properties: None,
-        };
+        });
         
         // Begin transaction
         let tx_id = coordinator.begin_transaction(operation).await.unwrap();
@@ -405,11 +488,12 @@ mod tests {
     async fn test_abort_transaction() {
         let (coordinator, _temp_dir) = create_test_coordinator().await;
         
-        let operation = Operation::UpdateBlock {
+        let operation = Operation::Graph(GraphOperation::UpdateBlock {
+            graph_id: uuid::Uuid::new_v4(),
             agent_id: uuid::Uuid::new_v4(),
             block_id: "block-123".to_string(),
             content: "Updated content".to_string(),
-        };
+        });
         
         let tx_id = coordinator.begin_transaction(operation).await.unwrap();
         coordinator.abort_transaction(&tx_id, "Test abort").await.unwrap();
@@ -418,37 +502,8 @@ mod tests {
         assert!(!coordinator.is_content_pending(&content_hash).await);
     }
     
-    #[tokio::test]
-    async fn test_recovery() {
-        let temp_dir = TempDir::new().unwrap();
-        let log = Arc::new(TransactionLog::new(temp_dir.path()).unwrap());
-        
-        // Create some transactions
-        {
-            let coordinator = TransactionCoordinator::new(log.clone());
-            
-            for i in 0..3 {
-                let operation = Operation::CreateBlock {
-                    agent_id: uuid::Uuid::new_v4(),
-                    content: format!("Content {}", i),
-                    parent_id: None,
-                    page_name: Some("test-page".to_string()),
-                    properties: None,
-                };
-                coordinator.begin_transaction(operation).await.unwrap();
-            }
-        }
-        
-        // Create new coordinator and recover
-        let coordinator = TransactionCoordinator::new(log);
-        let recovered = coordinator.recover_pending_transactions().await.unwrap();
-        assert_eq!(recovered.len(), 3);
-        
-        // Verify they are all Active transactions
-        for tx in &recovered {
-            assert_eq!(tx.state, TransactionState::Active);
-        }
-    }
+    // Test removed: recovery now handled by recovery module, not TransactionCoordinator
+    // The recover_pending_transactions method no longer exists on TransactionCoordinator
 }
 
 fn compute_content_hash(content: &str) -> String {

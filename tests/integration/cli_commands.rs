@@ -1,6 +1,6 @@
 use serde_json::json;
 use uuid::Uuid;
-use crate::common::{setup_test_env, cleanup_test_env, GraphValidationFixture, AgentValidationFixture};
+use crate::common::{setup_test_env, cleanup_test_env, WalValidator};
 use crate::common::test_harness::{
     PreShutdown, PostShutdown, assert_phase,
     connect_websocket, send_command, expect_success,
@@ -75,8 +75,8 @@ pub fn test_all_cli_commands() {
         
         assert_phase(PreShutdown);
         
-        let mut graph_fixture = GraphValidationFixture::new();
-        let mut agent_fixture = AgentValidationFixture::new();
+        // Initialize the WAL validator (handles both graph and agent validation)
+        let mut validator = WalValidator::new(&data_dir);
         
         let mut ws = connect_websocket(port);
         let auth_token = read_auth_token(&data_dir);
@@ -90,7 +90,7 @@ pub fn test_all_cli_commands() {
             expect_success(response).expect("Import should succeed");
             
             // The fixture validates that the graph was created with expected structure
-            graph_fixture.expect_dummy_graph();
+            validator.expect_dummy_graph();
         }
         
         // Get graph ID using the list_graphs WebSocket command
@@ -115,8 +115,8 @@ pub fn test_all_cli_commands() {
             Uuid::parse_str(data["agent_id"].as_str().unwrap()).unwrap()
         };
         
-        agent_fixture.expect_prime_agent(prime_agent_id);
-        agent_fixture.expect_authorization(&prime_agent_id, &Uuid::parse_str(&graph_id).unwrap());
+        validator.expect_prime_agent(prime_agent_id);
+        validator.expect_authorization(&prime_agent_id, &Uuid::parse_str(&graph_id).unwrap());
         
         // Test create_agent
         let test_agent_name = "CLI Test Agent";
@@ -140,7 +140,7 @@ pub fn test_all_cli_commands() {
             Uuid::parse_str(test_agent["id"].as_str().unwrap()).unwrap()
         };
         
-        agent_fixture.expect_agent_created(test_agent_id, test_agent_name, false);
+        validator.expect_agent_created(test_agent_id, test_agent_name, false);
         
         // Test agent_info
         {
@@ -157,7 +157,7 @@ pub fn test_all_cli_commands() {
                 "for_graph": &graph_id
             }));
             expect_success(response).expect("Authorize agent should succeed");
-            agent_fixture.expect_authorization(&test_agent_id, &Uuid::parse_str(&graph_id).unwrap());
+            validator.expect_authorization(&test_agent_id, &Uuid::parse_str(&graph_id).unwrap());
         }
         
         // Test deauthorize_agent
@@ -167,7 +167,7 @@ pub fn test_all_cli_commands() {
                 "from_graph": &graph_id
             }));
             expect_success(response).expect("Deauthorize agent should succeed");
-            agent_fixture.expect_deauthorization(&test_agent_id, &Uuid::parse_str(&graph_id).unwrap());
+            validator.expect_deauthorization(&test_agent_id, &Uuid::parse_str(&graph_id).unwrap());
         }
         
         // Test deactivate_agent
@@ -176,7 +176,7 @@ pub fn test_all_cli_commands() {
                 "identifier": test_agent_name
             }));
             expect_success(response).expect("Deactivate agent should succeed");
-            agent_fixture.expect_agent_deactivated(&test_agent_id);
+            validator.expect_agent_deactivated(&test_agent_id);
         }
         
         // Test activate_agent
@@ -185,7 +185,7 @@ pub fn test_all_cli_commands() {
                 "identifier": test_agent_name
             }));
             expect_success(response).expect("Activate agent should succeed");
-            agent_fixture.expect_agent_activated(&test_agent_id);
+            validator.expect_agent_activated(&test_agent_id);
         }
         
         // Test delete_agent
@@ -194,7 +194,7 @@ pub fn test_all_cli_commands() {
                 "identifier": test_agent_name
             }));
             expect_success(response).expect("Delete agent should succeed");
-            agent_fixture.expect_agent_deleted(&test_agent_id);
+            validator.expect_agent_deleted(&test_agent_id);
         }
         
         // Test prime agent deletion protection
@@ -267,8 +267,8 @@ pub fn test_all_cli_commands() {
         assert_phase(PostShutdown);
         
         // Now we can validate both the graph and agents
-        graph_fixture.validate_graph(&test_env.data_dir, &graph_id);
-        agent_fixture.validate_all(&test_env.data_dir);
+        // Validate both graph and agent state
+        validator.validate_all().expect("Validation failed");
         
         test_env
     });

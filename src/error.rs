@@ -53,8 +53,6 @@
 use thiserror::Error;
 use uuid::Uuid;
 
-// Re-export for convenience
-pub use crate::lock::RwLockExt;
 
 /// Global result type alias for convenience
 pub type Result<T> = std::result::Result<T, CymbiontError>;
@@ -111,14 +109,6 @@ pub enum StorageError {
     #[error("Agent registry error: {message}")]
     AgentRegistry { message: String },
 
-    /// Graph persistence errors (save/load/archive)
-    #[error("Graph persistence error: {message}")]
-    GraphPersistence { message: String },
-
-    /// Agent persistence errors (save/load)
-    #[error("Agent persistence error: {message}")]
-    AgentPersistence { message: String },
-
     /// Transaction log errors (WAL operations)
     #[error("Transaction log error: {message}")]
     TransactionLog { message: String },
@@ -156,6 +146,9 @@ pub enum AgentError {
     #[error("Tool error: {message}")]
     Tool { message: String },
 
+    /// Serialization errors for agent persistence
+    #[error("Serialization error: {message}")]
+    Serialization { message: String },
 }
 
 /// Graph operation errors for CRUD operations and queries
@@ -164,10 +157,6 @@ pub enum GraphError {
     /// Graph lifecycle errors (create, open, close, delete)
     #[error("Graph lifecycle error: {message}")]
     Lifecycle { message: String },
-
-    /// Node operation errors (create, update, delete, find)
-    #[error("Node operation error: {message}")]
-    NodeOperation { message: String },
 
     /// Graph not found
     #[error("Graph not found: {identifier}")]
@@ -217,10 +206,6 @@ pub enum ImportError {
     /// Data validation errors
     #[error("Validation error: {message}")]
     Validation { message: String },
-
-    /// Reference resolution errors
-    #[error("Reference resolution error: {message}")]
-    ReferenceResolution { message: String },
 
     /// Import path errors
     #[error("Path error: {message}")]
@@ -291,14 +276,6 @@ impl StorageError {
         StorageError::AgentRegistry { message: message.into() }
     }
 
-    pub fn graph_persistence(message: impl Into<String>) -> Self {
-        StorageError::GraphPersistence { message: message.into() }
-    }
-
-    pub fn agent_persistence(message: impl Into<String>) -> Self {
-        StorageError::AgentPersistence { message: message.into() }
-    }
-
     pub fn transaction_log(message: impl Into<String>) -> Self {
         StorageError::TransactionLog { message: message.into() }
     }
@@ -326,6 +303,9 @@ impl AgentError {
         AgentError::Tool { message: message.into() }
     }
 
+    pub fn serialization(message: impl Into<String>) -> Self {
+        AgentError::Serialization { message: message.into() }
+    }
 }
 
 impl GraphError {
@@ -333,9 +313,6 @@ impl GraphError {
         GraphError::Lifecycle { message: message.into() }
     }
 
-    pub fn node_operation(message: impl Into<String>) -> Self {
-        GraphError::NodeOperation { message: message.into() }
-    }
 
     pub fn not_found(identifier: impl Into<String>) -> Self {
         GraphError::NotFound { identifier: identifier.into() }
@@ -388,9 +365,6 @@ impl ImportError {
         ImportError::Validation { message: message.into() }
     }
 
-    pub fn reference_resolution(message: impl Into<String>) -> Self {
-        ImportError::ReferenceResolution { message: message.into() }
-    }
 
     pub fn path(message: impl Into<String>) -> Self {
         ImportError::Path { message: message.into() }

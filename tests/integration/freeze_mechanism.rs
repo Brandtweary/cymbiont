@@ -1,12 +1,13 @@
 use std::thread;
 use std::time::Duration;
 use serde_json::json;
-use crate::common::{setup_test_env, cleanup_test_env};
+use crate::common::{setup_test_env, cleanup_test_env, WalValidator};
 use crate::common::test_harness::{
     connect_websocket, authenticate_websocket, read_auth_token,
     freeze_operations, unfreeze_operations, get_freeze_state,
     send_command_async, read_pending_response, send_command, expect_success,
-    PreShutdown, PostShutdown, assert_phase, import_dummy_graph, TestServer,
+    PreShutdown, PostShutdown, assert_phase, TestServer,
+    block_on, import_dummy_graph_http,
 };
 
 /// Test that freeze mechanism works correctly
@@ -15,12 +16,19 @@ pub fn test_freeze_mechanism() {
     let cleanup_env = test_env.clone();
     
     let result = std::panic::catch_unwind(move || {
-        // Setup: Import graph and start server
-        let _graph_id = import_dummy_graph(&test_env);
+        // Start server FIRST - creates prime agent
         let server = TestServer::start(test_env);  // Use default 3s duration
         let port = server.port();
         let data_dir = server.test_env().data_dir.clone();
+        
+        // Import graph via HTTP - uses existing prime agent
+        let _graph_id = block_on(import_dummy_graph_http(port, &data_dir))
+            .expect("Failed to import dummy graph");
         assert_phase(PreShutdown);
+        
+        // Initialize WAL validator
+        let mut validator = WalValidator::new(&data_dir);
+        validator.expect_dummy_graph();
         
         // Connect and authenticate
         let mut ws = connect_websocket(port);
@@ -103,6 +111,9 @@ pub fn test_freeze_mechanism() {
         
         assert_phase(PostShutdown);
         
+        // Validate all operations
+        validator.validate_all().expect("Validation failed");
+        
         test_env
     });
     
@@ -122,13 +133,20 @@ pub fn test_freeze_persistence() {
     let cleanup_env = test_env.clone();
     
     let result = std::panic::catch_unwind(move || {
-        // Setup: Import graph and start server
-        let _graph_id = import_dummy_graph(&test_env);
+        // Start server FIRST - creates prime agent
         let server = TestServer::start(test_env);  // Use default 3s duration
         let port = server.port();
         let data_dir = server.test_env().data_dir.clone();
         
+        // Import graph via HTTP - uses existing prime agent
+        let _graph_id = block_on(import_dummy_graph_http(port, &data_dir))
+            .expect("Failed to import dummy graph");
+        
         assert_phase(PreShutdown);
+        
+        // Initialize WAL validator
+        let mut validator = WalValidator::new(&data_dir);
+        validator.expect_dummy_graph();
         
         // Connection 1: Set freeze
         let mut ws1 = connect_websocket(port);
@@ -168,6 +186,9 @@ pub fn test_freeze_persistence() {
         
         assert_phase(PostShutdown);
         
+        // Validate all operations
+        validator.validate_all().expect("Validation failed");
+        
         test_env
     });
     
@@ -187,14 +208,20 @@ pub fn test_freeze_timeout() {
     let cleanup_env = test_env.clone();
     
     let result = std::panic::catch_unwind(move || {
-        // Import graph first
-        let _graph_id = import_dummy_graph(&test_env);
-        // Start server with default duration
+        // Start server FIRST - creates prime agent
         let server = TestServer::start(test_env);
         let port = server.port();
         let data_dir = server.test_env().data_dir.clone();
         
+        // Import graph via HTTP - uses existing prime agent
+        let _graph_id = block_on(import_dummy_graph_http(port, &data_dir))
+            .expect("Failed to import dummy graph");
+        
         assert_phase(PreShutdown);
+        
+        // Initialize WAL validator
+        let mut validator = WalValidator::new(&data_dir);
+        validator.expect_dummy_graph();
         
         // Connect and freeze
         let mut ws = connect_websocket(port);

@@ -1,16 +1,9 @@
-// TODO: This module was gutted during the import refactor. Consider what needs to be kept:
-// - Keep PKM data structures as pure data types
-// - Remove transformation logic that's been moved elsewhere
-// - Decide on the future of reference resolution functions
-#![allow(dead_code)]
-
-//! # PKM Data Structures and Graph Transformation
+//! # PKM Data Structures and Helper Functions
 //!
 //! This module defines the core PKM (Personal Knowledge Management) data structures
-//! and provides the logic to transform them into graph nodes and edges. It serves
-//! as the bridge between external PKM formats and the internal graph representation,
-//! handling the complex task of converting hierarchical, reference-rich knowledge
-//! structures into a navigable graph format.
+//! and provides helper functions for PKM-specific graph operations. It encapsulates
+//! all PKM domain logic including block reference resolution, page normalization,
+//! and relationship management.
 //!
 //! ## Core Data Types
 //!
@@ -36,81 +29,54 @@
 //!
 //! ## Graph Transformation Architecture
 //!
-//! ### Smart Node Management
-//! The `apply_to_graph()` methods implement sophisticated node lifecycle management:
-//! - **Existence Checking**: Efficiently determines if nodes already exist
-//! - **Update vs Create**: Preserves existing nodes while updating content
-//! - **UUID Generation**: Creates consistent internal identifiers
-//! - **Metadata Preservation**: Maintains properties and timestamps across updates
+//! ### Helper Functions
+//! - **Block Operations**: Create and update blocks with automatic reference resolution
+//! - **Page Operations**: Create, update, and normalize page names consistently
+//! - **Reference Resolution**: Expand `((block-id))` patterns to actual content
+//! - **Relationship Management**: Setup parent-child and page-block edges
 //!
-//! ### Edge Creation Strategy
-//! Creates typed edges to represent different relationship semantics:
-//! - **ParentChild**: Hierarchical block relationships
-//! - **PageToBlock**: Page ownership of blocks
-//! - **PageRef**: Explicit page references from content
-//! - **BlockRef**: Direct block-to-block citations
-//! - **Tag**: Categorical relationships via hashtags
-//!
-//! ### Reference Resolution Pipeline
-//! - **Content Expansion**: Block references are resolved to actual content
-//! - **Circular Detection**: Prevents infinite loops in reference chains
-//! - **Placeholder Creation**: Ensures referenced entities exist in the graph
-//! - **Lazy Loading**: Creates referenced pages and blocks on-demand
-//!
-//! ## Design Principles and Patterns
+//! ## Design Principles
 //!
 //! ### Separation of Concerns
-//! PKM logic is completely isolated from generic graph operations, allowing:
-//! - **Domain Expertise**: PKM-specific business logic remains centralized
-//! - **Graph Flexibility**: Underlying graph engine can evolve independently
-//! - **Testing Simplicity**: PKM transformations can be tested in isolation
+//! - PKM logic is isolated from graph operations and authorization
+//! - Helper functions work directly with GraphManager, not AppState
+//! - GraphOps handles transactions, authorization, and WAL logging
 //!
-//! ### Defensive Programming
-//! - **Flexible Timestamps**: Custom deserializer handles strings, integers, and ISO formats
-//! - **Graceful Degradation**: Missing references become placeholders rather than errors
-//! - **Data Validation**: Content and structure validation with meaningful error messages
-//! - **Safe Defaults**: Optional fields have sensible default values
+//! ### Reference Resolution
+//! - Block references `((block-id))` are expanded to actual content
+//! - Circular reference protection prevents infinite loops
+//! - Self-references are detected and preserved as-is
+//! - Missing references gracefully degrade to original syntax
 //!
-//! ### Performance Optimization
-//! - **Batch Operations**: Groups related graph operations for efficiency
-//! - **Content Mapping**: Pre-builds block maps for fast reference resolution
-//! - **Incremental Updates**: Only modifies changed content during updates
-//! - **Smart Normalization**: Caches normalized names to avoid repeated computation
+//! ## Key Functions
 //!
-//! ## Factory Methods and Convenience APIs
+//! ### Block Helpers
+//! - `create_block_with_resolution()`: Create block with reference expansion
+//! - `update_block_with_resolution()`: Update block content and references
+//! - `setup_block_relationships()`: Create parent-child and page-block edges
 //!
-//! ### Creation Helpers
-//! - `PKMBlockData::new_block()`: Creates blocks with automatic UUID generation
-//! - `PKMPageData::new_page()`: Initializes pages with normalized naming
-//! - Smart defaults for timestamps, properties, and references
+//! ### Page Helpers
+//! - `ensure_page_exists()`: Find or create a page by name
+//! - `create_or_update_page()`: Smart page creation with property updates
+//! - `find_page_for_deletion()`: Locate page by original or normalized name
 //!
-//! ### Update Operations
-//! - `update_block_content()`: Handles the complex find-update-resolve-save cycle
-//! - `create_or_update_page()`: Intelligently manages page existence and updates
-//! - Reference re-resolution when content changes
-//!
-//! ## Integration with Import Pipeline
-//!
-//! This module fits into the broader import system architecture:
-//! 1. **Input Processing**: Receives parsed data from format-specific modules (Logseq, etc.)
-//! 2. **Data Transformation**: Converts external formats to PKM structures
-//! 3. **Graph Application**: Uses GraphManager to persist nodes and edges
-//! 4. **Reference Resolution**: Coordinates with reference_resolver for content expansion
-//! 5. **Error Propagation**: Reports transformation errors through centralized error system
+//! ### Reference Resolution
+//! - `resolve_block_references()`: Core resolution with circular protection
+//! - `build_block_map()`: Generate block ID to content mapping
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::Arc;
-use chrono::Utc;
+use std::collections::{HashMap, HashSet};
 use petgraph::stable_graph::NodeIndex;
-use uuid::Uuid;
 use crate::graph::graph_manager::{GraphManager, NodeType, EdgeType};
-use crate::graph::graph_operations::GraphOps;
-// use crate::utils::parse_properties; // Removed: unused after refactor
-use crate::import::logseq::extract_references;
 use crate::error::*;
-use crate::AppState;
 use serde_json::json;
+use regex::Regex;
+use once_cell::sync::Lazy;
+
+// Regex for matching block references like ((block-id))
+static BLOCK_REF_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\(\(([a-zA-Z0-9-]+)\)\)").unwrap()
+});
 
 /// PKM block data received from the frontend
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -210,172 +176,71 @@ where
     deserializer.deserialize_any(TimestampVisitor)
 }
 
-impl PKMBlockData {
-    /// Create a new block with content and optional metadata
-    /// This is used when creating blocks via graph operations
-    pub fn new_block(
-        content: String,
-        parent_id: Option<String>,
-        page_name: Option<String>,
-        properties: Option<serde_json::Value>,
-    ) -> Self {
-        let block_id = uuid::Uuid::new_v4().to_string();
-        let now = chrono::Utc::now().to_rfc3339();
-        
-        PKMBlockData {
-            id: block_id,
-            content: content.clone(),
-            properties: properties.unwrap_or(json!({})),
-            parent: parent_id,
-            page: page_name,
-            references: extract_references(&content),
-            children: vec![],
-            created: now.clone(),
-            updated: now,
-            reference_content: None, // Let apply_to_graph handle resolution
-        }
+
+// ============================================================================
+// Core Reference Resolution Functions
+// ============================================================================
+
+/// Resolve block references in content by replacing ((block-id)) with referenced block content
+/// 
+/// # Arguments
+/// * `content` - The content containing block references
+/// * `block_map` - Map from block ID to block content
+/// * `visited` - Set of already visited block IDs to prevent circular references
+/// * `current_block_id` - The ID of the current block (to prevent self-references)
+/// 
+/// # Returns
+/// The content with all block references expanded
+pub fn resolve_block_references(
+    content: &str,
+    block_map: &HashMap<String, String>,
+    visited: &mut HashSet<String>,
+    current_block_id: Option<&str>,
+) -> String {
+    // Add current block to visited set to prevent self-references
+    if let Some(id) = current_block_id {
+        visited.insert(id.to_string());
     }
     
-    /// Update existing block content with reference resolution
-    /// Handles the find->clone->update->resolve->save pattern
-    pub fn update_block_content(
-        block_id: &str,
-        new_content: String,
-        graph_manager: &mut GraphManager,
-    ) -> Result<()> {
-        // Find the node
-        if let Some(node_idx) = graph_manager.find_node(block_id) {
-            // Get existing node data to preserve all fields
-            if let Some(existing_node) = graph_manager.get_node(node_idx) {
-                // Clone existing data and update only what we need
-                let mut node_data = existing_node.clone();
-                
-                // Update content and timestamp
-                node_data.content = new_content.clone();
-                node_data.updated_at = chrono::Utc::now();
-                
-                // Resolve references if content changed
-                if existing_node.content != new_content {
-                    node_data.reference_content = Some(
-                        crate::import::reference_resolver::resolve_references_in_graph(
-                            &new_content,
-                            block_id,
-                            graph_manager
-                        )
-                    );
-                }
-                
-                // Update the node in the graph
-                graph_manager.create_or_update_node(
-                    node_data.pkm_id,
-                    node_data.id,
-                    node_data.node_type,
-                    node_data.content,
-                    node_data.reference_content,
-                    node_data.properties,
-                    node_data.created_at,
-                    node_data.updated_at,
-                )?;
-                
-                Ok(())
-            } else {
-                Err(GraphError::not_found(format!("Node not found: {}", block_id)).into())
-            }
-        } else {
-            Err(GraphError::not_found(format!("Node not found: {}", block_id)).into())
+    let result = BLOCK_REF_RE.replace_all(content, |caps: &regex::Captures| {
+        let block_id = &caps[1];
+        
+        // Check for circular references (including self-reference)
+        if visited.contains(block_id) {
+            return caps[0].to_string(); // Keep original reference
         }
-    }
-    /// Apply this block to the graph using GraphOps for proper WAL logging
-    pub async fn apply_to_graph(
-        &self,
-        app_state: &Arc<AppState>,
-        agent_id: Uuid,
-        graph_id: &Uuid,
-    ) -> Result<String> {
-        // Convert properties to JSON (already a Value, just need to parse)
-        let properties = if self.properties.is_null() || self.properties == json!({}) {
-            None
+        
+        if let Some(referenced_content) = block_map.get(block_id) {
+            // Mark this block as visited before recursing
+            visited.insert(block_id.to_string());
+            
+            // Recursively resolve any references in the referenced content
+            let expanded = resolve_block_references(referenced_content, block_map, visited, Some(block_id));
+            
+            // Remove from visited after processing (allows the same block to be referenced multiple times in different contexts)
+            visited.remove(block_id);
+            
+            expanded
         } else {
-            Some(self.properties.clone())
-        };
-        
-        // Create the block using GraphOps (which logs to WAL)
-        // Note: add_block will handle page creation and parent-child relationships
-        let block_id = app_state.add_block(
-            agent_id,
-            self.content.clone(),
-            self.parent.clone(),     // Parent block ID
-            self.page.clone(),       // Page name (will create page if needed)
-            properties,
-            graph_id,
-            false, // don't skip WAL
-        ).await?;
-        
-        // Note: References (tags, page refs, block refs) are handled by
-        // the content parsing in add_block. The references field is metadata
-        // from the import that we don't need to process separately.
-        
-        Ok(block_id)
+            // Keep the original reference if we can't find the block
+            caps[0].to_string()
+        }
+    }).to_string();
+    
+    // Remove current block from visited set after processing
+    if let Some(id) = current_block_id {
+        visited.remove(id);
     }
+    
+    result
 }
 
-impl PKMPageData {
-    /// Create a new page with name and optional properties
-    /// This is used when creating pages via graph operations
-    pub fn new_page(
-        page_name: String,
-        properties: Option<serde_json::Value>,
-    ) -> Self {
-        let normalized_name = page_name.to_lowercase();
-        let now = chrono::Utc::now().to_rfc3339();
-        
-        PKMPageData {
-            name: page_name,
-            normalized_name: Some(normalized_name),
-            properties: properties.unwrap_or(json!({})),
-            created: now.clone(),
-            updated: now,
-            blocks: vec![],
-        }
-    }
-    /// Apply this page to the graph using GraphOps for proper WAL logging
-    pub async fn apply_to_graph(
-        &self,
-        app_state: &Arc<AppState>,
-        agent_id: Uuid,
-        graph_id: &Uuid,
-    ) -> Result<()> {
-        // Convert properties to JSON (already a Value, just need to parse)
-        let properties = if self.properties.is_null() || self.properties == json!({}) {
-            None
-        } else {
-            Some(self.properties.clone())
-        };
-        
-        // Create the page using GraphOps (which logs to WAL)
-        app_state.create_page(
-            agent_id,
-            self.name.clone(),
-            properties,
-            graph_id,
-            false, // don't skip WAL
-        ).await?;
-        
-        // Note: PageToBlock edges will be created when blocks are added
-        // with this page as their page_name
-        
-        Ok(())
-    }
-}
-
-// Helper functions for PKM-specific logic
-
-/// Build a map of block ID to block content for reference resolution
-fn build_block_content_map(graph: &GraphManager) -> HashMap<String, String> {
+/// Build a map of block ID -> content from a graph manager
+pub fn build_block_map(graph_manager: &GraphManager) -> HashMap<String, String> {
     let mut block_map = HashMap::new();
     
-    for node_idx in graph.graph.node_indices() {
-        if let Some(node) = graph.graph.node_weight(node_idx) {
+    for idx in graph_manager.graph.node_indices() {
+        if let Some(node) = graph_manager.graph.node_weight(idx) {
             if matches!(node.node_type, NodeType::Block) {
                 block_map.insert(node.pkm_id.clone(), node.content.clone());
             }
@@ -385,73 +250,299 @@ fn build_block_content_map(graph: &GraphManager) -> HashMap<String, String> {
     block_map
 }
 
-/// Ensure a page exists in the graph, creating a placeholder if necessary
-fn ensure_page_exists(graph: &mut GraphManager, page_name: &str) -> Result<NodeIndex> {
+// ============================================================================
+// Block Helper Functions
+// ============================================================================
+
+/// Create a block node with reference resolution
+pub fn create_block_with_resolution(
+    manager: &mut GraphManager,
+    content: String,
+    properties: Option<&serde_json::Value>,
+) -> Result<(String, Option<String>)> {
+    let block_id = uuid::Uuid::new_v4().to_string();
+    let internal_id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now();
     
+    // Parse properties
+    let props = properties
+        .map(|p| crate::utils::parse_properties(p))
+        .unwrap_or_default();
+    
+    // Resolve references if content contains them
+    let reference_content = if content.contains("((") {
+        let block_map = build_block_map(manager);
+        let mut visited = HashSet::new();
+        Some(resolve_block_references(&content, &block_map, &mut visited, Some(&block_id)))
+    } else {
+        None
+    };
+    
+    // Create the node
+    manager.create_or_update_node(
+        block_id.clone(),
+        internal_id,
+        NodeType::Block,
+        content,
+        reference_content.clone(),
+        props,
+        now,
+        now,
+    ).map_err(|e| GraphError::lifecycle(e.to_string()))?;
+    
+    Ok((block_id, reference_content))
+}
+
+/// Update a block with reference resolution
+pub fn update_block_with_resolution(
+    manager: &mut GraphManager,
+    block_id: &str,
+    new_content: String,
+) -> Result<Option<String>> {
+    let node_idx = manager.find_node(block_id)
+        .ok_or_else(|| GraphError::not_found(format!("Block not found: {}", block_id)))?;
+    
+    let existing_node = manager.get_node(node_idx)
+        .ok_or_else(|| GraphError::not_found(format!("Block not found: {}", block_id)))?
+        .clone();
+    
+    // Resolve references if content changed and contains them
+    let reference_content = if new_content != existing_node.content && new_content.contains("((") {
+        let block_map = build_block_map(manager);
+        let mut visited = HashSet::new();
+        Some(resolve_block_references(&new_content, &block_map, &mut visited, Some(block_id)))
+    } else {
+        existing_node.reference_content
+    };
+    
+    manager.create_or_update_node(
+        existing_node.pkm_id,
+        existing_node.id,
+        existing_node.node_type,
+        new_content,
+        reference_content.clone(),
+        existing_node.properties,
+        existing_node.created_at,
+        chrono::Utc::now(),
+    ).map_err(|e| GraphError::lifecycle(e.to_string()))?;
+    
+    Ok(reference_content)
+}
+
+/// Setup block relationships (parent and page)
+pub fn setup_block_relationships(
+    manager: &mut GraphManager,
+    block_id: &str,
+    parent_id: Option<&str>,
+    page_name: Option<&str>,
+) -> Result<()> {
+    // Handle parent-child relationship
+    if let Some(parent) = parent_id {
+        if let Some(parent_idx) = manager.find_node(parent) {
+            if let Some(child_idx) = manager.find_node(block_id) {
+                manager.add_edge(parent_idx, child_idx, EdgeType::ParentChild, 1.0);
+            }
+        }
+    }
+    
+    // Handle page relationship
+    if let Some(page) = page_name {
+        let page_idx = ensure_page_exists(manager, page)?;
+        if let Some(block_idx) = manager.find_node(block_id) {
+            manager.add_edge(page_idx, block_idx, EdgeType::PageToBlock, 1.0);
+        }
+    }
+    
+    Ok(())
+}
+
+// ============================================================================
+// Page Helper Functions
+// ============================================================================
+
+/// Ensure a page exists, creating if necessary
+pub fn ensure_page_exists(
+    manager: &mut GraphManager,
+    page_name: &str,
+) -> Result<NodeIndex> {
     let normalized_name = page_name.to_lowercase();
     
     // Check both original and normalized names
-    if let Some(idx) = graph.find_node(page_name)
-        .or_else(|| graph.find_node(&normalized_name)) {
+    if let Some(idx) = manager.find_node(page_name)
+        .or_else(|| manager.find_node(&normalized_name)) {
         return Ok(idx);
     }
     
-    // Create placeholder page
-    let idx = graph.create_node(
+    // Create the page if it doesn't exist
+    let idx = manager.create_node(
         normalized_name,
         uuid::Uuid::new_v4().to_string(),
         NodeType::Page,
         page_name.to_string(),
         None,
         HashMap::new(),
-        Utc::now(),
-        Utc::now(),
+        chrono::Utc::now(),
+        chrono::Utc::now(),
     );
     Ok(idx)
 }
 
-/// Process a PKM reference and create appropriate edges
-fn process_reference(
-    graph: &mut GraphManager,
-    source_idx: NodeIndex,
-    reference: &PKMReference,
+/// Create or update a page with properties
+pub fn create_or_update_page(
+    manager: &mut GraphManager,
+    page_name: &str,
+    properties: Option<&serde_json::Value>,
 ) -> Result<()> {
-    match reference.r#type.as_str() {
-        "page" => {
-            let target_idx = ensure_page_exists(graph, &reference.name)?;
-            graph.add_edge(source_idx, target_idx, EdgeType::PageRef, 1.0);
+    let normalized_name = page_name.to_lowercase();
+    let now = chrono::Utc::now();
+    
+    // Check if page already exists
+    if let Some(node_idx) = manager.find_node(page_name)
+        .or_else(|| manager.find_node(&normalized_name)) {
+        
+        // Page exists - just update properties if provided
+        if let Some(props) = properties {
+            if let Some(existing_node) = manager.get_node(node_idx) {
+                // Update only properties and timestamp
+                let mut node_data = existing_node.clone();
+                node_data.properties = crate::utils::parse_properties(props);
+                node_data.updated_at = now;
+                
+                manager.create_or_update_node(
+                    node_data.pkm_id,
+                    node_data.id,
+                    node_data.node_type,
+                    node_data.content,
+                    node_data.reference_content,
+                    node_data.properties,
+                    node_data.created_at,
+                    node_data.updated_at,
+                ).map_err(|e| GraphError::lifecycle(e.to_string()))?;
+            }
         }
-        "block" => {
-            let target_idx = if let Some(idx) = graph.find_node(&reference.id) {
-                idx
-            } else {
-                // Create placeholder block
-                graph.create_node(
-                    reference.id.clone(),
-                    uuid::Uuid::new_v4().to_string(),
-                    NodeType::Block,
-                    String::new(),
-                    None,
-                    HashMap::new(),
-                    Utc::now(),
-                    Utc::now(),
-                )
-            };
-            graph.add_edge(source_idx, target_idx, EdgeType::BlockRef, 1.0);
-        }
-        "tag" => {
-            let target_idx = ensure_page_exists(graph, &reference.name)?;
-            graph.add_edge(source_idx, target_idx, EdgeType::Tag, 1.0);
-        }
-        "property" => {
-            // Properties are stored in the node's properties map, not as edges
-            // So we don't need to do anything here
-        }
-        _ => {
-            return Err(ImportError::validation(
-                format!("Unknown reference type: {}", reference.r#type)
-            ).into());
-        }
+    } else {
+        // Page doesn't exist - create it
+        let internal_id = uuid::Uuid::new_v4().to_string();
+        let default_props = json!({});
+        let props = properties.unwrap_or(&default_props);
+        
+        manager.create_or_update_node(
+            normalized_name,
+            internal_id,
+            NodeType::Page,
+            page_name.to_string(),
+            None, // Pages don't have reference content
+            crate::utils::parse_properties(props),
+            now,
+            now,
+        ).map_err(|e| GraphError::lifecycle(e.to_string()))?;
     }
+    
     Ok(())
+}
+
+/// Find a page for deletion by original or normalized name
+pub fn find_page_for_deletion(
+    manager: &GraphManager,
+    page_name: &str,
+) -> Result<(String, NodeIndex)> {
+    let normalized_name = page_name.to_lowercase();
+    
+    // Try both the original name and normalized name
+    let node_idx = manager.find_node(page_name)
+        .or_else(|| manager.find_node(&normalized_name))
+        .ok_or_else(|| GraphError::not_found(format!("Page not found: {}", page_name)))?;
+    
+    Ok((normalized_name, node_idx))
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_resolve_simple_block_reference() {
+        let mut block_map = HashMap::new();
+        block_map.insert("block-123".to_string(), "This is the referenced content".to_string());
+        
+        let content = "See ((block-123)) for details";
+        let mut visited = HashSet::new();
+        let result = resolve_block_references(content, &block_map, &mut visited, None);
+        
+        assert_eq!(result, "See This is the referenced content for details");
+    }
+    
+    #[test]
+    fn test_resolve_multiple_block_references() {
+        let mut block_map = HashMap::new();
+        block_map.insert("block-1".to_string(), "first block".to_string());
+        block_map.insert("block-2".to_string(), "second block".to_string());
+        
+        let content = "Both ((block-1)) and ((block-2)) are important";
+        let mut visited = HashSet::new();
+        let result = resolve_block_references(content, &block_map, &mut visited, None);
+        
+        assert_eq!(result, "Both first block and second block are important");
+    }
+    
+    #[test]
+    fn test_resolve_nested_block_references() {
+        let mut block_map = HashMap::new();
+        block_map.insert("block-a".to_string(), "Block A references ((block-b))".to_string());
+        block_map.insert("block-b".to_string(), "Block B references ((block-c))".to_string());
+        block_map.insert("block-c".to_string(), "Block C content".to_string());
+        
+        let content = "Start with ((block-a))";
+        let mut visited = HashSet::new();
+        let result = resolve_block_references(content, &block_map, &mut visited, None);
+        
+        assert_eq!(result, "Start with Block A references Block B references Block C content");
+    }
+    
+    #[test]
+    fn test_resolve_circular_references() {
+        let mut block_map = HashMap::new();
+        block_map.insert("block-a".to_string(), "A references ((block-b))".to_string());
+        block_map.insert("block-b".to_string(), "B references ((block-a))".to_string());
+        
+        let content = "Start: ((block-a))";
+        let mut visited = HashSet::new();
+        let result = resolve_block_references(content, &block_map, &mut visited, None);
+        
+        // Should expand both but stop at the circular reference
+        assert_eq!(result, "Start: A references B references ((block-a))");
+    }
+    
+    #[test]
+    fn test_resolve_self_reference() {
+        let mut block_map = HashMap::new();
+        block_map.insert("self-ref".to_string(), "This block references itself: ((self-ref))".to_string());
+        
+        let content = "((self-ref))";
+        let mut visited = HashSet::new();
+        let result = resolve_block_references(content, &block_map, &mut visited, Some("self-ref"));
+        
+        // Should not expand self-reference
+        assert_eq!(result, "((self-ref))");
+    }
+    
+    #[test]
+    fn test_resolve_missing_block_reference() {
+        let block_map = HashMap::new();
+        
+        let content = "Reference to ((missing-block)) should remain";
+        let mut visited = HashSet::new();
+        let result = resolve_block_references(content, &block_map, &mut visited, None);
+        
+        assert_eq!(result, "Reference to ((missing-block)) should remain");
+    }
+    
+    // Note: Tests for create_block_with_resolution and update_block_with_resolution
+    // require a real GraphManager with filesystem access, so they belong in integration
+    // tests rather than unit tests. The core reference resolution logic is tested above
+    // with pure functions that don't require filesystem access.
 }

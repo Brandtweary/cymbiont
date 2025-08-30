@@ -19,6 +19,9 @@
 //! - Clear agent accountability for all changes
 //! - Clean integration with transaction system
 //! 
+//! PKM-specific logic (block reference resolution, page normalization) is delegated to
+//! helper functions in `pkm_data.rs` to maintain separation of concerns.
+//! 
 //! ## Core Operations
 //! 
 //! ### Block Operations
@@ -123,13 +126,13 @@
 use crate::{
     AppState,
     agent::agent_registry::AgentRegistry,
-    graph::graph_manager::{NodeType, EdgeType},
     graph::graph_registry::GraphRegistry,
     storage::{ 
         wal::{
             Operation, GraphOperation
         }
     },
+    import::pkm_data,
 };
 use std::sync::Arc;
 use tracing::{warn, info};
@@ -285,62 +288,20 @@ impl GraphOps for Arc<AppState> {
             .ok_or_else(|| GraphError::not_found(graph_id.to_string()))?;
         let mut manager = manager_lock.write_or_panic("add block - write manager").await;
         
-        // Generate block ID
-        let block_id = uuid::Uuid::new_v4().to_string();
-        let internal_id = uuid::Uuid::new_v4().to_string();
-        let now = chrono::Utc::now();
-        
-        // Parse properties
-        let props = properties.unwrap_or_else(|| json!({}));
-        let parsed_props = crate::utils::parse_properties(&props);
-        
-        // Create the block node
-        manager.create_or_update_node(
-            block_id.clone(),
-            internal_id,
-            NodeType::Block,
+        // Create block with reference resolution
+        let (block_id, _reference_content) = pkm_data::create_block_with_resolution(
+            &mut manager,
             content,
-            None, // Reference content can be resolved later if needed
-            parsed_props,
-            now,
-            now,
-        ).map_err(|e| GraphError::lifecycle(e.to_string()))?;
+            properties.as_ref(),
+        )?;
         
-        // Handle parent-child relationship
-        if let Some(parent) = parent_id {
-            if let Some(parent_idx) = manager.find_node(&parent) {
-                if let Some(child_idx) = manager.find_node(&block_id) {
-                    manager.add_edge(parent_idx, child_idx, EdgeType::ParentChild, 1.0);
-                }
-            }
-        }
-        
-        // Handle page relationship
-        if let Some(page) = page_name {
-            // Ensure page exists
-            let normalized_page = page.to_lowercase();
-            let page_idx = if let Some(idx) = manager.find_node(&page)
-                .or_else(|| manager.find_node(&normalized_page)) {
-                idx
-            } else {
-                // Create the page if it doesn't exist
-                manager.create_node(
-                    normalized_page,
-                    uuid::Uuid::new_v4().to_string(),
-                    NodeType::Page,
-                    page,
-                    None,
-                    std::collections::HashMap::new(),
-                    now,
-                    now,
-                )
-            };
-            
-            // Add PageToBlock edge
-            if let Some(block_idx) = manager.find_node(&block_id) {
-                manager.add_edge(page_idx, block_idx, EdgeType::PageToBlock, 1.0);
-            }
-        }
+        // Setup relationships
+        pkm_data::setup_block_relationships(
+            &mut manager,
+            &block_id,
+            parent_id.as_deref(),
+            page_name.as_deref(),
+        )?;
         
         // Commit the transaction
         tx.commit().await
@@ -371,9 +332,6 @@ impl GraphOps for Arc<AppState> {
             }))
         };
         
-        // Clone for error handling
-        let block_id_for_error = block_id.clone();
-        
         let coordinator = &self.transaction_coordinator;
         let tx = coordinator.begin(operation).await
             .map_err(|e| GraphError::lifecycle(e.to_string()))?;
@@ -384,26 +342,12 @@ impl GraphOps for Arc<AppState> {
             .ok_or_else(|| GraphError::not_found(graph_id.to_string()))?;
         let mut manager = manager_lock.write_or_panic("update block - write manager").await;
         
-        // Find the block node
-        let node_idx = manager.find_node(&block_id)
-            .ok_or_else(|| GraphError::node_not_found(block_id_for_error.clone(), *graph_id))?;
-        
-        // Get existing node data
-        let existing_node = manager.get_node(node_idx)
-            .ok_or_else(|| GraphError::node_not_found(block_id_for_error.clone(), *graph_id))?
-            .clone();
-        
-        // Update the content and timestamp
-        manager.create_or_update_node(
-            existing_node.pkm_id,
-            existing_node.id,
-            existing_node.node_type,
-            content, // New content
-            None, // Reference content can be resolved later if needed
-            existing_node.properties,
-            existing_node.created_at,
-            chrono::Utc::now(), // Update timestamp
-        ).map_err(|e| GraphError::lifecycle(e.to_string()))?;
+        // Update block with reference resolution
+        pkm_data::update_block_with_resolution(
+            &mut manager,
+            &block_id,
+            content,
+        )?;
         
         // Commit the transaction
         tx.commit().await
@@ -486,50 +430,12 @@ impl GraphOps for Arc<AppState> {
             .ok_or_else(|| GraphError::not_found(graph_id.to_string()))?;
         let mut manager = manager_lock.write_or_panic("create page - write manager").await;
         
-        // Create the page directly in GraphManager
-        let normalized_name = page_name.to_lowercase();
-        
-        // Check if page already exists
-        if let Some(node_idx) = manager.find_node(&page_name)
-            .or_else(|| manager.find_node(&normalized_name)) {
-            
-            // Page exists - just update properties if provided
-            if let Some(props) = properties {
-                if let Some(existing_node) = manager.get_node(node_idx) {
-                    // Update only properties and timestamp
-                    let mut node_data = existing_node.clone();
-                    node_data.properties = crate::utils::parse_properties(&props);
-                    node_data.updated_at = chrono::Utc::now();
-                    
-                    manager.create_or_update_node(
-                        node_data.pkm_id,
-                        node_data.id,
-                        node_data.node_type,
-                        node_data.content,
-                        node_data.reference_content,
-                        node_data.properties,
-                        node_data.created_at,
-                        node_data.updated_at,
-                    ).map_err(|e| GraphError::lifecycle(e.to_string()))?;
-                }
-            }
-        } else {
-            // Page doesn't exist - create it
-            let now = chrono::Utc::now();
-            let internal_id = uuid::Uuid::new_v4().to_string();
-            let props = properties.unwrap_or_else(|| json!({}));
-            
-            manager.create_or_update_node(
-                normalized_name,
-                internal_id,
-                NodeType::Page,
-                page_name,
-                None, // Pages don't have reference content
-                crate::utils::parse_properties(&props),
-                now,
-                now,
-            ).map_err(|e| GraphError::lifecycle(e.to_string()))?;
-        }
+        // Create or update page with properties
+        pkm_data::create_or_update_page(
+            &mut manager,
+            &page_name,
+            properties.as_ref(),
+        )?;
         
         // Commit the transaction
         tx.commit().await
@@ -565,20 +471,15 @@ impl GraphOps for Arc<AppState> {
             .ok_or_else(|| GraphError::not_found(graph_id.to_string()))?;
         let mut manager = manager_lock.write_or_panic("delete page - write manager").await;
         
-        // Pages are stored with normalized names as keys
-        let normalized_name = page_name.to_lowercase();
+        // Find page by original or normalized name
+        let (normalized_name, node_idx) = pkm_data::find_page_for_deletion(
+            &manager,
+            &page_name,
+        ).map_err(|_| GraphError::node_not_found(page_name_for_error, *graph_id))?;
         
-        // Try both the original name and normalized name
-        let node_idx = manager.find_node(&page_name)
-            .or_else(|| manager.find_node(&normalized_name));
-            
-        if let Some(node_idx) = node_idx {
-            // Archive the node
-            manager.delete_nodes(vec![(normalized_name, node_idx)])
-                .map_err(|e| GraphError::lifecycle(e.to_string()))?;
-        } else {
-            return Err(GraphError::node_not_found(page_name_for_error, *graph_id).into());
-        }
+        // Archive the node
+        manager.delete_nodes(vec![(normalized_name, node_idx)])
+            .map_err(|e| GraphError::lifecycle(e.to_string()))?;
         
         // Commit the transaction
         tx.commit().await

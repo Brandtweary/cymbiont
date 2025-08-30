@@ -6,10 +6,12 @@ Data import functionality for PKM systems, currently supporting Logseq markdown 
 ## Core Components
 
 ### Data Structures
-- **pkm_data.rs**: PKM-agnostic data types
+- **pkm_data.rs**: PKM-agnostic data types and helpers
   - `PKMBlockData`: Block content with hierarchy
   - `PKMPageData`: Page metadata and block lists
   - `PKMReference`: Cross-references between blocks
+  - Helper functions for block reference resolution
+  - `((block-id))` pattern expansion with circular reference prevention
 
 ### Import Pipeline
 - **logseq.rs**: Logseq-specific parsing
@@ -23,20 +25,14 @@ Data import functionality for PKM systems, currently supporting Logseq markdown 
   - Prime agent authorization
   - Progress tracking
 
-- **reference_resolver.rs**: Block reference resolution
-  - `((block-id))` pattern matching
-  - Circular reference prevention
-  - Two-pass resolution strategy
-
 ## Import Flow 🔄
 
 1. **Discovery**: Find all .md files in Logseq directory
 2. **Parse**: Extract frontmatter and block hierarchies
 3. **Transform**: Convert to PKM data structures
 4. **Create Graph**: Initialize new graph with metadata
-5. **Apply Data**: Insert pages and blocks with edges
-6. **Resolve References**: Link block references
-7. **Authorize Agent**: Grant prime agent access
+5. **Apply Data**: Insert pages and blocks with edges (references resolved inline)
+6. **Authorize Agent**: Grant prime agent access
 
 ## Key Functions
 
@@ -48,11 +44,13 @@ import_logseq_graph(
     graph_name // Optional custom name
 ) -> Result<Uuid>
 
-// PKM to graph transformation
-pkm_data.apply_to_graph(
-    graph_manager,
-    block_map  // For reference resolution
-) -> Result<()>
+// Block reference resolution helper
+resolve_block_references(
+    content: &str,
+    block_map: &HashMap<String, String>,
+    visited: &mut HashSet<String>,
+    current_block_id: Option<&str>
+) -> String
 ```
 
 ## Edge Types 🔗

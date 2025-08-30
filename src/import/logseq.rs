@@ -77,7 +77,7 @@
 //!
 //! This module integrates with the broader Cymbiont import system through:
 //! - **PKM Data Types**: Produces `PKMBlockData` and `PKMPageData` for graph application
-//! - **Reference Resolver**: Uses shared reference resolution logic from `reference_resolver.rs`
+//! - **Reference Resolver**: Uses shared reference resolution logic from `pkm_data.rs`
 //! - **Error System**: Reports import errors through the centralized error hierarchy
 //! - **Graph Manager**: Resulting data is applied to graphs via `GraphManager` operations
 //!
@@ -91,9 +91,8 @@ use chrono::Utc;
 use regex::Regex;
 use serde_json::json;
 use tracing::error;
-use super::pkm_data::{PKMBlockData, PKMPageData, PKMReference};
+use super::pkm_data::{PKMBlockData, PKMPageData, PKMReference, resolve_block_references};
 use crate::error::*;
-use super::reference_resolver::resolve_block_references;
 
 /// A Logseq block with its content and metadata
 #[derive(Debug, Clone)]
@@ -491,7 +490,6 @@ fn normalize_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::import::reference_resolver::resolve_block_references;
     
     #[test]
     fn test_parse_property() {

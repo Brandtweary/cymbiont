@@ -25,10 +25,9 @@ cymbiont/
 │   │   └── schemas.rs             # Ollama-compatible tool schemas for function calling
 │   ├── import/                    # Data import functionality
 │   │   ├── mod.rs                 # Import module exports and errors
-│   │   ├── pkm_data.rs            # PKM data structures
+│   │   ├── pkm_data.rs            # PKM data structures and helper functions
 │   │   ├── logseq.rs              # Logseq-specific parsing
-│   │   ├── import_utils.rs        # Import coordination with agent authorization
-│   │   └── reference_resolver.rs  # Block reference resolution
+│   │   └── import_utils.rs        # Import coordination with agent authorization
 │   ├── server/                    # Server-specific functionality - see src/server/CLAUDE.md
 │   │   ├── mod.rs                 # Server module exports
 │   │   ├── server.rs              # Server lifecycle and port management
@@ -274,13 +273,15 @@ cymbiont/
 **Details**: See `src/import/CLAUDE.md`
 
 ### import/pkm_data.rs
-**Purpose**: PKM data structures and graph application
+**Purpose**: PKM data structures and helper functions
 **Types**: `PKMBlockData` (hierarchy, properties), `PKMPageData` (metadata), `PKMReference`
-**Methods**:
-- `apply_to_graph()` - Transform to nodes/edges
-- `new_block()`, `new_page()` - Factory methods
-**Node types**: Page, Block, ArchivedPage, ArchivedBlock
-**Edge types**: PageRef, BlockRef, PageToBlock, ParentChild
+**Helper functions**:
+- `create_block_with_resolution()` - Create block with reference expansion
+- `update_block_with_resolution()` - Update block with reference resolution
+- `setup_block_relationships()` - Create parent-child and page edges
+- `create_or_update_page()` - Smart page creation/update
+- `resolve_block_references()` - Expand `((block-id))` patterns
+**Features**: Reference resolution with circular protection, page normalization
 
 ### import/logseq.rs
 **Purpose**: Logseq-specific parsing
@@ -297,13 +298,6 @@ cymbiont/
 **Steps**: Create graph → Import data → Authorize prime agent → Return UUID
 **Integration**: Uses `create_graph()` for consistent authorization
 
-### import/reference_resolver.rs
-**Purpose**: Block reference resolution
-**Functions**:
-- `build_block_map_from_graph()` - ID → NodeIndex mapping
-- `resolve_references_in_graph()` - Two-pass resolution
-- `extract_block_references()` - `((block-id))` patterns
-**Features**: Post-import resolution, circular prevention, reference_content updates
 
 ### server/auth.rs
 **Purpose**: Token-based authentication

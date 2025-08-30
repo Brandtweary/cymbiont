@@ -34,6 +34,7 @@ use crate::graph::graph_operations::GraphOps;
 use super::logseq;
 use crate::error::*;
 use crate::lock::AsyncRwLockExt;
+use serde_json;
 
 /// Result of a Logseq import operation
 #[derive(Debug)]
@@ -97,7 +98,20 @@ pub async fn import_logseq_graph(
     
     // Import pages first
     for page in pages {
-        match page.apply_to_graph(app_state, prime_agent_id, &graph_id).await {
+        // Convert properties for GraphOps
+        let properties = if page.properties.is_null() || page.properties == serde_json::json!({}) {
+            None
+        } else {
+            Some(page.properties.clone())
+        };
+        
+        match app_state.create_page(
+            prime_agent_id,
+            page.name.clone(),
+            properties,
+            &graph_id,
+            false, // don't skip WAL
+        ).await {
             Ok(_) => page_count += 1,
             Err(e) => {
                 let err_msg = format!("Failed to import page {}: {}", page.name, e);
@@ -109,7 +123,22 @@ pub async fn import_logseq_graph(
     
     // Import blocks after pages (so parent pages exist)
     for block in blocks {
-        match block.apply_to_graph(app_state, prime_agent_id, &graph_id).await {
+        // Convert properties for GraphOps
+        let properties = if block.properties.is_null() || block.properties == serde_json::json!({}) {
+            None
+        } else {
+            Some(block.properties.clone())
+        };
+        
+        match app_state.add_block(
+            prime_agent_id,
+            block.content.clone(),
+            block.parent.clone(),     // Parent block ID
+            block.page.clone(),       // Page name (will create page if needed)
+            properties,
+            &graph_id,
+            false, // don't skip WAL
+        ).await {
             Ok(_) => block_count += 1,
             Err(e) => {
                 let err_msg = format!("Failed to import block {}: {}", block.id, e);

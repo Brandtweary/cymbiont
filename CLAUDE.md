@@ -1,5 +1,11 @@
 # CYMBIONT DEVELOPMENT GUIDE
 
+## Documentation Structure
+- **cymbiont_architecture.md**: Complete codebase reference
+- **src/*/CLAUDE.md**: Module-specific guides
+- **tests/CLAUDE.md**: Test harness and utilities
+- **README.md**: User documentation
+
 ## Build/Test Commands
 ```bash
 # In cymbiont root
@@ -60,18 +66,8 @@ RUST_LOG=debug cargo run         # Run cymbiont with debug logging (do not chang
   - **error.rs**: Hierarchical error system with domain-specific types
   - **lock.rs**: Lock handling utilities with panic-on-poison strategy
   - **app_state.rs**: Centralized application state management with agent integration
-  - **graph/**: Graph management subsystem
-    - **mod.rs**: Graph module exports
-    - **graph_manager.rs**: Generic knowledge graph storage engine using petgraph
-    - **graph_operations.rs**: Multi-agent graph operations with runtime authorization
-    - **graph_registry.rs**: Multi-graph UUID management with agent tracking
-  - **agent/**: Agent abstraction layer
-    - **mod.rs**: Agent module exports
-    - **agent.rs**: Core Agent struct with conversation management
-    - **agent_registry.rs**: Agent lifecycle and authorization management
-    - **llm.rs**: LLM backend abstraction and MockLLM implementation
-    - **kg_tools.rs**: Static knowledge graph tool registry with 15 functional tools
-    - **schemas.rs**: Ollama-compatible tool schemas
+  - **graph/**: Graph management subsystem - see `src/graph/CLAUDE.md` for module details
+  - **agent/**: Agent abstraction layer - see `src/agent/CLAUDE.md` for module details
   - **import/**: Data import functionality - see `src/import/CLAUDE.md` for module details
   - **storage/**: Persistence layer - see `src/storage/CLAUDE.md` for module details
   - **server/**: HTTP/WebSocket server - see `src/server/CLAUDE.md` for API reference and module details

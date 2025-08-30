@@ -4,13 +4,9 @@
 WAL-based persistence layer with global transaction coordination and lazy entity loading.
 
 ## Core Components
-
-### Recovery
-- **recovery.rs**: WAL rebuild and lazy entity reconstruction
-
-### Transaction System
 - **wal.rs**: Sled-based WAL with operation categories (Graph/Agent/Registry)
 - **transaction_coordinator.rs**: Global coordinator at `data/transaction_log/`
+- **recovery.rs**: WAL rebuild and lazy entity reconstruction
 
 ## Key Patterns
 

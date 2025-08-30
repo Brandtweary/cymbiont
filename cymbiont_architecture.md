@@ -36,6 +36,7 @@ cymbiont/
 │   │   ├── websocket.rs           # WebSocket protocol and connection handling
 │   │   ├── websocket_utils.rs     # Shared helpers (auth, response, graph resolution)
 │   │   ├── websocket_commands/    # Command handlers by domain
+│   │   │   ├── mod.rs             # Command module exports
 │   │   │   ├── agent_commands.rs  # Agent chat and administration
 │   │   │   ├── graph_commands.rs  # Graph CRUD operations
 │   │   │   └── misc_commands.rs   # Auth, test, freeze commands
@@ -61,22 +62,16 @@ cymbiont/
 │   │   ├── mod.rs                 # Test environment setup
 │   │   ├── test_harness.rs        # TestServer lifecycle management
 │   │   └── wal_validation.rs      # WAL-based state validation
-│   └── integration/               # Integration test suite (single binary)
-│       ├── main.rs                # Test entry point
-│       ├── crash_recovery.rs      # Transaction recovery tests
-│       ├── http_logseq_import.rs  # HTTP API tests
-│       ├── websocket_commands.rs  # WebSocket tests
-│       ├── agent_commands.rs      # Agent chat and admin command tests
-│       ├── agent_tools.rs         # Complete agent tool execution test suite
-│       ├── cli_commands.rs        # CLI command tests with contract enforcement
-│       └── freeze_mechanism.rs    # Operation freeze/unfreeze tests
+│   └── integration/               # Integration test suite (single binary - multiple test modules)
 ├── autodebugger/                  # Git submodule: LLM developer utilities toolbag
 └── build.rs                       # Build script: enforces tracing macro usage
 ```
 
 ## Build Script (build.rs)
-- **Enforce tracing**: Fail on println!/eprintln!/print!/eprint!/dbg! in src/ or tests/
-- **Extract CLI commands**: Parse `cli_commands!` macro for test contract enforcement
+- **Enforce tracing**: Scans src/ and tests/ directories, fails build if finds println!/eprintln!/print!/eprint!/dbg!
+- **Extract CLI commands**: Parses `cli_commands!` macro to generate test verification contract
+- **Rationale**: Forces use of tracing macros for proper structured logging
+- **Exception**: Allows these macros in build.rs itself and main.rs (for early bootstrap)
 
 ## Module Requirements and Data Flow
 
@@ -123,18 +118,23 @@ cymbiont/
 **Lock ordering**: Use `lock_registries_for_write()` for graph→agent order
 
 ### app_state.rs
-**Purpose**: Central state coordination
-**Type**: `AppState` - coordinates graphs, registries, agents, transactions, WebSocket
-**Key methods**:
-- `new_cli()`, `new_server()` - mode-specific initialization
-- `get_or_create_graph_manager()` - lazy graph loading
-- `get_or_load_agent()`, `activate_agent()`, `deactivate_agent()` - agent lifecycle
-- `create_new_graph()`, `delete_graph_completely()` - graph lifecycle
-- `with_graph_transaction()` - transaction wrapper
-- `run_graph_recovery()`, `run_all_graphs_recovery()` - crash recovery
-- `cleanup_and_save()` - shutdown persistence
-**Concurrency**: Per-agent/graph RwLocks, brief HashMap access
-**Lock ordering**: Always graph_registry → agent_registry (use helper)
+**Purpose**: Pure resource container - central coordination hub
+**Architecture**: All fields public, NO helper methods (business logic in domain modules)
+**Resources**:
+- `graph_managers`: HashMap of graph managers
+- `agents`: HashMap of active agents
+- `transaction_coordinator`: Global WAL coordinator
+- `graph_registry`, `agent_registry`: Metadata registries
+- `ws_connections`: WebSocket connection tracking (server mode)
+- `auth_token`: Authentication token
+- `operation_freeze`: Test infrastructure
+**Key methods** (minimal - just lifecycle):
+- `new_with_config()` - Initialize with configuration
+- `cleanup_and_save()` - Shutdown persistence
+- `initiate_graceful_shutdown()` - Start shutdown sequence
+- `wait_for_transactions()` - Wait for transaction completion
+**Pattern**: Weak refs passed to subsystems, which access resources directly
+**Delegation**: GraphOps trait, registries, and domain modules handle all logic
 
 ### server/http_api.rs
 **Purpose**: HTTP API endpoints
@@ -144,6 +144,7 @@ cymbiont/
 ### graph/mod.rs
 **Purpose**: Graph module exports
 **Exports**: `graph_manager`, `graph_operations`, `graph_registry`
+**Details**: See `src/graph/CLAUDE.md` for module guide
 
 ### graph/graph_manager.rs
 **Purpose**: Generic petgraph-based storage engine
@@ -188,6 +189,10 @@ cymbiont/
 **Data**: `open_graphs: HashSet<Uuid>`, `authorized_agents` per graph
 **Persistence**: Open state survives restarts
 **Concurrency**: `Arc<RwLock<GraphRegistry>>` with panic-on-poison
+
+### agent/mod.rs
+**Purpose**: Agent module exports
+**Details**: See `src/agent/CLAUDE.md` for module guide
 
 ### agent/agent_registry.rs
 **Purpose**: Agent lifecycle and authorization management

@@ -10,7 +10,7 @@
 //! use graph_operations::GraphOps;
 //! 
 //! // Operations require agent_id for authorization
-//! app_state.add_block(agent_id, content, parent_id, page_name, properties, &graph_id).await?;
+//! app_state.add_block(agent_id, content, parent_id, page_name, properties, &graph_id, skip_wal).await?;
 //! ```
 //! 
 //! This pattern provides several benefits:
@@ -55,12 +55,14 @@
 //! 
 //! The Operation enum stores full API parameters:
 //! ```rust
-//! Operation::CreateBlock {
+//! Operation::Graph(GraphOperation::CreateBlock {
+//!     graph_id: Uuid,
+//!     agent_id: Uuid,
 //!     content: String,
 //!     parent_id: Option<String>,
 //!     page_name: Option<String>,
 //!     properties: Option<serde_json::Value>,
-//! }
+//! })
 //! ```
 //! 
 //! ## Crash Recovery
@@ -91,10 +93,11 @@
 //!    - Return appropriate Result<T> type
 //! 
 //! 3. **Implement the operation** in `impl GraphOps for Arc<AppState>`:
-//!    - Start with authorization check using agent_registry
-//!    - Create Operation enum with parameters for transaction log
-//!    - Use TransactionCoordinator for ACID guarantees
-//!    - Handle errors appropriately (GraphError vs NodeNotFound)
+//!    - Call `check_authorization()` to verify agent access
+//!    - Create Operation enum (or None if skip_wal)
+//!    - Call `coordinator.begin(operation)` to start transaction
+//!    - Perform the actual graph modifications
+//!    - Call `tx.commit()` to finalize the transaction
 //! 
 //! 4. **Add to RecoveryContext** in `storage/recovery.rs`:
 //!    - Add match arm in execute_operation() method

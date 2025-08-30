@@ -111,7 +111,8 @@ impl<T: 'static> AsyncRwLockExt<T> for Arc<AsyncRwLock<T>> {
 
 // ============== LOCK ORDERING ==============
 
-use crate::storage::{GraphRegistry, AgentRegistry};
+use crate::graph::graph_registry::GraphRegistry;
+use crate::agent::agent_registry::AgentRegistry;
 
 /// Acquire both registries for write access in the correct order to prevent deadlocks (async version)
 /// 

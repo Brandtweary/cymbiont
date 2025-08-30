@@ -30,7 +30,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tracing::{info, error};
 use crate::app_state::AppState;
-use crate::graph_operations::GraphOps;
+use crate::graph::graph_operations::GraphOps;
 use super::logseq;
 use crate::error::*;
 use crate::lock::AsyncRwLockExt;

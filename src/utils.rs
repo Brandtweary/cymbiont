@@ -45,6 +45,12 @@
 //! - String values are preserved as-is
 //! - Non-string values are converted to string representation
 //! - Supports nested object flattening for metadata storage
+//!
+//! ## Error Handling
+//!
+//! All utility functions use the global Result type and domain-specific error types.
+//! Process management operations fail gracefully with informative error messages
+//! when platform-specific commands are unavailable or processes cannot be terminated.
 
 use std::process::Command;
 use std::fs;

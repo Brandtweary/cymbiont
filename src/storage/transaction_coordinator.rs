@@ -68,15 +68,12 @@
 //! ensuring that only one transaction succeeds while others receive clear
 //! error messages about the duplication.
 //! 
-//! ## Helper Functions for AppState Verbosity Reduction
+//! ## Transaction Coordination
 //! 
-//! This module provides extracted helper functions to simplify AppState:
-//! - `run_single_graph_recovery_helper()` - Core recovery logic without circular dependencies
-//! - `save_graph_after_recovery_helper()` - Graph saving with error logging that never fails
-//! 
-//! These helpers maintain the original AppState behavior while reducing code duplication.
+//! The TransactionCoordinator manages the global WAL and ensures ACID guarantees
+//! across all graph and agent operations. Recovery is handled by the recovery module.
 
-use crate::storage::transaction_log::{Operation, GraphOperation, Transaction, TransactionLog, TransactionState, RegistryOperation, GraphRegistryOp, AgentRegistryOp};
+use crate::storage::wal::{Operation, GraphOperation, Transaction, TransactionLog, TransactionState, RegistryOperation, GraphRegistryOp, AgentRegistryOp};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{RwLock, Notify};

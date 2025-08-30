@@ -57,11 +57,12 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 use uuid::Uuid;
 use crate::app_state::AppState;
-use crate::graph_operations::GraphOps;
+use crate::graph::graph_operations::GraphOps;
 use crate::lock::AsyncRwLockExt;
 use crate::error::*;
 use crate::agent::schemas::ToolDefinition;
-use crate::agent::agent::Agent;
+use crate::agent::agent::{Agent, ToolResult};
+use crate::agent::llm::ToolCall;
 
 
 
@@ -126,9 +127,8 @@ pub async fn execute_tool(
 pub async fn execute_tools_stateless(
     app_state: &Arc<AppState>,
     agent_id: Uuid,
-    tool_calls: Vec<crate::agent::llm::ToolCall>,
-) -> Result<Vec<crate::agent::agent::ToolResult>> {
-    use crate::agent::agent::ToolResult;
+    tool_calls: Vec<ToolCall>,
+) -> Result<Vec<ToolResult>> {
     use crate::lock::AsyncRwLockExt;
     
     tracing::debug!("Phase 3: Executing {} tools for agent {}", tool_calls.len(), agent_id);

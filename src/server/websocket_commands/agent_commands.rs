@@ -81,6 +81,10 @@ use std::sync::Arc;
 use uuid::Uuid;
 use crate::error::*;
 use crate::AppState;
+use crate::agent::agent_registry::AgentRegistry;
+use crate::agent::llm::Message as LlmMessage;
+#[allow(deprecated)] // Temporary until CQRS refactor
+use crate::server::message_queue::{AgentRequest, queue_agent_message};
 use crate::server::websocket::Command;
 use crate::server::websocket_utils::{send_success_response, send_error_response};
 use crate::lock::{lock_registries_for_write, AsyncRwLockExt};
@@ -123,7 +127,7 @@ pub async fn handle(
             
             // Queue the message for async processing
             #[allow(deprecated)] // Temporary until CQRS refactor
-            let request = crate::server::message_queue::AgentRequest {
+            let request = AgentRequest {
                 request_id,
                 connection_id: connection_id.to_string(),
                 message,
@@ -133,7 +137,7 @@ pub async fn handle(
             
             // Queue message for async processing - ACK will be sent in Phase 1
             #[allow(deprecated)] // Temporary until CQRS refactor
-            crate::server::message_queue::queue_agent_message(agent_id, request).await?;
+            queue_agent_message(agent_id, request).await?;
             
             // No immediate response - the message queue handles ACK and async response
         }
@@ -164,7 +168,7 @@ pub async fn handle(
                 if !registry.is_agent_active(&selected_id) {
                     drop(registry);
                     // Try to activate the agent using the complete workflow
-                    crate::storage::AgentRegistry::activate_agent_complete(
+                    AgentRegistry::activate_agent_complete(
                         state.agent_registry.clone(),
                         selected_id,
                         false  // don't skip_wal - this is a real activation
@@ -272,21 +276,21 @@ pub async fn handle(
                     // Convert messages to JSON format
                     messages.iter().map(|msg| {
                         match msg {
-                            crate::agent::llm::Message::User { content, timestamp, .. } => {
+                            LlmMessage::User { content, timestamp, .. } => {
                                 serde_json::json!({
                                     "role": "user",
                                     "content": content,
                                     "timestamp": timestamp.to_rfc3339()
                                 })
                             }
-                            crate::agent::llm::Message::Assistant { content, timestamp } => {
+                            LlmMessage::Assistant { content, timestamp } => {
                                 serde_json::json!({
                                     "role": "assistant",
                                     "content": content,
                                     "timestamp": timestamp.to_rfc3339()
                                 })
                             }
-                            crate::agent::llm::Message::Tool { name, args, result, timestamp } => {
+                            LlmMessage::Tool { name, args, result, timestamp } => {
                                 serde_json::json!({
                                     "role": "tool",
                                     "name": name,
@@ -374,7 +378,7 @@ pub async fn handle(
         Command::CreateAgent { name, description } => {
             
             // Use the complete workflow method to create agent
-            let agent_info = crate::storage::AgentRegistry::create_agent_complete(
+            let agent_info = AgentRegistry::create_agent_complete(
                 state.agent_registry.clone(),
                 Some(name.clone()),
                 description.clone(),
@@ -469,7 +473,7 @@ pub async fn handle(
             };
             
             // Activate the agent using the complete workflow
-            crate::storage::AgentRegistry::activate_agent_complete(
+            AgentRegistry::activate_agent_complete(
                 state.agent_registry.clone(),
                 resolved_id,
                 false  // don't skip_wal - this is a real activation
@@ -550,7 +554,7 @@ pub async fn handle(
             };
             
             // Authorize agent for graph using the complete workflow
-            crate::storage::AgentRegistry::authorize_agent_for_graph_complete(
+            AgentRegistry::authorize_agent_for_graph_complete(
                 state.agent_registry.clone(),
                 resolved_agent_id,
                 resolved_graph_id,

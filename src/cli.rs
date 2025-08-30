@@ -108,7 +108,8 @@ use uuid::Uuid;
 use crate::error::*;
 use crate::lock::{AsyncRwLockExt, lock_registries_for_write};
 use crate::app_state::AppState;
-use crate::graph_operations::GraphOps;
+use crate::agent::agent_registry::AgentRegistry;
+use crate::graph::graph_operations::GraphOps;
 use crate::import;
 
 /// CLI Commands Contract Enforcement Macro
@@ -320,7 +321,7 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
     // Create agent
     if let Some(agent_name) = &args.create_agent {
         // Use the complete workflow method
-        let agent_info = crate::storage::AgentRegistry::create_agent_complete(
+        let agent_info = AgentRegistry::create_agent_complete(
             app_state.agent_registry.clone(),
             Some(agent_name.clone()),
             args.agent_description.clone(),
@@ -462,7 +463,7 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
         };
         
         // Authorize agent for graph using the complete workflow
-        crate::storage::AgentRegistry::authorize_agent_for_graph_complete(
+        AgentRegistry::authorize_agent_for_graph_complete(
             app_state.agent_registry.clone(),
             resolved_agent_id,
             resolved_graph_id,

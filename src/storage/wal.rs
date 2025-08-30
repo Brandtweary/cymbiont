@@ -366,7 +366,7 @@ impl TransactionLog {
                 pending_tree.insert(tx_id.as_bytes(), b"")?;
                 
                 Ok(())
-            }).map_err(|e: sled::transaction::TransactionError<sled::Error>| StorageError::transaction_log(format!("Failed to append transaction: {:?}", e)))?;
+            }).map_err(|e: sled::transaction::TransactionError<sled::Error>| StorageError::wal(format!("Failed to append transaction: {:?}", e)))?;
         
         Ok(tx_id)
     }
@@ -404,7 +404,7 @@ impl TransactionLog {
         match (&transaction.state, &new_state) {
             (TransactionState::Active, _) => {}, // Active can transition to any state  
             (from, to) => {
-                return Err(StorageError::transaction_log(format!("Cannot transition from {:?} to {:?}", from, to)).into());
+                return Err(StorageError::wal(format!("Cannot transition from {:?} to {:?}", from, to)).into());
             }
         }
         
@@ -429,7 +429,7 @@ impl TransactionLog {
                 }
                 
                 Ok(())
-            }).map_err(|e: sled::transaction::TransactionError<sled::Error>| StorageError::transaction_log(format!("Failed to update transaction state: {:?}", e)))?;
+            }).map_err(|e: sled::transaction::TransactionError<sled::Error>| StorageError::wal(format!("Failed to update transaction state: {:?}", e)))?;
         
         Ok(())
     }

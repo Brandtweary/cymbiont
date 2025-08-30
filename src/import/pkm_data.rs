@@ -104,8 +104,8 @@ use std::sync::Arc;
 use chrono::Utc;
 use petgraph::stable_graph::NodeIndex;
 use uuid::Uuid;
-use crate::graph_manager::{GraphManager, NodeType, EdgeType};
-use crate::graph_operations::GraphOps;
+use crate::graph::graph_manager::{GraphManager, NodeType, EdgeType};
+use crate::graph::graph_operations::GraphOps;
 // use crate::utils::parse_properties; // Removed: unused after refactor
 use crate::import::logseq::extract_references;
 use crate::error::*;

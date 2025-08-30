@@ -57,6 +57,7 @@ use crate::server::websocket::Command;
 use crate::server::websocket_utils::{
     send_success_response, set_authenticated, get_connection_stats
 };
+use crate::server::auth::validate_token;
 
 /// Main handler function for miscellaneous commands
 pub async fn handle(
@@ -67,8 +68,6 @@ pub async fn handle(
     match command {
         Command::Auth { token } => {
             // Validate token against configured auth token
-            use crate::server::auth::validate_token;
-            
             if !validate_token(state, &token).await {
                 warn!("🔐 WebSocket authentication failed for {}: invalid token", connection_id);
                 return Err(ServerError::authentication("Failed to authenticate: invalid token").into());

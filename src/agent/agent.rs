@@ -155,7 +155,7 @@ use crate::agent::kg_tools;
 use crate::app_state::AppState;
 use crate::error::*;
 use crate::storage::{TransactionCoordinator, Operation};
-use crate::storage::transaction_log::AgentOperation;
+use crate::storage::wal::AgentOperation;
 
 /// Context for LLM processing without holding agent locks
 pub struct LLMContext {
@@ -817,7 +817,7 @@ impl Agent {
     /// Export the agent to JSON for debugging/inspection
     /// 
     /// Note: This is NOT for persistence - WAL is the source of truth
-    /// The test harness (tests/common/agent_validation.rs) reads this file for validation
+    /// The test harness (tests/common/wal_validation.rs) reads the WAL for validation
     pub fn export_json(&self, path: &Path) -> Result<()> {
         // Create a serializable version without transaction_coordinator
         let data = serde_json::json!({

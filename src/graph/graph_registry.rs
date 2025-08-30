@@ -62,7 +62,7 @@
 //!   graphs/
 //!     {uuid-1}/               # Graph 1 data
 //!       knowledge_graph.json
-//!       transaction_log/
+//!       wal/
 //!     {uuid-2}/               # Graph 2 data
 //!       ...
 //! ```
@@ -77,11 +77,10 @@ use tracing::info;
 use tokio::sync::RwLock;
 use std::sync::Arc;
 
-// Import shared UUID serialization utilities
-use crate::storage::registry_utils::{uuid_hashmap_serde, uuid_hashset_serde, uuid_vec_serde};
 use crate::storage::TransactionCoordinator;
-use crate::storage::transaction_log::Operation;
-use crate::graph_manager::GraphManager;
+use crate::storage::wal::{Operation, RegistryOperation, GraphRegistryOp};
+use crate::storage::recovery::RecoveryContext;
+use crate::graph::graph_manager::GraphManager;
 use crate::error::*;
 use crate::lock::AsyncRwLockExt;
 use crate::AppState;
@@ -221,7 +220,7 @@ impl GraphRegistry {
         
         // Step 4: Rebuild from WAL if needed (no locks held)
         if needs_rebuild {
-            let context = crate::storage::recovery::RecoveryContext {
+            let context = RecoveryContext {
                 app_state: app_state.clone(),
                 is_rebuilding: true,
             };
@@ -343,8 +342,8 @@ impl GraphRegistry {
         let operation = if skip_wal {
             None
         } else {
-            Some(Operation::Registry(crate::storage::transaction_log::RegistryOperation::Graph(
-                crate::storage::transaction_log::GraphRegistryOp::RegisterGraph {
+            Some(Operation::Registry(RegistryOperation::Graph(
+                GraphRegistryOp::RegisterGraph {
                     graph_id,
                     name: Some(name.clone()),
                     description: description.clone(),
@@ -423,8 +422,8 @@ impl GraphRegistry {
         let operation = if skip_wal {
             None
         } else {
-            Some(Operation::Registry(crate::storage::transaction_log::RegistryOperation::Graph(
-                crate::storage::transaction_log::GraphRegistryOp::OpenGraph {
+            Some(Operation::Registry(RegistryOperation::Graph(
+                GraphRegistryOp::OpenGraph {
                     graph_id: *graph_id,
                 }
             )))
@@ -470,8 +469,8 @@ impl GraphRegistry {
         let operation = if skip_wal {
             None
         } else {
-            Some(Operation::Registry(crate::storage::transaction_log::RegistryOperation::Graph(
-                crate::storage::transaction_log::GraphRegistryOp::CloseGraph {
+            Some(Operation::Registry(RegistryOperation::Graph(
+                GraphRegistryOp::CloseGraph {
                     graph_id: *graph_id,
                 }
             )))
@@ -544,8 +543,8 @@ impl GraphRegistry {
         let operation = if skip_wal {
             None
         } else {
-            Some(Operation::Registry(crate::storage::transaction_log::RegistryOperation::Graph(
-                crate::storage::transaction_log::GraphRegistryOp::RemoveGraph {
+            Some(Operation::Registry(RegistryOperation::Graph(
+                GraphRegistryOp::RemoveGraph {
                     graph_id: *graph_id,
                 }
             )))
@@ -619,7 +618,7 @@ impl GraphRegistry {
     /// Export the registry to JSON for debugging/inspection
     /// 
     /// Note: This is NOT for persistence - WAL is the source of truth
-    /// The test harness (tests/common/graph_validation.rs) reads this file for validation
+    /// The test harness (tests/common/wal_validation.rs) reads the WAL for validation
     pub fn export_json(&self, path: &Path) -> Result<()> {
         let json = serde_json::to_string_pretty(&self)?;
         
@@ -628,6 +627,99 @@ impl GraphRegistry {
         Ok(())
     }
 }
+
+/// Custom serialization modules for UUID collections
+mod uuid_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::{HashMap, HashSet};
+    use uuid::Uuid;
+    
+    pub mod uuid_hashmap_serde {
+        use super::*;
+        
+        pub fn serialize<S, V>(map: &HashMap<Uuid, V>, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+            V: Serialize,
+        {
+            let string_map: HashMap<String, &V> = map
+                .iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect();
+            string_map.serialize(serializer)
+        }
+        
+        pub fn deserialize<'de, D, V>(deserializer: D) -> Result<HashMap<Uuid, V>, D::Error>
+        where
+            D: Deserializer<'de>,
+            V: Deserialize<'de>,
+        {
+            let string_map = HashMap::<String, V>::deserialize(deserializer)?;
+            string_map
+                .into_iter()
+                .map(|(k, v)| {
+                    Uuid::parse_str(&k)
+                        .map(|uuid| (uuid, v))
+                        .map_err(serde::de::Error::custom)
+                })
+                .collect()
+        }
+    }
+    
+    pub mod uuid_hashset_serde {
+        use super::*;
+        
+        pub fn serialize<S>(set: &HashSet<Uuid>, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            let string_vec: Vec<String> = set
+                .iter()
+                .map(|uuid| uuid.to_string())
+                .collect();
+            string_vec.serialize(serializer)
+        }
+        
+        pub fn deserialize<'de, D>(deserializer: D) -> Result<HashSet<Uuid>, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            let string_vec = Vec::<String>::deserialize(deserializer)?;
+            string_vec
+                .into_iter()
+                .map(|s| Uuid::parse_str(&s).map_err(serde::de::Error::custom))
+                .collect()
+        }
+    }
+    
+    pub mod uuid_vec_serde {
+        use super::*;
+        
+        pub fn serialize<S>(vec: &Vec<Uuid>, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            let string_vec: Vec<String> = vec
+                .iter()
+                .map(|uuid| uuid.to_string())
+                .collect();
+            string_vec.serialize(serializer)
+        }
+        
+        pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<Uuid>, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            let string_vec = Vec::<String>::deserialize(deserializer)?;
+            string_vec
+                .into_iter()
+                .map(|s| Uuid::parse_str(&s).map_err(serde::de::Error::custom))
+                .collect()
+        }
+    }
+}
+
+use uuid_serde::{uuid_hashmap_serde, uuid_hashset_serde, uuid_vec_serde};
 
 #[cfg(test)]
 mod tests {

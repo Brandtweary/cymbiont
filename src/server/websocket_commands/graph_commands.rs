@@ -53,7 +53,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 use crate::error::*;
 use crate::AppState;
-use crate::graph_operations::GraphOps;
+use crate::graph::graph_operations::GraphOps;
 use crate::server::websocket::Command;
 use crate::server::websocket_utils::{
     send_success_response, resolve_graph_for_command
@@ -189,7 +189,6 @@ pub async fn handle(
         Command::OpenGraph { graph_id, graph_name } => {
             // Open a graph
             
-            use crate::graph_operations::GraphOps;
             
             let resolved_graph_id = resolve_graph_for_command(
                 state,
@@ -204,7 +203,6 @@ pub async fn handle(
         Command::CloseGraph { graph_id, graph_name } => {
             // Close a graph
             
-            use crate::graph_operations::GraphOps;
             
             let resolved_graph_id = resolve_graph_for_command(
                 state,
@@ -219,7 +217,6 @@ pub async fn handle(
         Command::CreateGraph { name, description } => {
             // Create a new graph
             
-            use crate::graph_operations::GraphOps;
             
             let graph_info = state.create_graph(name, description).await?;
             send_success_response(connection_id, state, Some(graph_info)).await?;
@@ -227,7 +224,6 @@ pub async fn handle(
         Command::DeleteGraph { graph_id, graph_name } => {
             // Delete a graph
             
-            use crate::graph_operations::GraphOps;
             
             let resolved_graph_id = resolve_graph_for_command(
                 state,
@@ -243,7 +239,6 @@ pub async fn handle(
         Command::ListGraphs => {
             // List all graphs
             
-            use crate::graph_operations::GraphOps;
             
             let graphs = state.list_graphs().await?;
             let data = serde_json::json!({ "graphs": graphs });

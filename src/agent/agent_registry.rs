@@ -77,11 +77,12 @@ use tracing::info;
 use tokio::sync::RwLock;
 use std::sync::Arc;
 
-// Import shared UUID serialization utilities
-use crate::storage::registry_utils::{uuid_hashmap_serde, uuid_hashset_serde, uuid_vec_serde};
 use crate::storage::{TransactionCoordinator, Operation};
-use crate::storage::transaction_log::{AgentRegistryOp, RegistryOperation};
+use crate::storage::wal::{AgentRegistryOp, RegistryOperation};
+use crate::storage::recovery::RecoveryContext;
 use crate::agent::agent::Agent;
+use crate::agent::llm::LLMConfig;
+use crate::graph::graph_registry::GraphRegistry;
 use crate::error::*;
 use crate::lock::AsyncRwLockExt;
 use crate::AppState;
@@ -247,7 +248,7 @@ impl AgentRegistry {
         
         // Step 4: Rebuild from WAL if needed (no locks held)
         if needs_rebuild {
-            let context = crate::storage::recovery::RecoveryContext {
+            let context = RecoveryContext {
                 app_state: app_state.clone(),
                 is_rebuilding: true,
             };
@@ -329,8 +330,6 @@ impl AgentRegistry {
         
         // Step 3: Create the actual Agent instance (no registry lock)
         {
-            use crate::agent::agent::Agent;
-            use crate::agent::llm::LLMConfig;
             
             // Ensure agent directory exists
             std::fs::create_dir_all(&agent_info.data_path)?;
@@ -680,7 +679,7 @@ impl AgentRegistry {
         &mut self,
         agent_id: &Uuid,
         graph_id: &Uuid,
-        graph_registry: &mut crate::storage::GraphRegistry,
+        graph_registry: &mut GraphRegistry,
         skip_wal: bool,
     ) -> Result<()> {
         // Validate agent exists
@@ -743,7 +742,7 @@ impl AgentRegistry {
         &mut self,
         agent_id: &Uuid,
         graph_id: &Uuid,
-        graph_registry: &mut crate::storage::GraphRegistry,
+        graph_registry: &mut GraphRegistry,
         skip_wal: bool,
     ) -> Result<()> {
         // Create WAL operation conditionally
@@ -793,7 +792,7 @@ impl AgentRegistry {
     /// only ever use the prime agent and never encounter orphaned graphs.
     pub fn find_orphaned_graphs(
         &self,
-        graph_registry: &crate::storage::GraphRegistry,
+        graph_registry: &GraphRegistry,
     ) -> Vec<Uuid> {
         // In practice, this should return an empty list unless someone explicitly
         // deauthorized the prime agent from specific graphs
@@ -869,7 +868,7 @@ impl AgentRegistry {
     /// Export the registry to JSON for debugging/inspection
     /// 
     /// Note: This is NOT for persistence - WAL is the source of truth
-    /// The test harness (tests/common/agent_validation.rs) reads this file for validation
+    /// The test harness (tests/common/wal_validation.rs) reads the WAL for validation
     pub fn export_json(&self, path: &Path) -> Result<()> {
         let json = serde_json::to_string_pretty(&self)
             .map_err(|e| StorageError::agent_registry(format!("Failed to serialize agent registry: {}", e)))?;
@@ -880,6 +879,99 @@ impl AgentRegistry {
         Ok(())
     }
 }
+
+/// Custom serialization modules for UUID collections
+mod uuid_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::{HashMap, HashSet};
+    use uuid::Uuid;
+    
+    pub mod uuid_hashmap_serde {
+        use super::*;
+        
+        pub fn serialize<S, V>(map: &HashMap<Uuid, V>, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+            V: Serialize,
+        {
+            let string_map: HashMap<String, &V> = map
+                .iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect();
+            string_map.serialize(serializer)
+        }
+        
+        pub fn deserialize<'de, D, V>(deserializer: D) -> Result<HashMap<Uuid, V>, D::Error>
+        where
+            D: Deserializer<'de>,
+            V: Deserialize<'de>,
+        {
+            let string_map = HashMap::<String, V>::deserialize(deserializer)?;
+            string_map
+                .into_iter()
+                .map(|(k, v)| {
+                    Uuid::parse_str(&k)
+                        .map(|uuid| (uuid, v))
+                        .map_err(serde::de::Error::custom)
+                })
+                .collect()
+        }
+    }
+    
+    pub mod uuid_hashset_serde {
+        use super::*;
+        
+        pub fn serialize<S>(set: &HashSet<Uuid>, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            let string_vec: Vec<String> = set
+                .iter()
+                .map(|uuid| uuid.to_string())
+                .collect();
+            string_vec.serialize(serializer)
+        }
+        
+        pub fn deserialize<'de, D>(deserializer: D) -> Result<HashSet<Uuid>, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            let string_vec = Vec::<String>::deserialize(deserializer)?;
+            string_vec
+                .into_iter()
+                .map(|s| Uuid::parse_str(&s).map_err(serde::de::Error::custom))
+                .collect()
+        }
+    }
+    
+    pub mod uuid_vec_serde {
+        use super::*;
+        
+        pub fn serialize<S>(vec: &Vec<Uuid>, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            let string_vec: Vec<String> = vec
+                .iter()
+                .map(|uuid| uuid.to_string())
+                .collect();
+            string_vec.serialize(serializer)
+        }
+        
+        pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<Uuid>, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            let string_vec = Vec::<String>::deserialize(deserializer)?;
+            string_vec
+                .into_iter()
+                .map(|s| Uuid::parse_str(&s).map_err(serde::de::Error::custom))
+                .collect()
+        }
+    }
+}
+
+use uuid_serde::{uuid_hashmap_serde, uuid_hashset_serde, uuid_vec_serde};
 
 #[cfg(test)]
 mod tests {

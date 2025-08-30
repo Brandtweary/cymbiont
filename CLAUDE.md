@@ -42,29 +42,33 @@ RUST_LOG=debug cargo run         # Run cymbiont with debug logging (do not chang
   - **dummy_graph/**: Test data for development
 - **data/**: Knowledge graph and agent persistence (configurable via data_dir in config.yaml)
   - **IMPORTANT**: The data/ directory is git-tracked (has .gitkeep) - never rm -rf it
-  - **graph_registry.json**: Graph UUID mappings and metadata with agent associations
-  - **agent_registry.json**: Agent UUID mappings and graph authorizations
+  - **transaction_log/**: Global WAL database (sled) - single source of truth
+  - **graph_registry.json**: JSON export for debugging (rebuilt from WAL)
+  - **agent_registry.json**: JSON export for debugging (rebuilt from WAL)
   - **auth_token**: Auto-generated authentication token (rotates on restart)
-  - **graphs/{graph-id}/**: Per-graph isolated storage with knowledge_graph.json and transaction logs
-  - **agents/{agent-id}/**: Per-agent storage with agent.json (conversation history, LLM config)
+  - **graphs/{graph-id}/**: Per-graph exports for debugging
+  - **agents/{agent-id}/**: Per-agent exports for debugging
   - **archived_graphs/**: Deleted graphs are moved here with timestamp
   - **archived_agents/**: Deleted agents are moved here with timestamp
-  - **transaction_log/**: Global transaction log (sled database)
 
 ### Project Structure
 - **src/**
   - **main.rs**: Application entry point with 5-phase startup sequence
   - **cli.rs**: CLI argument parsing and command execution
-  - **graph_manager.rs**: Generic knowledge graph storage engine using petgraph
   - **config.rs**: YAML configuration loading and validation
   - **utils.rs**: Process management, datetime parsing, general utilities
   - **error.rs**: Hierarchical error system with domain-specific types
   - **lock.rs**: Lock handling utilities with panic-on-poison strategy
   - **app_state.rs**: Centralized application state management with agent integration
-  - **graph_operations.rs**: Multi-agent graph operations with runtime authorization
+  - **graph/**: Graph management subsystem
+    - **mod.rs**: Graph module exports
+    - **graph_manager.rs**: Generic knowledge graph storage engine using petgraph
+    - **graph_operations.rs**: Multi-agent graph operations with runtime authorization
+    - **graph_registry.rs**: Multi-graph UUID management with agent tracking
   - **agent/**: Agent abstraction layer
     - **mod.rs**: Agent module exports
     - **agent.rs**: Core Agent struct with conversation management
+    - **agent_registry.rs**: Agent lifecycle and authorization management
     - **llm.rs**: LLM backend abstraction and MockLLM implementation
     - **kg_tools.rs**: Static knowledge graph tool registry with 15 functional tools
     - **schemas.rs**: Ollama-compatible tool schemas
@@ -89,6 +93,7 @@ RUST_LOG=debug cargo run         # Run cymbiont with debug logging (do not chang
 - Don't make live LLM calls during tests
 - When modifying startup logic in `main.rs`, ensure BOTH the CLI path and server path are updated equally. Extract shared logic into functions to avoid divergence.
 - Don't ever delete TODO comments unless the user gives permission first
+- Don't inline imports ever (except for temp debugging like `tracing::debug!()`)
 
 ### Log Level Guidelines
 - **INFO**: Use sparingly, only for messages you would want to see on every single run

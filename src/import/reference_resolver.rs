@@ -87,7 +87,7 @@
 use std::collections::{HashMap, HashSet};
 use regex::Regex;
 use once_cell::sync::Lazy;
-use crate::graph_manager::{GraphManager, NodeType};
+use crate::graph::graph_manager::{GraphManager, NodeType};
 
 static BLOCK_REF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"\(\(([a-zA-Z0-9-]+)\)\)").unwrap()

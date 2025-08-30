@@ -323,6 +323,7 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use std::collections::HashMap;
+    use crate::agent::schemas::ParameterSchema;
 
     #[tokio::test]
     async fn test_mock_llm_default_response() {
@@ -363,7 +364,7 @@ mod tests {
             ToolDefinition {
                 name: "add_block".to_string(),
                 description: "Add a block".to_string(),
-                parameters: crate::agent::schemas::ParameterSchema {
+                parameters: ParameterSchema {
                     schema_type: "object".to_string(),
                     properties: HashMap::new(),
                     required: vec![],

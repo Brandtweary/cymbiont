@@ -20,7 +20,7 @@
 //! 
 //! ### Transaction Coordination
 //! - **Global WAL**: Single transaction log for all operations
-//! - **ACID Guarantees**: `with_transaction()` wraps all operations
+//! - **ACID Guarantees**: TransactionCoordinator ensures consistency
 //! - **Crash Recovery**: `run_unified_recovery()` replays all pending transactions
 //! - **Graceful Shutdown**: Coordinates transaction completion
 //! 
@@ -99,16 +99,22 @@ use crate::error::*;
 
 use crate::{
     config::Config,
-    graph_manager::GraphManager,
+    graph::graph_manager::GraphManager,
+    graph::graph_registry::GraphRegistry,
     agent::agent::Agent,
+    agent::agent_registry::AgentRegistry,
     storage::{
-        GraphRegistry, AgentRegistry, TransactionLog, TransactionCoordinator,
+        TransactionLog, TransactionCoordinator,
+        recovery::export_all_json,
     },
     lock::AsyncRwLockExt,
+    server::{
+        auth::initialize_auth,
+        message_queue,
+        websocket::WsConnection,
+    },
 };
 
-// Re-export the real WsConnection from server module
-pub use crate::server::websocket::WsConnection;
 
 /// Central application state that coordinates all Cymbiont components
 ///
@@ -174,8 +180,8 @@ impl AppState {
         // Initialize global transaction coordinator
         let transaction_log_dir = data_dir.join("transaction_log");
         fs::create_dir_all(&transaction_log_dir)?;
-        let transaction_log = Arc::new(TransactionLog::new(transaction_log_dir)?);
-        let transaction_coordinator = Arc::new(TransactionCoordinator::new(transaction_log));
+        let wal = Arc::new(TransactionLog::new(transaction_log_dir)?);
+        let transaction_coordinator = Arc::new(TransactionCoordinator::new(wal));
         
         // Initialize managers and agents - owned directly by AppState
         let graph_managers = Arc::new(RwLock::new(HashMap::new()));
@@ -232,7 +238,6 @@ impl AppState {
         
         // Initialize authentication if in server mode
         if with_server {
-            use crate::server::auth::initialize_auth;
             let token = initialize_auth(&app_state).await?;
             if !app_state.config.auth.disabled {
                 let mut token_guard = app_state.auth_token.write_or_panic("initialize auth token").await;
@@ -242,7 +247,7 @@ impl AppState {
         
         // Initialize message queue with AppState reference
         #[allow(deprecated)] // Temporary until CQRS refactor
-        crate::server::message_queue::initialize_message_queue(&app_state);
+        message_queue::initialize_message_queue(&app_state);
         
         Ok(app_state)
     }
@@ -257,7 +262,7 @@ impl AppState {
     pub async fn cleanup_and_save(&self) {
         // Shutdown agent message queue workers first
         #[allow(deprecated)] // Temporary until CQRS refactor
-        crate::server::message_queue::shutdown_workers().await;
+        message_queue::shutdown_workers().await;
         
         // Close all WebSocket connections
         if let Some(ref connections) = self.ws_connections {
@@ -287,7 +292,7 @@ impl AppState {
         }
         
         // Export all data to JSON for debugging
-        if let Err(e) = crate::storage::recovery::export_all_json(self).await {
+        if let Err(e) = export_all_json(self).await {
             error!("Failed to export JSON: {}", e);
         }
         

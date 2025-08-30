@@ -72,39 +72,16 @@
 //! The recovery process:
 //! - Startup: Iterates all graphs, temporarily opens closed ones for recovery
 //! - Finds all Active transactions in each graph's WAL
-//! - Calls `OperationExecutor::execute_operation()` for each pending transaction
+//! - RecoveryContext replays each pending operation
 //! - Updates transaction state based on result
 //! - No PKM reconstruction needed - exact API replay
 //! - Closed graphs are closed again after recovery
-//! 
-//! ## OperationExecutor Trait Implementation
-//! 
-//! Arc<AppState> implements the `OperationExecutor` trait from the storage layer.
-//! This enables the transaction system to execute operations without knowing their
-//! implementation details:
-//! 
-//! ```rust
-//! // Storage layer defines the trait
-//! pub trait OperationExecutor {
-//!     async fn execute_operation(&self, operation: Operation) -> Result<(), String>;
-//! }
-//! 
-//! // Graph operations module implements it
-//! impl OperationExecutor for Arc<AppState> {
-//!     async fn execute_operation(&self, operation: Operation) -> Result<(), String> {
-//!         match operation {
-//!             Operation::CreateBlock { .. } => self.add_block(...),
-//!             // ... other operations
-//!         }
-//!     }
-//! }
-//! ```
 //! 
 //! ## Adding New Graph Operations
 //! 
 //! When adding new operations, follow these steps:
 //! 
-//! 1. **Define the Operation variant** in `storage/transaction_log.rs`:
+//! 1. **Define the Operation variant** in `storage/wal.rs`:
 //!    - Add new variant to `Operation` enum with agent_id and all parameters
 //!    - Include all data needed to replay the operation during recovery
 //! 
@@ -116,13 +93,13 @@
 //! 3. **Implement the operation** in `impl GraphOps for Arc<AppState>`:
 //!    - Start with authorization check using agent_registry
 //!    - Create Operation enum with parameters for transaction log
-//!    - Execute within with_graph_transaction() for ACID guarantees
+//!    - Use TransactionCoordinator for ACID guarantees
 //!    - Handle errors appropriately (GraphError vs NodeNotFound)
 //! 
-//! 4. **Add to OperationExecutor** implementation at bottom of this file:
-//!    - Add match arm that calls the GraphOps method
-//!    - Map operation parameters to method parameters
-//!    - Convert errors to String for transaction system
+//! 4. **Add to RecoveryContext** in `storage/recovery.rs`:
+//!    - Add match arm in execute_operation() method
+//!    - Map operation parameters to appropriate recovery logic
+//!    - Handle recovery-specific considerations (skip_wal, etc.)
 //! 
 //! 5. **Register in tool registry** (optional) in `agent/kg_tools.rs`:
 //!    - Add tool registration in appropriate category
@@ -142,9 +119,11 @@
 
 use crate::{
     AppState,
-    storage::{
-        AgentRegistry, 
-        transaction_log::{
+    agent::agent_registry::AgentRegistry,
+    graph::graph_manager::{NodeType, EdgeType},
+    graph::graph_registry::GraphRegistry,
+    storage::{ 
+        wal::{
             Operation, GraphOperation
         }
     },
@@ -316,7 +295,7 @@ impl GraphOps for Arc<AppState> {
         manager.create_or_update_node(
             block_id.clone(),
             internal_id,
-            crate::graph_manager::NodeType::Block,
+            NodeType::Block,
             content,
             None, // Reference content can be resolved later if needed
             parsed_props,
@@ -328,7 +307,7 @@ impl GraphOps for Arc<AppState> {
         if let Some(parent) = parent_id {
             if let Some(parent_idx) = manager.find_node(&parent) {
                 if let Some(child_idx) = manager.find_node(&block_id) {
-                    manager.add_edge(parent_idx, child_idx, crate::graph_manager::EdgeType::ParentChild, 1.0);
+                    manager.add_edge(parent_idx, child_idx, EdgeType::ParentChild, 1.0);
                 }
             }
         }
@@ -345,7 +324,7 @@ impl GraphOps for Arc<AppState> {
                 manager.create_node(
                     normalized_page,
                     uuid::Uuid::new_v4().to_string(),
-                    crate::graph_manager::NodeType::Page,
+                    NodeType::Page,
                     page,
                     None,
                     std::collections::HashMap::new(),
@@ -356,7 +335,7 @@ impl GraphOps for Arc<AppState> {
             
             // Add PageToBlock edge
             if let Some(block_idx) = manager.find_node(&block_id) {
-                manager.add_edge(page_idx, block_idx, crate::graph_manager::EdgeType::PageToBlock, 1.0);
+                manager.add_edge(page_idx, block_idx, EdgeType::PageToBlock, 1.0);
             }
         }
         
@@ -540,7 +519,7 @@ impl GraphOps for Arc<AppState> {
             manager.create_or_update_node(
                 normalized_name,
                 internal_id,
-                crate::graph_manager::NodeType::Page,
+                NodeType::Page,
                 page_name,
                 None, // Pages don't have reference content
                 crate::utils::parse_properties(&props),
@@ -715,7 +694,7 @@ impl GraphOps for Arc<AppState> {
     ) -> Result<serde_json::Value> {
         tracing::debug!("create_graph: Starting graph creation");
         // Use the complete workflow method
-        let graph_info = crate::storage::GraphRegistry::create_graph_complete(
+        let graph_info = GraphRegistry::create_graph_complete(
             self.graph_registry.clone(),
             name,
             description
@@ -751,8 +730,7 @@ impl GraphOps for Arc<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{Operation, transaction_log::Transaction};
-    use crate::storage::transaction_log::TransactionState;
+    use crate::storage::{Operation, wal::{Transaction, TransactionState}};
     
     #[test]
     fn test_error_types() {

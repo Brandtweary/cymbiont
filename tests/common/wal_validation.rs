@@ -33,7 +33,7 @@ use uuid::Uuid;
 // use chrono::{DateTime, Utc}; // Not needed yet
 
 // Import the operation types from the main codebase
-// We need to match the exact structure used in transaction_log.rs
+// We need to match the exact structure used in wal.rs
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum TransactionState {
     Active,

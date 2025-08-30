@@ -70,8 +70,7 @@ mod app_state;
 mod cli;
 mod config;
 mod error;
-mod graph_manager;
-mod graph_operations;
+mod graph;
 mod import;
 mod lock;
 mod server;
@@ -81,6 +80,8 @@ mod utils;
 use app_state::AppState;
 use cli::{Args, handle_cli_commands};
 use autodebugger::{init_logging, VerbosityConfig as AutodebuggerVerbosityConfig};
+use agent::agent_registry::AgentRegistry;
+use graph::graph_registry::GraphRegistry;
 
 fn main() -> Result<()> {
     // Create Tokio runtime explicitly for proper shutdown control
@@ -182,7 +183,7 @@ async fn run_startup_sequence(app_state: &std::sync::Arc<AppState>) -> Result<()
     
     // Phase 3: Bootstrap and activation
     // Ensure prime agent exists (creates on first run)
-    storage::AgentRegistry::ensure_default_agent(
+    AgentRegistry::ensure_default_agent(
         app_state.agent_registry.clone()
     ).await?;
     
@@ -194,7 +195,7 @@ async fn run_startup_sequence(app_state: &std::sync::Arc<AppState>) -> Result<()
     
     for agent_id in agents_to_activate {
         // Use the new static method that manages its own locking
-        if let Err(e) = storage::AgentRegistry::activate_agent_complete(
+        if let Err(e) = AgentRegistry::activate_agent_complete(
             app_state.agent_registry.clone(),
             agent_id,
             false  // don't skip_wal - this is a real persistent activation
@@ -210,7 +211,7 @@ async fn run_startup_sequence(app_state: &std::sync::Arc<AppState>) -> Result<()
     };
     
     for graph_id in graphs_to_open {
-        if let Err(e) = storage::GraphRegistry::open_graph_complete(
+        if let Err(e) = GraphRegistry::open_graph_complete(
             app_state.graph_registry.clone(),
             graph_id,
             false  // don't skip_wal - this is a real persistent open operation

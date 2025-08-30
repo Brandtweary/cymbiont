@@ -1,40 +1,40 @@
 # Storage Module Guide 📦
 
 ## Module Overview
-Persistence layer for graphs, agents, and transactions with ACID guarantees.
+WAL-based persistence layer with global transaction coordination and lazy entity loading.
 
 ## Core Components
 
-### Registries
-- **graph_registry.rs**: Multi-graph UUID tracking with open/closed states
-- **agent_registry.rs**: Agent lifecycle and bidirectional authorization
-- **registry_utils.rs**: Shared UUID serialization helpers
-
-### Persistence
-- **graph_persistence.rs**: Graph save/load with auto-save triggers (5min/10ops)
-- **agent_persistence.rs**: Agent state serialization with conversation history
+### Recovery
+- **recovery.rs**: WAL rebuild and lazy entity reconstruction
 
 ### Transaction System
-- **transaction_log.rs**: Sled-based WAL with SHA-256 deduplication
-- **transaction.rs**: Coordinator for ACID operations and graceful shutdown
+- **wal.rs**: Sled-based WAL with operation categories (Graph/Agent/Registry)
+- **transaction_coordinator.rs**: Global coordinator at `data/transaction_log/`
 
 ## Key Patterns
 
 ### Lock Ordering 🔒
 Always acquire in this order to prevent deadlocks:
-1. graph_registry (sync)
-2. agent_registry (sync)
+1. graph_registry (async)
+2. agent_registry (async)
 3. Use `lock_registries_for_write()` helper
 
 ### Transaction Flow
 ```rust
-// All mutations follow this pattern
-with_graph_transaction(graph_id, || {
-    // 1. Log operation to WAL
-    // 2. Execute business logic
-    // 3. Commit or rollback
-})
+// Normal operations - MUST explicitly commit!
+let tx = coordinator.begin(Some(operation)).await?;
+// Do work (any error here leaves transaction pending)
+let result = do_something().await?;
+tx.commit().await?;  // Critical: without this, tx stays pending
+
+// Recovery/skip_wal - uses None for no-op handle
+let tx = coordinator.begin(None).await?;
+// Do recovery work
+tx.commit().await?;  // No-op since ID is empty
 ```
+
+**Important**: Drop trait can't async rollback, so uncommitted transactions remain pending until recovery.
 
 ### Registry Operations
 Complete workflows handle full lifecycle:

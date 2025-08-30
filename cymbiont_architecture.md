@@ -11,11 +11,15 @@ cymbiont/
 │   ├── utils.rs                   # Process management and utilities
 │   ├── error.rs                   # Hierarchical error system with domain-specific types
 │   ├── lock.rs                    # Lock handling utilities with panic-on-poison strategy
-│   ├── graph_manager.rs           # Petgraph-based knowledge graph engine
-│   ├── graph_operations.rs        # Multi-agent graph operations with runtime authorization
+│   ├── graph/                     # Graph management subsystem
+│   │   ├── mod.rs                 # Graph module exports
+│   │   ├── graph_manager.rs       # Petgraph-based knowledge graph engine
+│   │   ├── graph_operations.rs    # Multi-agent graph operations with runtime authorization
+│   │   └── graph_registry.rs      # Multi-graph UUID management with agent tracking
 │   ├── agent/                     # Agent abstraction layer
 │   │   ├── mod.rs                 # Agent module exports
 │   │   ├── agent.rs               # Core Agent struct with conversation management and tool execution
+│   │   ├── agent_registry.rs      # Agent lifecycle and authorization management
 │   │   ├── llm.rs                 # LLM backend abstraction with MockLLM tool support
 │   │   ├── kg_tools.rs            # Static knowledge graph tool registry with 15 functional tools
 │   │   └── schemas.rs             # Ollama-compatible tool schemas for function calling
@@ -38,30 +42,25 @@ cymbiont/
 │   │   └── auth.rs                # Token generation and validation
 │   └── storage/                   # Persistence layer
 │       ├── mod.rs                 # Storage module exports
-│       ├── graph_persistence.rs   # Graph save/load utilities
-│       ├── graph_registry.rs      # Multi-graph UUID management with agent tracking
-│       ├── agent_registry.rs      # Agent lifecycle and authorization management
-│       ├── agent_persistence.rs   # Agent save/load with auto-save thresholds
-│       ├── registry_utils.rs      # Shared UUID serialization utilities
-│       ├── transaction_log.rs     # Write-ahead logging with sled
-│       └── transaction.rs         # Transaction coordination
+│       ├── recovery.rs            # WAL rebuild and entity reconstruction
+│       ├── wal.rs                 # Write-ahead logging with sled
+│       └── transaction_coordinator.rs  # Transaction coordination
 ├── data/                          # Graph and agent persistence (configurable path)
-│   ├── graph_registry.json        # Graph UUID registry with agent associations
-│   ├── agent_registry.json        # Agent UUID registry with graph authorizations
+│   ├── transaction_log/           # Global WAL database (sled)
+│   ├── graph_registry.json        # JSON export for debugging
+│   ├── agent_registry.json        # JSON export for debugging
 │   ├── auth_token                 # Authentication token (auto-generated)
-│   ├── graphs/{graph-id}/         # Per-graph storage
-│   │   ├── knowledge_graph.json   # Serialized petgraph
-│   │   └── transaction_log/       # Per-graph WAL database
-│   ├── agents/{agent-id}/         # Per-agent storage
-│   │   └── agent.json             # Agent state, conversation history, LLM config
+│   ├── graphs/{graph-id}/         # Per-graph exports
+│   │   └── knowledge_graph.json   # JSON export for debugging
+│   ├── agents/{agent-id}/         # Per-agent exports
+│   │   └── agent.json             # JSON export for debugging
 │   ├── archived_graphs/           # Deleted graphs archive
 │   └── archived_agents/           # Deleted agents archive
 ├── tests/                         # Integration tests - see tests/CLAUDE.md
 │   ├── common/                    # Shared test utilities
 │   │   ├── mod.rs                 # Test environment setup
 │   │   ├── test_harness.rs        # TestServer lifecycle management
-│   │   ├── graph_validation.rs    # Automated graph state validation
-│   │   └── agent_validation.rs    # Agent state, conversation, and tool message validation
+│   │   └── wal_validation.rs      # WAL-based state validation
 │   └── integration/               # Integration test suite (single binary)
 │       ├── main.rs                # Test entry point
 │       ├── crash_recovery.rs      # Transaction recovery tests
@@ -120,7 +119,7 @@ cymbiont/
 **Purpose**: Lock handling with panic-on-poison strategy
 **Traits**: `RwLockExt` (sync), `AsyncRwLockExt` (async)
 **Methods**: `read_or_panic()`, `write_or_panic()` with context messages
-**Features**: Contention warnings (debug), canonical ordering helper
+**Features**: Async lock support for tokio RwLocks, contention warnings (debug)
 **Lock ordering**: Use `lock_registries_for_write()` for graph→agent order
 
 ### app_state.rs
@@ -142,13 +141,17 @@ cymbiont/
 **Endpoints**: `/` (health), `/import/logseq` (POST), `/ws` (upgrade), monitoring paths
 **Auth**: Bearer token for protected endpoints, WebSocket auth post-upgrade
 
-### graph_manager.rs
+### graph/mod.rs
+**Purpose**: Graph module exports
+**Exports**: `graph_manager`, `graph_operations`, `graph_registry`
+
+### graph/graph_manager.rs
 **Purpose**: Generic petgraph-based storage engine
 **Features**: Domain-agnostic, StableGraph for index stability
-**Operations**: `create_node()`, `create_or_update_node()`, `find_node()`, `add_edge()`, `archive_nodes()`
+**Operations**: `create_node()`, `create_or_update_node()`, `find_node()`, `add_edge()`, `delete_nodes()`
 **Types**: Defined by domain (PKM: Page/Block nodes, PageRef/BlockRef edges)
 
-### graph_operations.rs
+### graph/graph_operations.rs
 **Purpose**: Multi-agent graph operations with runtime authorization
 **Trait**: `GraphOps` - all operations require `agent_id: Uuid` and `graph_id: &Uuid`
 **Operations**:
@@ -156,22 +159,26 @@ cymbiont/
 - Pages: `create_page()`, `delete_page()`
 - Lifecycle: `create_graph()`, `delete_graph()`, `open_graph()`, `close_graph()`
 - Queries: `get_node()`, `query_graph_bfs()`, `list_graphs()`, `list_open_graphs()`
+**Skip WAL**: All operations take `skip_wal: bool` parameter for recovery replay
 **Transaction**: Operations store full parameters in WAL for recovery
-**Recovery**: `OperationExecutor` replays without authorization checks
-**Adding operations**: 1) Add to Operation enum 2) Add to GraphOps trait 3) Implement with auth check 4) Add OperationExecutor 5) Optional: Add to kg_tools 6) Optional: Add WebSocket command
+**Adding operations**: 1) Add to Operation enum 2) Add to GraphOps trait 3) Implement with auth check and skip_wal 4) Optional: Add to kg_tools 5) Optional: Add WebSocket command
 
 ### storage/mod.rs
-**Purpose**: Persistence layer module
-**Components**: Registries, TransactionLog, TransactionCoordinator, persistence utils
-**Features**: Multi-graph management, ACID transactions, crash recovery
+**Purpose**: WAL-only persistence layer
+**Components**: TransactionLog, TransactionCoordinator, Recovery system
+**Features**: Write-ahead logging, ACID transactions, crash recovery
 **Details**: See `src/storage/CLAUDE.md`
 
-### storage/graph_persistence.rs
-**Purpose**: Graph serialization utilities
-**Operations**: `load_graph()`, `save_graph()`, `archive_nodes()`, `should_save()`
-**Features**: JSON format, auto-save thresholds (5min/10ops)
+### storage/recovery.rs
+**Purpose**: WAL-based state reconstruction
+**Functions**:
+- `rebuild_from_wal()` - Rebuild registries and active entities from committed transactions
+- `recover_pending_transactions()` - Replay pending transactions after crash
+- `rebuild_graph_from_wal()` - Lazy reconstruction of specific graph
+- `rebuild_agent_from_wal()` - Lazy reconstruction of specific agent
+**Features**: Smart entity detection, self-referential operation filtering, lazy loading
 
-### storage/graph_registry.rs
+### graph/graph_registry.rs
 **Purpose**: Multi-graph UUID tracking with open/closed state
 **Operations**:
 - `register_graph()`, `remove_graph()` - lifecycle
@@ -182,7 +189,7 @@ cymbiont/
 **Persistence**: Open state survives restarts
 **Concurrency**: `Arc<RwLock<GraphRegistry>>` with panic-on-poison
 
-### storage/agent_registry.rs
+### agent/agent_registry.rs
 **Purpose**: Agent lifecycle and authorization management
 **Operations**:
 - `register_agent()`, `remove_agent()` - lifecycle
@@ -194,30 +201,21 @@ cymbiont/
 **Prime agent**: Auto-created, full graph access, cannot be deleted
 **Persistence**: `agent_registry.json` with active/inactive states
 
-### storage/agent_persistence.rs
-**Purpose**: Agent persistence
-**Operations**: `save_agent()`, `load_agent()`
-**Auto-save**: 5 minutes or 10 messages
-**Format**: JSON (conversation, LLM config, prompt, default_graph_id)
-
-### storage/registry_utils.rs
-**Purpose**: Shared UUID serialization
-**Modules**: `uuid_hashmap_serde`, `uuid_hashset_serde`, `uuid_vec_serde`
-
-### storage/transaction_log.rs
+### storage/wal.rs
 **Purpose**: Sled-based WAL
 **Features**: SHA-256 deduplication, ACID guarantees
 **Trees**: Transactions, content hash index, pending index
 
-### storage/transaction.rs
-**Purpose**: Transaction coordination with graceful shutdown
+### storage/transaction_coordinator.rs
+**Purpose**: Global transaction coordination with graceful shutdown
 **States**: Active → Committed | Aborted
+**Pattern**: `begin(operation)` returns TransactionHandle requiring explicit `commit()`
 **Methods**:
-- `create_transaction()`, `complete_transaction()` - lifecycle
-- `recover_pending_transactions()` - crash recovery
+- `begin()` - Start transaction (None for skip_wal)
+- `commit()` - Explicit commit required
 - `initiate_shutdown()`, `wait_for_completion()` - graceful shutdown
-**Per-graph**: Each graph has own TransactionCoordinator
-**Shutdown**: Tracks active transactions, rejects new during shutdown
+**Global**: Single TransactionCoordinator at `data/transaction_log/`
+**Note**: Uncommitted transactions remain pending (Drop can't async rollback)
 
 ### agent/agent.rs
 **Purpose**: Core Agent with conversation management and tool execution
@@ -314,25 +312,15 @@ cymbiont/
 **Features**: Parallel execution, isolated environments, phase-based testing
 **Details**: See `tests/CLAUDE.md`
 
-### tests/common/graph_validation.rs
-**Purpose**: Automated graph state validation
-**Type**: `GraphValidationFixture` - track and validate transformations
+### tests/common/wal_validation.rs
+**Purpose**: Unified WAL-based test validation
+**Type**: `WALValidationFixture` - validate all state through transaction log
 **Methods**:
-- `expect_dummy_graph()` - test data expectations
-- `expect_create_block()`, `expect_update_block()`, `expect_delete()` - node ops
-- `expect_edge()` - relationship validation
-- `validate_graph()` - check against persisted state
-
-### tests/common/agent_validation.rs
-**Purpose**: Agent state and conversation validation
-**Types**: `AgentValidationFixture`, `AgentValidator`, `MessageOrderValidator`
-**Methods**:
-- `validate_agent_registry_schema()` - registry structure
-- `expect_agent_created/deleted()` - lifecycle tracking
-- `expect_user/assistant/tool_message()` - message validation
-- `expect_authorization/deauthorization()` - graph access
-**Patterns**: `Exact()`, `Contains()` for message matching
-**Validation**: Sequence ordering (user→tool→assistant)
+- `expect_operation()` - Track expected WAL operations
+- `validate_wal()` - Verify operations exist in transaction log
+- `validate_graph_state()` - Check graph state from WAL
+- `validate_agent_state()` - Check agent state from WAL
+**Features**: Direct sled database access, operation categorization, comprehensive state validation
 
 
 ## Data Structures
@@ -411,11 +399,11 @@ transaction_log:
 | Flow | Steps |
 |------|-------|
 | **Import** | CLI/HTTP → Parse .md → Extract blocks → Create graph → Authorize prime agent |
-| **Transaction** | Operation → Content hash → WAL → Graph update → Commit/Rollback |
+| **Transaction** | Begin → WAL write → State update → Explicit commit |
 | **WebSocket** | Auth → Agent select → Spawn task → Check auth → Transaction → Response |
 | **Agent Chat** | Resolve agent → LLM complete → Execute tools → Save conversation → Return |
-| **Agent Lifecycle** | Register → Save → Activate → Chat → Auto-save → Deactivate → Archive |
-| **Recovery** | Startup: ALL graphs → Open: specific graph → Replay operations from WAL |
+| **Agent Lifecycle** | Register → Activate → Chat → Deactivate → Archive |
+| **Recovery** | WAL rebuild → Pending recovery → Bootstrap → Entity activation |
 | **Auth** | Generate token → Save to `auth_token` → HTTP: Bearer header, WS: Auth command |
 | **Prime Agent** | Auto-create → Authorize for all graphs → Cannot delete → Default agent |
 

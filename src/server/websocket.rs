@@ -82,6 +82,10 @@ use uuid::Uuid;
 use crate::error::*;
 use crate::lock::AsyncRwLockExt;
 use crate::AppState;
+use crate::server::{
+    websocket_utils::{send_error_response, is_authenticated},
+    websocket_commands::{agent_commands, graph_commands, misc_commands},
+};
 
 /// WebSocket connection state
 pub struct WsConnection {
@@ -331,7 +335,7 @@ pub async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
             if let Err(e) = handle_message(msg, &conn_id, &app_state).await {
                 error!("Error handling message from {}: {:?}", conn_id, e);
                 // Send error response back to client so they're not left hanging
-                if let Err(send_err) = crate::server::websocket_utils::send_error_response(&conn_id, &app_state, &e.to_string()).await {
+                if let Err(send_err) = send_error_response(&conn_id, &app_state, &e.to_string()).await {
                     error!("Failed to send error response: {:?}", send_err);
                 }
             }
@@ -412,9 +416,9 @@ async fn route_command(
         Command::Heartbeat | 
         Command::Test { .. }
     ) && !is_test_cli_command {
-        if !crate::server::websocket_utils::is_authenticated(connection_id, state).await {
+        if !is_authenticated(connection_id, state).await {
             warn!("Rejecting command from unauthenticated connection {}: {:?}", connection_id, command);
-            crate::server::websocket_utils::send_error_response(connection_id, state, "Failed to execute command: not authenticated").await?;
+            send_error_response(connection_id, state, "Failed to execute command: not authenticated").await?;
             return Ok(());
         }
     }
@@ -422,11 +426,11 @@ async fn route_command(
     // Route to appropriate handler based on command type
     
     if is_agent_command(&command) {
-        crate::server::websocket_commands::agent_commands::handle(command, connection_id, state).await
+        agent_commands::handle(command, connection_id, state).await
     } else if is_graph_command(&command) {
-        crate::server::websocket_commands::graph_commands::handle(command, connection_id, state, current_agent_id).await
+        graph_commands::handle(command, connection_id, state, current_agent_id).await
     } else {
-        crate::server::websocket_commands::misc_commands::handle(command, connection_id, state).await
+        misc_commands::handle(command, connection_id, state).await
     }
 }
 

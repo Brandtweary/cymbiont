@@ -111,7 +111,7 @@ pub enum StorageError {
 
     /// Transaction log errors (WAL operations)
     #[error("Transaction log error: {message}")]
-    TransactionLog { message: String },
+    Wal { message: String },
 
     /// Transaction coordination errors
     #[error("Transaction error: {message}")]
@@ -276,8 +276,8 @@ impl StorageError {
         StorageError::AgentRegistry { message: message.into() }
     }
 
-    pub fn transaction_log(message: impl Into<String>) -> Self {
-        StorageError::TransactionLog { message: message.into() }
+    pub fn wal(message: impl Into<String>) -> Self {
+        StorageError::Wal { message: message.into() }
     }
 
     pub fn transaction(message: impl Into<String>) -> Self {

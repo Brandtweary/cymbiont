@@ -1,62 +1,125 @@
-//! Transaction Recovery Module
+//! WAL-Based Recovery System
 //! 
-//! This module handles the execution of operations during transaction recovery.
-//! It provides the implementation details for replaying operations from the WAL
-//! without cluttering AppState.
+//! This module implements Cymbiont's complete recovery infrastructure, reconstructing
+//! all system state from the Write-Ahead Log (WAL). It serves as the foundation for
+//! crash recovery, lazy entity loading, and system bootstrapping.
 //!
-//! ## Design Philosophy
+//! ## Core Responsibilities
+//!
+//! ### System Reconstruction (`rebuild_from_wal`)
+//! Complete system state rebuild from committed transactions on startup:
+//! - Replays entire WAL to reconstruct registries and entities
+//! - Identifies which graphs and agents need reconstruction
+//! - Filters operations for specific entities being rebuilt
+//! - Unloads entities that shouldn't remain in memory
+//!
+//! ### Crash Recovery (`recover_pending_transactions`)
+//! Handles incomplete transactions after unexpected shutdown:
+//! - Identifies pending transactions with Active state
+//! - Temporarily opens closed graphs for recovery
+//! - Temporarily activates inactive agents for recovery
+//! - Commits successfully recovered transactions
+//! - Restores original open/active states after recovery
+//!
+//! ### Lazy Entity Loading
+//! On-demand reconstruction when entities are accessed:
+//! - `rebuild_graph_from_wal`: Reconstructs specific graph from WAL
+//! - `rebuild_agent_from_wal`: Reconstructs specific agent from WAL
+//! - Filters for entity-specific operations
+//! - Handles pending transactions for the entity
+//!
+//! ### JSON Export (`export_all_json`)
+//! Debug snapshots for inspection and testing:
+//! - Exports registries to JSON files
+//! - Temporarily opens closed graphs for export
+//! - Preserves memory efficiency by closing after export
+//! - Creates complete system snapshot for debugging
+//!
+//! ## Architectural Design
+//!
+//! ### RecoveryContext
+//! Encapsulates all resources needed for recovery operations:
+//! - Reference to AppState for accessing registries and managers
+//! - `is_rebuilding` flag to distinguish rebuild from normal recovery
+//! - Executes operations with skip_wal to prevent recursive logging
+//!
+//! ### Operation Execution
+//! Three-tier operation handling during recovery:
+//! 1. **Graph Operations**: Direct GraphManager mutations (blocks, pages)
+//! 2. **Agent Operations**: Conversation and configuration updates
+//! 3. **Registry Operations**: Entity lifecycle and authorization
+//!
+//! Each operation category has specialized execution logic that:
+//! - Ensures required entities are loaded before execution
+//! - Calls original methods with skip_wal=true
+//! - Handles deserialization of stored parameters
+//!
+//! ## Critical Design Constraint: Self-Referential Operations
 //! 
-//! Recovery logic is isolated here to keep AppState thin. AppState provides
-//! a RecoveryContext with all the resources needed, and this module handles
-//! the actual execution of operations during WAL replay.
+//! Some operations create paradoxes by modifying their own execution prerequisites.
+//! These "meta-operations" must be filtered during entity rebuild:
 //!
-//! ## Operation Categories
-//! 
-//! ### Graph Operations
-//! - Executed directly on GraphManager (no authorization needed during recovery)
-//! - Operations already validated when originally logged to WAL
+//! ### Graph Meta-Operations
+//! - `OpenGraph`: Would be redundant (graph is already open for rebuild)
+//! - `CloseGraph`: Would close the graph we're actively rebuilding
 //!
-//! ### Agent Operations  
-//! - Conversation history updates (AddMessage, ClearHistory, TrimContext)
-//! - Configuration changes (SetLLMConfig, SetSystemPrompt, SetDefaultGraph)
+//! ### Agent Meta-Operations  
+//! - `ActivateAgent`: Would be redundant (agent is already active)
+//! - `DeactivateAgent`: Would deactivate the agent we're rebuilding
 //!
-//! ### Registry Operations
-//! - Graph registry (RegisterGraph, RemoveGraph, OpenGraph, CloseGraph)
-//! - Agent registry (CreateAgent, DeleteAgent, ActivateAgent, etc.)
+//! ### Why This Matters
+//! During `rebuild_graph_from_wal`, we open a graph to reconstruct it. If we
+//! replay a CloseGraph operation from the WAL, it would close the very graph
+//! we're trying to rebuild, creating an infinite loop of open-rebuild-close.
 //!
-//! ## Important: Self-Referential Operations
-//! 
-//! Some operations modify the execution context required for replay itself, creating
-//! a self-referential paradox. When we open a graph to rebuild it from WAL, replaying
-//! a CloseGraph operation would close the very graph we're trying to rebuild.
+//! This is a fundamental constraint: the WAL cannot contain operations that
+//! prevent its own replay. When adding new operations, carefully consider
+//! whether they affect replay infrastructure or just business data.
 //!
-//! These "meta-operations" affect the replay system's own prerequisites:
-//! - `OpenGraph`/`CloseGraph` - Control whether a graph manager exists in memory
-//! - `ActivateAgent`/`DeactivateAgent` - Control whether an agent is loaded
+//! ## Recovery Strategies
 //!
-//! During entity rebuild, we must filter out these operations because:
-//! 1. The entity must remain open/active for replay to continue
-//! 2. The current open/active state represents the desired end state
-//! 3. These operations modify infrastructure state, not business data
+//! ### Full Rebuild (Startup)
+//! 1. Load registries to identify entities
+//! 2. Mark entities as needing reconstruction
+//! 3. Replay all committed transactions
+//! 4. Filter operations for relevant entities
+//! 5. Unload entities that shouldn't be in memory
 //!
-//! Future operations that may need filtering:
-//! - `RemoveGraph`/`RemoveAgent` - Would delete the entity being rebuilt
-//! - Any operation that modifies the replay system's execution environment
+//! ### Incremental Recovery (Crash)
+//! 1. Scan for pending transactions
+//! 2. Temporarily load required entities
+//! 3. Execute pending operations
+//! 4. Commit successful recoveries
+//! 5. Restore original entity states
 //!
-//! This is a fundamental architectural constraint: the WAL cannot contain operations
-//! that would prevent its own replay. When adding new operations, consider whether
-//! they affect the replay infrastructure or just the data within it.
+//! ### Lazy Loading (On-Demand)
+//! 1. Entity requested but not in memory
+//! 2. Create empty entity instance
+//! 3. Replay entity-specific operations from WAL
+//! 4. Skip meta-operations that would affect loaded state
+//! 5. Process any pending transactions for entity
+//!
+//! ## Error Handling Philosophy
+//!
+//! Recovery operations follow a "best effort" approach:
+//! - Individual operation failures are logged but don't halt recovery
+//! - Recovery continues with remaining operations
+//! - Failed operations remain in pending state for manual resolution
+//! - System achieves best possible state given available operations
+//!
+//! This ensures maximum system availability even with partial data corruption
+//! or operation incompatibilities after version changes.
 
 use crate::{
-    agent::{agent::Agent, llm::{Message, LLMConfig}},
-    graph_manager::GraphManager,
-    graph_operations::GraphOps,
+    agent::{agent::Agent, agent_registry::AgentRegistry, llm::{Message, LLMConfig}},
+    graph::{graph_manager::GraphManager, graph_operations::GraphOps},
+    graph::graph_registry::GraphRegistry,
     storage::{
-        self, GraphRegistry,
         TransactionCoordinator,
-        transaction_log::{
+        wal::{
             Operation, GraphOperation, AgentOperation, 
             RegistryOperation, GraphRegistryOp, AgentRegistryOp,
+            TransactionState,
         },
     },
     error::*,
@@ -554,7 +617,7 @@ async fn recover_entity_transactions(
         if is_for_entity {
             // Only process Active transactions (includes deferred with reasons)
             match transaction.state {
-                crate::storage::transaction_log::TransactionState::Active => {
+                TransactionState::Active => {
                     // Attempt recovery
                     if let Err(e) = context.execute_operation(transaction.operation).await {
                         error!("Failed to recover {} transaction {}: {}", entity_type, transaction.id, e);
@@ -562,7 +625,7 @@ async fn recover_entity_transactions(
                         recovered += 1;
                         coordinator.log.update_transaction_state(
                             &transaction.id,
-                            crate::storage::transaction_log::TransactionState::Committed
+                            TransactionState::Committed
                         )?;
                     }
                 }
@@ -657,7 +720,6 @@ pub async fn rebuild_graph_from_wal(
         let should_replay = match &transaction.operation {
             // Registry operations for this graph
             Operation::Registry(RegistryOperation::Graph(op)) => {
-                use crate::storage::transaction_log::GraphRegistryOp;
                 match op {
                     // CRITICAL: Skip OpenGraph/CloseGraph operations during rebuild
                     // These are "meta-operations" that would modify the execution context
@@ -768,7 +830,7 @@ pub async fn recover_pending_transactions(app_state: &Arc<AppState>) -> Result<u
         
         if !is_open {
             // Open the graph temporarily (skip WAL since we'll close it again)
-            if let Err(e) = storage::GraphRegistry::open_graph_complete(
+            if let Err(e) = GraphRegistry::open_graph_complete(
                 app_state.graph_registry.clone(),
                 graph_id,
                 true  // skip_wal for temporary operation
@@ -790,7 +852,7 @@ pub async fn recover_pending_transactions(app_state: &Arc<AppState>) -> Result<u
         
         if !is_active {
             // Activate the agent temporarily (skip WAL since we'll deactivate again)
-            if let Err(e) = storage::AgentRegistry::activate_agent_complete(
+            if let Err(e) = AgentRegistry::activate_agent_complete(
                 app_state.agent_registry.clone(),
                 agent_id,
                 true  // skip_wal for temporary operation
@@ -807,7 +869,7 @@ pub async fn recover_pending_transactions(app_state: &Arc<AppState>) -> Result<u
     for transaction in pending {
         // Handle Active state (includes deferred with reasons)
         match transaction.state {
-            crate::storage::transaction_log::TransactionState::Active => {
+            TransactionState::Active => {
                 // Execute the recovery
                 if let Err(e) = context.execute_operation(transaction.operation).await {
                     error!("Failed to recover transaction {}: {}", transaction.id, e);
@@ -816,7 +878,7 @@ pub async fn recover_pending_transactions(app_state: &Arc<AppState>) -> Result<u
                     // Mark transaction as committed
                     app_state.transaction_coordinator.log.update_transaction_state(
                         &transaction.id,
-                        crate::storage::transaction_log::TransactionState::Committed
+                        TransactionState::Committed
                     )?;
                 }
             }
@@ -955,7 +1017,6 @@ pub async fn rebuild_agent_from_wal(
         let should_replay = match &transaction.operation {
             // Registry operations for this agent
             Operation::Registry(RegistryOperation::Agent(op)) => {
-                use crate::storage::transaction_log::AgentRegistryOp;
                 match op {
                     // CRITICAL: Skip ActivateAgent/DeactivateAgent operations during rebuild
                     // Same self-referential issue as OpenGraph/CloseGraph - these operations

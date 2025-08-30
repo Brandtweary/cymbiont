@@ -14,14 +14,14 @@
 //!
 //! ## Components
 //!
-//! ### Transaction Log (`transaction_log.rs`)
+//! ### Write-Ahead Log (`wal.rs`)
 //! Write-ahead logging with ACID guarantees using sled embedded database:
 //! - Comprehensive operation types: Graph, Agent, Registry operations
 //! - Content hash deduplication to prevent duplicate processing
 //! - Three logical trees: transactions, content_hash_index, pending_index
 //! - State transitions: Active → Committed | Aborted
 //!
-//! ### Transaction Coordinator (`transaction.rs`) 
+//! ### Transaction Coordinator (`transaction_coordinator.rs`) 
 //! High-level transaction lifecycle management:
 //! - Global coordinator for all operation types
 //! - Duplicate detection via SHA-256 content hashing
@@ -34,12 +34,6 @@
 //! - Replays entire WAL on startup
 //! - Rebuilds complete state from operations
 //! - Handles graph, agent, and registry operations
-//!
-//! ### Registries (In-Memory Only)
-//! - **Graph Registry (`graph_registry.rs`)**: Graph metadata and open/closed states
-//! - **Agent Registry (`agent_registry.rs`)**: Agent metadata and authorization
-//! - No automatic JSON persistence - state lives in memory
-//! - JSON generation available on-demand for debugging
 //!
 //! ## Data Flow
 //!
@@ -67,15 +61,10 @@
 //! Ready to Serve
 //! ```
 
-pub mod registry_utils;
-pub mod agent_registry;
-pub mod graph_registry;
-pub mod transaction;
-pub mod transaction_log;
+pub mod transaction_coordinator;
+pub mod wal;
 pub mod recovery;
 
 // Re-export commonly used types
-pub use graph_registry::GraphRegistry;
-pub use agent_registry::AgentRegistry;
-pub use transaction_log::{TransactionLog, Operation};
-pub use transaction::TransactionCoordinator;
+pub use wal::{TransactionLog, Operation};
+pub use transaction_coordinator::TransactionCoordinator;

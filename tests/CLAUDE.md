@@ -4,8 +4,7 @@
 - **common/**: Shared test utilities - imported via `#[path = "../common/mod.rs"]`
   - **mod.rs**: Test environment setup (`setup_test_env()`, `cleanup_test_env()`)
   - **test_harness.rs**: `TestServer` lifecycle management
-  - **graph_validation.rs**: Automated graph state validation for integration tests
-  - **agent_validation.rs**: Agent state and conversation validation for integration tests
+  - **wal_validation.rs**: WAL-based state validation for integration tests
 - **integration/**: Integration test suite (single binary for parallelism)
   - **main.rs**: Entry point - imports common utilities and test modules
   - **http_logseq_import.rs**: HTTP API import tests
@@ -48,25 +47,12 @@
 - `send_command_async(ws, cmd)`: Send command without waiting for response
 - `read_pending_response(ws) -> Value`: Read response with timeout handling
 
-### common/graph_validation.rs
-- `GraphValidationFixture::new()`: Create fixture to track expected graph transformations
-- `expect_dummy_graph()`: Set up expectations for imported dummy_graph test data
-- `expect_create_block(id, content, page_name)`: Track block creation expectations
-- `expect_update_block(id, new_content)`: Track block content updates (preserves edges)
-- `expect_delete(id)`: Track node deletion expectations
-- `expect_edge(source_id, target_id, edge_type)`: Track custom edge expectations (ParentChild, PageToBlock, etc.)
-- `validate_graph(data_dir, graph_id)`: Validate all expectations against persisted graph state
-
-### common/agent_validation.rs
-- `validate_agent_registry_schema(data_dir)`: Validate agent registry structure and return agent map
-- `AgentValidationFixture::new()`: Create fixture to track expected agent state and conversations
-- `expect_agent_created(id, name, is_prime)`: Track agent creation with prime status
-- `expect_agent_deleted/activated/deactivated(id)`: Track agent lifecycle changes
-- `expect_user_message/assistant_message/tool_message(agent_id, pattern)`: Track conversation messages with pattern matching
-- `expect_chat_reset(agent_id)`: Clear expected conversation for an agent
-- `expect_prime_agent(prime_id)`: Helper to set up prime agent expectations
-- `expect_authorization/deauthorization(agent_id, graph_id)`: Track agent-graph authorization changes
-- `validate_all(data_dir)`: Validate all expectations against persisted agent state
+### common/wal_validation.rs
+- `WALValidationFixture::new()`: Create fixture to track expected WAL operations
+- `expect_operation(op)`: Add expected operation to validate against WAL
+- `validate_wal(data_dir)`: Verify operations exist in transaction log
+- `validate_graph_state(data_dir, graph_id)`: Check graph state from WAL
+- `validate_agent_state(data_dir, agent_id)`: Check agent state from WAL
 
 ## MockLLM Testing
 MockLLM is the test LLM backend with two control mechanisms:

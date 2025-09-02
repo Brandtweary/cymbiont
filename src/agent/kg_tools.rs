@@ -1,13 +1,14 @@
 //! Knowledge Graph Tools for LLM Agents
 //!
 //! This module provides a simple, efficient tool system for agents to interact
-//! with the knowledge graph. Tools are registered in a static HashMap for fast
-//! dispatch without ownership complexity.
+//! with the knowledge graph through the CQRS architecture. Tools are registered
+//! in a static HashMap for fast dispatch without ownership complexity.
 //!
 //! ## Design Philosophy
 //!
 //! - **Static Registry**: Tools are function pointers in a static HashMap
-//! - **No Ownership**: Tools receive AppState as a parameter, don't own it
+//! - **CQRS Integration**: All mutations route through CommandQueue
+//! - **No Direct State Access**: Tools use GraphOps trait which submits commands
 //! - **Simple Functions**: Each tool is a focused 10-20 line function
 //! - **Pure Data Schemas**: Tool definitions are just data for the LLM
 //!
@@ -40,14 +41,24 @@
 //! // Get tool schemas for LLM
 //! let tools = kg_tools::get_tool_schemas();
 //!
-//! // Execute a tool
+//! // Execute a tool (mutations go through CQRS)
 //! let result = kg_tools::execute_tool(
 //!     app_state,
-//!     agent_id,
+//!     &mut agent,
 //!     "add_block",
 //!     json!({"content": "Hello", "graph_id": "..."})
 //! ).await?;
 //! ```
+//!
+//! ## CQRS Architecture
+//!
+//! Tools don't directly modify state. Instead:
+//! 1. Tool functions call GraphOps methods on AppState
+//! 2. GraphOps methods submit commands to CommandQueue
+//! 3. CommandProcessor executes commands sequentially
+//! 4. State changes are logged to command WAL for recovery
+//!
+//! This ensures all mutations are audited, recoverable, and deadlock-free.
 
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
@@ -58,11 +69,11 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 use crate::app_state::AppState;
 use crate::graph::graph_operations::GraphOps;
-use crate::lock::AsyncRwLockExt;
+use crate::utils::AsyncRwLockExt;
 use crate::error::*;
 use crate::agent::schemas::ToolDefinition;
-use crate::agent::agent::{Agent, ToolResult};
-use crate::agent::llm::ToolCall;
+use crate::agent::agent::Agent;
+use crate::cqrs::{Command, AgentCommand};
 
 
 
@@ -118,51 +129,6 @@ pub async fn execute_tool(
         .ok_or_else(|| AgentError::tool(format!("Tool not found: {}", tool_name)))?;
     
     tool(app_state, agent, args).await
-}
-
-/// Phase 3: Execute tools without holding agent locks
-/// 
-/// Static function that executes tools by getting agent data as needed
-/// without maintaining locks during tool execution
-pub async fn execute_tools_stateless(
-    app_state: &Arc<AppState>,
-    agent_id: Uuid,
-    tool_calls: Vec<ToolCall>,
-) -> Result<Vec<ToolResult>> {
-    use crate::lock::AsyncRwLockExt;
-    
-    tracing::debug!("Phase 3: Executing {} tools for agent {}", tool_calls.len(), agent_id);
-    
-    let mut results = Vec::new();
-    
-    for tool_call in tool_calls {
-        tracing::debug!("Phase 3: Executing tool '{}' for agent {}", tool_call.name, agent_id);
-        
-        // Get agent briefly to execute tool
-        let result = {
-            let agents = app_state.agents.read_or_panic("execute tools stateless").await;
-            match agents.get(&agent_id) {
-                Some(agent_arc) => {
-                    // Lock agent only during tool execution, not for registry operations
-                    let mut agent = agent_arc.write_or_panic("execute tool").await;
-                    agent.execute_tool(app_state, &tool_call.name, tool_call.arguments.clone()).await?
-                }
-                None => {
-                    return Err(AgentError::tool(format!("Agent {} not found", agent_id)).into());
-                }
-            }
-        };
-        
-        results.push(ToolResult {
-            name: tool_call.name.clone(),
-            arguments: tool_call.arguments,
-            result,
-        });
-        
-        tracing::debug!("Phase 3: Tool '{}' completed for agent {}", tool_call.name, agent_id);
-    }
-    
-    Ok(results)
 }
 
 /// Get tool schemas for the LLM
@@ -235,7 +201,7 @@ fn add_block<'a>(
         
         let graph_id = parse_graph_target(app_state, agent, &args, false).await?;
         
-        match app_state.add_block(agent.id, content, parent_id, page_name, properties, &graph_id, false).await {
+        match app_state.add_block(agent.id, content, parent_id, page_name, properties, &graph_id).await {
             Ok(block_id) => Ok(json!({
                 "success": true,
                 "block_id": block_id
@@ -266,7 +232,7 @@ fn update_block<'a>(
         
         let graph_id = parse_graph_target(app_state, agent, &args, false).await?;
         
-        match app_state.update_block(agent.id, block_id, content, &graph_id, false).await {
+        match app_state.update_block(agent.id, block_id, content, &graph_id).await {
             Ok(()) => Ok(json!({
                 "success": true
             })),
@@ -291,7 +257,7 @@ fn delete_block<'a>(
         
         let graph_id = parse_graph_target(app_state, agent, &args, false).await?;
         
-        match app_state.delete_block(agent.id, block_id, &graph_id, false).await {
+        match app_state.delete_block(agent.id, block_id, &graph_id).await {
             Ok(()) => Ok(json!({
                 "success": true
             })),
@@ -320,7 +286,7 @@ fn create_page<'a>(
         
         let graph_id = parse_graph_target(app_state, agent, &args, false).await?;
         
-        match app_state.create_page(agent.id, page_name, properties, &graph_id, false).await {
+        match app_state.create_page(agent.id, page_name, properties, &graph_id).await {
             Ok(()) => Ok(json!({
                 "success": true
             })),
@@ -345,7 +311,7 @@ fn delete_page<'a>(
         
         let graph_id = parse_graph_target(app_state, agent, &args, false).await?;
         
-        match app_state.delete_page(agent.id, page_name, &graph_id, false).await {
+        match app_state.delete_page(agent.id, page_name, &graph_id).await {
             Ok(()) => Ok(json!({
                 "success": true
             })),
@@ -516,9 +482,12 @@ fn create_graph<'a>(
                     .unwrap();
                 
                 if agent.get_default_graph_id().is_none() {
-                    tracing::debug!("create_graph: Setting default graph for agent {}", agent.id);
-                    agent.set_default_graph_id(Some(graph_id), false).await?;
-                    tracing::debug!("create_graph: Default graph set successfully");
+                    // Submit command to set default graph
+                    let command = Command::Agent(AgentCommand::SetDefaultGraph {
+                        agent_id: agent.id,
+                        graph_id: Some(graph_id),
+                    });
+                    app_state.command_queue.execute(command).await?;
                     tracing::info!("Set default graph for agent {} to new graph {}", agent.id, graph_id);
                 }
                 
@@ -580,13 +549,24 @@ fn set_default_graph<'a>(
             }));
         }
         
-        // Update the agent's default graph directly (we already have mutable access)
-        agent.set_default_graph_id(Some(graph_id), false).await?;
+        // Submit command to set default graph
+        let command = Command::Agent(AgentCommand::SetDefaultGraph {
+            agent_id: agent.id,
+            graph_id: Some(graph_id),
+        });
         
-        Ok(json!({
-            "success": true,
-            "graph_id": graph_id.to_string()
-        }))
+        match app_state.command_queue.execute(command).await {
+            Ok(_) => {
+                Ok(json!({
+                    "success": true,
+                    "graph_id": graph_id.to_string()
+                }))
+            },
+            Err(e) => Ok(json!({
+                "success": false,
+                "error": e.to_string()
+            }))
+        }
     })
 }
 

@@ -80,7 +80,7 @@ use tracing::{error, warn};
 use uuid::Uuid;
 
 use crate::error::*;
-use crate::lock::AsyncRwLockExt;
+use crate::utils::AsyncRwLockExt;
 use crate::AppState;
 use crate::server::{
     websocket_utils::{send_error_response, is_authenticated},

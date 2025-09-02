@@ -4,7 +4,8 @@ use crate::common::{setup_test_env, cleanup_test_env, WalValidator, MessagePatte
 use crate::common::test_harness::{
     PreShutdown, PostShutdown, assert_phase,
     connect_websocket, send_command, expect_success, 
-    authenticate_websocket, setup_with_graph, read_auth_token
+    authenticate_websocket, setup_with_graph, read_auth_token,
+    agent_chat_sync
 };
 
 /// Test agent chat commands (chat, select, history, reset, list)
@@ -266,7 +267,7 @@ pub fn test_agent_admin_commands() {
             let id_str = data["agent_id"].as_str().expect("No agent_id in response");
             let id = Uuid::parse_str(id_str).expect("Invalid UUID");
             
-            validator.expect_agent_created(id, "Test Agent", false);
+            validator.expect_agent_created(id, "Test Agent");
             id
         };
         
@@ -302,13 +303,8 @@ pub fn test_agent_admin_commands() {
         
         // Send a message to the secondary agent
         {
-            let cmd = json!({
-                "type": "agent_chat",
-                "message": "Hello from test!",
-                "echo": "Hello! I'm Test Agent, ready to assist."
-            });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).expect("No data in agent_chat response");
+            let data = agent_chat_sync(&mut ws, "Hello from test!", 
+                Some("Hello! I'm Test Agent, ready to assist."), None);
             
             // Verify it went to the correct agent
             assert_eq!(data["agent_id"].as_str(), Some(secondary_agent_id.to_string().as_str()));

@@ -30,9 +30,9 @@
 //! is implemented in separate modules that use GraphManager's generic API.
 //! 
 //! ### Persistence Strategy
-//! Graph state is persisted through the Write-Ahead Log (WAL) transaction system.
-//! All mutations are logged to WAL before execution, providing ACID guarantees.
-//! The graph structure is rebuilt from WAL replay on startup.
+//! Graph state is persisted through the CQRS command log system.
+//! All mutations flow through CommandQueue and are logged before execution.
+//! The graph structure is rebuilt from command replay on startup.
 //! 
 //! ## Data Structures
 //! 
@@ -72,7 +72,7 @@
 //! 
 //! ### Persistence Operations
 //! - `new()`: Initialize empty graph manager
-//! - Graph state rebuilt from WAL replay during recovery
+//! - Graph state rebuilt from command replay during recovery
 //! 
 //! ## Performance Characteristics
 //! 
@@ -84,15 +84,15 @@
 //! 
 //! ## Concurrency Model
 //! 
-//! GraphManager is designed for single-threaded access protected by external
-//! synchronization (typically a Mutex in the application layer):
-//! - All operations assume exclusive access
-//! - Batch operations should hold the lock for the entire sequence
+//! GraphManager is owned exclusively by CommandProcessor in the CQRS architecture:
+//! - All mutations require a RouterToken proving authorization
+//! - Operations are executed sequentially by the CommandProcessor
+//! - No external locking needed as CommandProcessor is single-threaded
 //! 
 //! ## Error Handling
 //! 
 //! - **Initialization failures**: Falls back to empty graph (non-fatal)
-//! - **Transaction failures**: Operations rolled back, state unchanged
+//! - **Command failures**: Operations rolled back, state unchanged
 //! - **Archive failures**: Propagated to caller, graph state unchanged
 //! 
 //! ## Persistence Format
@@ -108,10 +108,10 @@
 //! 
 //! ## Integration Points
 //! 
-//! - **Transaction Layer**: All mutations go through WAL for durability
+//! - **CQRS Layer**: All mutations go through CommandQueue for durability
 //! - **Domain Layer**: Called by domain-specific modules (e.g., `pkm_data`)
 //! - **API Layer**: Wrapped by `graph_operations` for external access
-//! - **Recovery Layer**: State rebuilt from WAL operations on startup
+//! - **Recovery Layer**: State rebuilt from command replay on startup
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -223,8 +223,8 @@ pub struct GraphManager {
 impl GraphManager {
     /// Create a new empty graph manager
     /// 
-    /// The graph state will be rebuilt from WAL replay during recovery.
-    /// No JSON loading occurs - the WAL is the source of truth.
+    /// The graph state will be rebuilt from command replay during recovery.
+    /// No JSON loading occurs - the command log is the source of truth.
     pub fn new<P: AsRef<Path>>(data_dir: P) -> Result<Self> {
         // Ensure directories exist
         std::fs::create_dir_all(data_dir.as_ref())
@@ -244,7 +244,7 @@ impl GraphManager {
     /// Export the graph to JSON for debugging/inspection
     /// 
     /// Used by the test harness to validate graph state after operations.
-    /// The WAL is the authoritative source of truth for runtime.
+    /// The command log is the authoritative source of truth for runtime.
     pub fn export_json(&self, path: &Path) -> Result<()> {
         let data = serde_json::json!({
             "version": 1,
@@ -354,7 +354,7 @@ impl GraphManager {
     /// Delete nodes from the graph
     /// 
     /// Removes nodes and all their edges from the graph.
-    /// The deletion is logged to WAL for recovery/history.
+    /// The deletion is logged to command WAL for recovery/history.
     pub fn delete_nodes(&mut self, nodes: Vec<(String, NodeIndex)>) -> Result<usize> {
         let mut deleted_count = 0;
         

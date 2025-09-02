@@ -52,7 +52,7 @@ use tracing::{info, warn, error};
 use uuid::Uuid;
 
 use crate::error::*;
-use crate::lock::AsyncRwLockExt;
+use crate::utils::AsyncRwLockExt;
 use crate::AppState;
 
 /// Generate a new cryptographically secure auth token

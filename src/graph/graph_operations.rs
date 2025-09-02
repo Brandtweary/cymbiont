@@ -9,8 +9,12 @@
 //! ```rust
 //! use graph_operations::GraphOps;
 //! 
-//! // Operations require agent_id for authorization
-//! app_state.add_block(agent_id, content, parent_id, page_name, properties, &graph_id, skip_wal).await?;
+//! // All mutations go through CommandQueue
+//! let response = app_state.command_queue.execute(
+//!     Command::Graph(GraphCommand::CreateBlock { 
+//!         agent_id, graph_id, content, parent_id 
+//!     })
+//! ).await?;
 //! ```
 //! 
 //! This pattern provides several benefits:
@@ -86,26 +90,25 @@
 //! 
 //! When adding new operations, follow these steps:
 //! 
-//! 1. **Define the Operation variant** in `storage/wal.rs`:
-//!    - Add new variant to `Operation` enum with agent_id and all parameters
-//!    - Include all data needed to replay the operation during recovery
+//! 1. **Define the Command variant** in `cqrs/commands.rs`:
+//!    - Add new variant to `GraphCommand` enum with agent_id and all parameters
+//!    - Include all data needed to replay the command during recovery
 //! 
 //! 2. **Add the trait method** to `GraphOps` trait in this file:
-//!    - Include agent_id: Uuid as first parameter
+//!    - Include agent_id: Uuid as first parameter  
 //!    - Add graph_id: &Uuid parameter for graph targeting
 //!    - Return appropriate Result<T> type
+//!    - Route to `command_queue.execute()` internally
 //! 
-//! 3. **Implement the operation** in `impl GraphOps for Arc<AppState>`:
-//!    - Call `check_authorization()` to verify agent access
-//!    - Create Operation enum (or None if skip_wal)
-//!    - Call `coordinator.begin(operation)` to start transaction
-//!    - Perform the actual graph modifications
-//!    - Call `tx.commit()` to finalize the transaction
+//! 3. **Implement command handling** in `cqrs/router.rs`:
+//!    - Add match arm in `apply_graph_command()` method
+//!    - Call helper function with RouterToken for authorization
+//!    - All mutations automatically logged to WAL
 //! 
-//! 4. **Add to RecoveryContext** in `storage/recovery.rs`:
-//!    - Add match arm in execute_operation() method
-//!    - Map operation parameters to appropriate recovery logic
-//!    - Handle recovery-specific considerations (skip_wal, etc.)
+//! 4. **Create helper function** in this file:
+//!    - Takes RouterToken as first parameter (enforces CQRS routing)
+//!    - Implements the actual graph operation logic
+//!    - Handles PKM-specific concerns (reference resolution, etc.)
 //! 
 //! 5. **Register in tool registry** (optional) in `agent/kg_tools.rs`:
 //!    - Add tool registration in appropriate category
@@ -126,20 +129,13 @@
 use crate::{
     AppState,
     agent::agent_registry::AgentRegistry,
-    graph::graph_registry::GraphRegistry,
-    storage::{ 
-        wal::{
-            Operation, GraphOperation
-        }
-    },
-    import::pkm_data,
+    cqrs::{Command, GraphCommand, RegistryCommand, GraphRegistryCommand},
 };
 use std::sync::Arc;
-use tracing::{warn, info};
-use serde_json::json;
+use tracing::info;
 use uuid::Uuid;
 use crate::error::*;
-use crate::lock::AsyncRwLockExt;
+use crate::utils::AsyncRwLockExt;
 
 
 /// Helper to verify agent authorization for a graph operation.
@@ -184,7 +180,6 @@ pub trait GraphOps {
         page_name: Option<String>,
         properties: Option<serde_json::Value>,
         graph_id: &Uuid,
-        skip_wal: bool,
     ) -> Result<String>;
 
     /// Update block with agent authorization
@@ -194,7 +189,6 @@ pub trait GraphOps {
         block_id: String,
         content: String,
         graph_id: &Uuid,
-        skip_wal: bool,
     ) -> Result<()>;
 
     /// Delete block with agent authorization
@@ -203,7 +197,6 @@ pub trait GraphOps {
         agent_id: Uuid,
         block_id: String,
         graph_id: &Uuid,
-        skip_wal: bool,
     ) -> Result<()>;
 
     /// Create page with agent authorization
@@ -213,7 +206,6 @@ pub trait GraphOps {
         page_name: String,
         properties: Option<serde_json::Value>,
         graph_id: &Uuid,
-        skip_wal: bool,
     ) -> Result<()>;
 
     /// Delete page with agent authorization
@@ -222,7 +214,6 @@ pub trait GraphOps {
         agent_id: Uuid,
         page_name: String,
         graph_id: &Uuid,
-        skip_wal: bool,
     ) -> Result<()>;
     
     /// Get a node by ID with agent authorization
@@ -260,54 +251,30 @@ impl GraphOps for Arc<AppState> {
         page_name: Option<String>,
         properties: Option<serde_json::Value>,
         graph_id: &Uuid,
-        skip_wal: bool,
     ) -> Result<String> {
         check_authorization(&self.agent_registry, &agent_id, graph_id).await?;
         
-        // Create the WAL operation only if not skipping WAL
-        let operation = if skip_wal {
-            None
-        } else {
-            Some(Operation::Graph(GraphOperation::CreateBlock {
-                graph_id: *graph_id,
-                agent_id,
-                content: content.clone(),
-                parent_id: parent_id.clone(),
-                page_name: page_name.clone(),
-                properties: properties.clone(),
-            }))
-        };
-        
-        let coordinator = &self.transaction_coordinator;
-        let tx = coordinator.begin(operation).await
-            .map_err(|e| GraphError::lifecycle(e.to_string()))?;
-        
-        // Get managers directly from AppState
-        let managers = self.graph_managers.read_or_panic("add block - read managers").await;
-        let manager_lock = managers.get(graph_id)
-            .ok_or_else(|| GraphError::not_found(graph_id.to_string()))?;
-        let mut manager = manager_lock.write_or_panic("add block - write manager").await;
-        
-        // Create block with reference resolution
-        let (block_id, _reference_content) = pkm_data::create_block_with_resolution(
-            &mut manager,
+        // Submit command to CQRS system
+        let command = Command::Graph(GraphCommand::CreateBlock {
+            graph_id: *graph_id,
+            agent_id,
             content,
-            properties.as_ref(),
-        )?;
+            parent_id,
+            page_name,
+            properties,
+        });
         
-        // Setup relationships
-        pkm_data::setup_block_relationships(
-            &mut manager,
-            &block_id,
-            parent_id.as_deref(),
-            page_name.as_deref(),
-        )?;
+        let result = self.command_queue.execute(command).await?;
         
-        // Commit the transaction
-        tx.commit().await
-            .map_err(|e| GraphError::lifecycle(e.to_string()))?;
-        
-        Ok(block_id)
+        // Extract block_id from result
+        if result.success {
+            if let Some(data) = result.data {
+                if let Some(block_id) = data.get("block_id").and_then(|v| v.as_str()) {
+                    return Ok(block_id.to_string());
+                }
+            }
+        }
+        Err(GraphError::invalid_state("Failed to create block").into())
     }
     
     async fn update_block(
@@ -316,85 +283,32 @@ impl GraphOps for Arc<AppState> {
         block_id: String,
         content: String,
         graph_id: &Uuid,
-        skip_wal: bool,
     ) -> Result<()> {
         check_authorization(&self.agent_registry, &agent_id, graph_id).await?;
         
-        // Create the WAL operation only if not skipping WAL
-        let operation = if skip_wal {
-            None
-        } else {
-            Some(Operation::Graph(GraphOperation::UpdateBlock {
-                graph_id: *graph_id,
-                agent_id,
-                block_id: block_id.clone(),
-                content: content.clone(),
-            }))
-        };
-        
-        let coordinator = &self.transaction_coordinator;
-        let tx = coordinator.begin(operation).await
-            .map_err(|e| GraphError::lifecycle(e.to_string()))?;
-        
-        // Get managers directly from AppState
-        let managers = self.graph_managers.read_or_panic("update block - read managers").await;
-        let manager_lock = managers.get(graph_id)
-            .ok_or_else(|| GraphError::not_found(graph_id.to_string()))?;
-        let mut manager = manager_lock.write_or_panic("update block - write manager").await;
-        
-        // Update block with reference resolution
-        pkm_data::update_block_with_resolution(
-            &mut manager,
-            &block_id,
+        // Submit command to CQRS system
+        let command = Command::Graph(GraphCommand::UpdateBlock {
+            graph_id: *graph_id,
+            agent_id,
+            block_id,
             content,
-        )?;
+        });
         
-        // Commit the transaction
-        tx.commit().await
-            .map_err(|e| GraphError::lifecycle(e.to_string()))?;
-        
+        self.command_queue.execute(command).await?;
         Ok(())
     }
     
-    async fn delete_block(&self, agent_id: Uuid, block_id: String, graph_id: &Uuid, skip_wal: bool) -> Result<()> {
+    async fn delete_block(&self, agent_id: Uuid, block_id: String, graph_id: &Uuid) -> Result<()> {
         check_authorization(&self.agent_registry, &agent_id, graph_id).await?;
         
-        // Create the WAL operation only if not skipping WAL
-        let operation = if skip_wal {
-            None
-        } else {
-            Some(Operation::Graph(GraphOperation::DeleteBlock {
-                graph_id: *graph_id,
-                agent_id,
-                block_id: block_id.clone(),
-            }))
-        };
+        // Submit command to CQRS system
+        let command = Command::Graph(GraphCommand::DeleteBlock {
+            graph_id: *graph_id,
+            agent_id,
+            block_id,
+        });
         
-        // Clone for error handling
-        let block_id_for_error = block_id.clone();
-        
-        let coordinator = &self.transaction_coordinator;
-        let tx = coordinator.begin(operation).await
-            .map_err(|e| GraphError::lifecycle(e.to_string()))?;
-        
-        // Get managers directly from AppState
-        let managers = self.graph_managers.read_or_panic("delete block - read managers").await;
-        let manager_lock = managers.get(graph_id)
-            .ok_or_else(|| GraphError::not_found(graph_id.to_string()))?;
-        let mut manager = manager_lock.write_or_panic("delete block - write manager").await;
-        
-        if let Some(node_idx) = manager.find_node(&block_id) {
-            // Archive the node
-            manager.delete_nodes(vec![(block_id.clone(), node_idx)])
-                .map_err(|e| GraphError::lifecycle(e.to_string()))?;
-        } else {
-            return Err(GraphError::node_not_found(block_id_for_error, *graph_id).into());
-        }
-        
-        // Commit the transaction
-        tx.commit().await
-            .map_err(|e| GraphError::lifecycle(e.to_string()))?;
-        
+        self.command_queue.execute(command).await?;
         Ok(())
     }
     
@@ -404,130 +318,66 @@ impl GraphOps for Arc<AppState> {
         page_name: String,
         properties: Option<serde_json::Value>,
         graph_id: &Uuid,
-        skip_wal: bool,
     ) -> Result<()> {
         check_authorization(&self.agent_registry, &agent_id, graph_id).await?;
         
-        // Create the WAL operation only if not skipping WAL
-        let operation = if skip_wal {
-            None
-        } else {
-            Some(Operation::Graph(GraphOperation::CreatePage {
-                graph_id: *graph_id,
-                agent_id,
-                page_name: page_name.clone(),
-                properties: properties.clone(),
-            }))
-        };
+        // Submit command to CQRS system
+        let command = Command::Graph(GraphCommand::CreatePage {
+            graph_id: *graph_id,
+            agent_id,
+            page_name,
+            properties,
+        });
         
-        let coordinator = &self.transaction_coordinator;
-        let tx = coordinator.begin(operation).await
-            .map_err(|e| GraphError::lifecycle(e.to_string()))?;
-        
-        // Get managers directly from AppState
-        let managers = self.graph_managers.read_or_panic("create page - read managers").await;
-        let manager_lock = managers.get(graph_id)
-            .ok_or_else(|| GraphError::not_found(graph_id.to_string()))?;
-        let mut manager = manager_lock.write_or_panic("create page - write manager").await;
-        
-        // Create or update page with properties
-        pkm_data::create_or_update_page(
-            &mut manager,
-            &page_name,
-            properties.as_ref(),
-        )?;
-        
-        // Commit the transaction
-        tx.commit().await
-            .map_err(|e| GraphError::lifecycle(e.to_string()))?;
-        
+        self.command_queue.execute(command).await?;
         Ok(())
     }
     
-    async fn delete_page(&self, agent_id: Uuid, page_name: String, graph_id: &Uuid, skip_wal: bool) -> Result<()> {
+    async fn delete_page(&self, agent_id: Uuid, page_name: String, graph_id: &Uuid) -> Result<()> {
         check_authorization(&self.agent_registry, &agent_id, graph_id).await?;
         
-        // Create the WAL operation only if not skipping WAL
-        let operation = if skip_wal {
-            None
-        } else {
-            Some(Operation::Graph(GraphOperation::DeletePage {
-                graph_id: *graph_id,
-                agent_id,
-                page_name: page_name.clone(),
-            }))
-        };
+        // Submit command to CQRS system
+        let command = Command::Graph(GraphCommand::DeletePage {
+            graph_id: *graph_id,
+            agent_id,
+            page_name,
+        });
         
-        // Clone for error handling (move closure captures the original)
-        let page_name_for_error = page_name.clone();
-        
-        let coordinator = &self.transaction_coordinator;
-        let tx = coordinator.begin(operation).await
-            .map_err(|e| GraphError::lifecycle(e.to_string()))?;
-        
-        // Get managers directly from AppState
-        let managers = self.graph_managers.read_or_panic("delete page - read managers").await;
-        let manager_lock = managers.get(graph_id)
-            .ok_or_else(|| GraphError::not_found(graph_id.to_string()))?;
-        let mut manager = manager_lock.write_or_panic("delete page - write manager").await;
-        
-        // Find page by original or normalized name
-        let (normalized_name, node_idx) = pkm_data::find_page_for_deletion(
-            &manager,
-            &page_name,
-        ).map_err(|_| GraphError::node_not_found(page_name_for_error, *graph_id))?;
-        
-        // Archive the node
-        manager.delete_nodes(vec![(normalized_name, node_idx)])
-            .map_err(|e| GraphError::lifecycle(e.to_string()))?;
-        
-        // Commit the transaction
-        tx.commit().await
-            .map_err(|e| GraphError::lifecycle(e.to_string()))?;
-        
+        self.command_queue.execute(command).await?;
         Ok(())
     }
     
     async fn get_node(&self, agent_id: Uuid, node_id: &str, graph_id: &Uuid) -> Result<serde_json::Value> {
         check_authorization(&self.agent_registry, &agent_id, graph_id).await?;
         
-        // Get managers directly from AppState
+        // Direct read from graph manager
         let managers = self.graph_managers.read().await;
-        let manager_lock = managers.get(graph_id)
-            .ok_or_else(|| GraphError::not_found(format!("graph {}", graph_id)))?;
-        let graph_manager = manager_lock.read().await;
+        let manager_arc = managers.get(graph_id)
+            .ok_or_else(|| GraphError::not_found(*graph_id))?;
+        let manager = manager_arc.read().await;
         
-        if let Some(node_idx) = graph_manager.find_node(node_id) {
-            if let Some(node) = graph_manager.get_node(node_idx) {
-                Ok(json!({
-                    "id": node.pkm_id,
-                    "type": format!("{:?}", node.node_type),
-                    "content": node.content,
-                    "properties": node.properties,
-                    "created_at": node.created_at.to_rfc3339(),
-                    "updated_at": node.updated_at.to_rfc3339(),
-                }))
-            } else {
-                Err(GraphError::node_not_found(node_id, *graph_id).into())
-            }
-        } else {
-            Err(GraphError::node_not_found(node_id, *graph_id).into())
-        }
+        // Find and return the node
+        let node_idx = manager.find_node(node_id)
+            .ok_or_else(|| GraphError::node_not_found(node_id, *graph_id))?;
+        let node_data = manager.get_node(node_idx)
+            .ok_or_else(|| GraphError::node_not_found(node_id, *graph_id))?;
+        
+        Ok(serde_json::to_value(node_data)?)
     }
     
     /// Query graph with BFS traversal
+    #[allow(unused_variables)]
     async fn query_graph_bfs(
         &self,
         agent_id: Uuid,
-        _start_id: &str,
-        _max_depth: usize,
+        start_id: &str,
+        max_depth: usize,
         graph_id: &Uuid,
     ) -> Result<Vec<serde_json::Value>> {
         check_authorization(&self.agent_registry, &agent_id, graph_id).await?;
         
         // TODO: Implement BFS traversal in graph_manager
         // For now, return empty result
-        warn!("BFS traversal not yet implemented");
         Ok(vec![])
     }
     
@@ -535,59 +385,47 @@ impl GraphOps for Arc<AppState> {
     async fn open_graph(&self, graph_id: Uuid) -> Result<serde_json::Value> {
         info!("📂 Opening graph: {}", graph_id);
         
-        // Open the graph through registry
-        {
-            let mut registry = self.graph_registry.write_or_panic("open graph").await;
-            registry.open_graph(&graph_id, false).await
-                .map_err(|e| GraphError::lifecycle(format!("Failed to open graph: {}", e)))?;
+        // Submit command to CQRS system
+        let command = Command::Registry(RegistryCommand::Graph(
+            GraphRegistryCommand::OpenGraph { graph_id }
+        ));
+        
+        let result = self.command_queue.execute(command).await?;
+        
+        if result.success {
+            result.data.ok_or_else(|| GraphError::invalid_state("No data returned from OpenGraph command").into())
+        } else {
+            Err(GraphError::invalid_state(format!("OpenGraph failed: {:?}", result.error)).into())
         }
-        
-        // Get graph info from registry
-        let graph_info = {
-            let registry = self.graph_registry.read_or_panic("get graph info").await;
-            registry.get_graph(&graph_id)
-                .ok_or_else(|| GraphError::not_found(format!("graph {}", graph_id)))?
-                .clone()
-        };
-        
-        Ok(json!({
-            "id": graph_info.id,
-            "name": graph_info.name,
-            "created": graph_info.created.to_rfc3339(),
-            "last_accessed": graph_info.last_accessed.to_rfc3339(),
-            "description": graph_info.description,
-        }))
     }
     
     /// Close a graph (save and unload from RAM)
     async fn close_graph(&self, graph_id: Uuid) -> Result<()> {
-        // Close the graph through registry
-        let mut registry = self.graph_registry.write_or_panic("close graph").await;
-        registry.close_graph(&graph_id, false).await
-            .map_err(|e| GraphError::lifecycle(format!("Failed to close graph: {}", e)))?;
+        // Submit command to CQRS system
+        let command = Command::Registry(RegistryCommand::Graph(
+            GraphRegistryCommand::CloseGraph { graph_id }
+        ));
         
+        self.command_queue.execute(command).await?;
         Ok(())
     }
     
     /// List all open graphs
     async fn list_open_graphs(&self) -> Result<Vec<Uuid>> {
-        let registry = self.graph_registry.read_or_panic("list open graphs").await;
-        Ok(registry.get_open_graphs())
+        // Direct read from graph managers
+        let managers = self.graph_managers.read().await;
+        Ok(managers.keys().copied().collect())
     }
     
     /// List all available graphs
     async fn list_graphs(&self) -> Result<Vec<serde_json::Value>> {
-        let registry = self.graph_registry.read_or_panic("list graphs").await;
-        let graphs = registry.get_all_graphs();
-        Ok(graphs.into_iter().map(|info| {
-            json!({
-                "id": info.id,
-                "name": info.name,
-                "created": info.created.to_rfc3339(),
-                "last_accessed": info.last_accessed.to_rfc3339(),
-                "description": info.description,
-            })
-        }).collect())
+        // Direct read from graph registry
+        let registry = self.graph_registry.read().await;
+        let graphs: Vec<serde_json::Value> = registry.get_all_graphs()
+            .into_iter()
+            .map(|info| serde_json::to_value(info).unwrap())
+            .collect();
+        Ok(graphs)
     }
     
     /// Create a new knowledge graph with automatic prime agent authorization
@@ -596,23 +434,18 @@ impl GraphOps for Arc<AppState> {
         name: Option<String>, 
         description: Option<String>
     ) -> Result<serde_json::Value> {
-        tracing::debug!("create_graph: Starting graph creation");
-        // Use the complete workflow method
-        let graph_info = GraphRegistry::create_graph_complete(
-            self.graph_registry.clone(),
-            name,
-            description
-        ).await
-            .map_err(|e| GraphError::lifecycle(format!("Failed to create graph: {}", e)))?;
-        tracing::debug!("create_graph: Graph created successfully");
+        // Submit command to CQRS system
+        let command = Command::Registry(RegistryCommand::Graph(
+            GraphRegistryCommand::CreateGraph { name, description, resolved_id: None }
+        ));
         
-        Ok(json!({
-            "id": graph_info.id,
-            "name": graph_info.name,
-            "created": graph_info.created.to_rfc3339(),
-            "last_accessed": graph_info.last_accessed.to_rfc3339(),
-            "description": graph_info.description,
-        }))
+        let result = self.command_queue.execute(command).await?;
+        
+        if result.success {
+            result.data.ok_or_else(|| GraphError::invalid_state("No data returned from CreateGraph command").into())
+        } else {
+            Err(GraphError::invalid_state(format!("CreateGraph failed: {:?}", result.error)).into())
+        }
     }
     
     /// Delete a knowledge graph
@@ -620,13 +453,134 @@ impl GraphOps for Arc<AppState> {
     /// Archives the graph to `{data_dir}/archived_graphs/` with timestamp.
     /// Can delete both open and closed graphs.
     async fn delete_graph(&self, graph_id: &Uuid) -> Result<()> {
-        // Delete through registry
-        let mut registry = self.graph_registry.write_or_panic("delete graph").await;
-        registry.remove_graph(graph_id, false).await
-            .map_err(|e| GraphError::lifecycle(format!("Failed to delete graph: {}", e)))?;
+        // Submit command to CQRS system
+        let command = Command::Registry(RegistryCommand::Graph(
+            GraphRegistryCommand::RemoveGraph { graph_id: *graph_id }
+        ));
         
+        self.command_queue.execute(command).await?;
         Ok(())
     }
+}
+
+// ================================================================================
+// Helper Functions - Business Logic for Graph Operations
+// ================================================================================
+// These functions contain the actual implementation logic that the router delegates to.
+// They work directly with GraphManager and handle PKM-specific operations.
+
+use crate::graph::graph_manager::GraphManager;
+use crate::cqrs::router::RouterToken;
+use crate::import::pkm_data;
+
+/// Execute the create block operation
+/// This contains the business logic extracted from the old add_block implementation
+/// REQUIRES RouterToken to ensure this is only called through CQRS
+pub async fn execute_create_block(
+    _token: &RouterToken,
+    graph_manager: &mut GraphManager,
+    content: String,
+    parent_id: Option<String>,
+    page_name: Option<String>,
+    properties: Option<serde_json::Value>,
+) -> Result<String> {
+    // Create block with reference resolution
+    let (block_id, _reference_content) = pkm_data::create_block_with_resolution(
+        graph_manager,
+        content,
+        properties.as_ref(),
+    )?;
+    
+    // Setup relationships
+    pkm_data::setup_block_relationships(
+        graph_manager,
+        &block_id,
+        parent_id.as_deref(),
+        page_name.as_deref(),
+    )?;
+    
+    Ok(block_id)
+}
+
+/// Execute the update block operation
+/// This contains the business logic extracted from the old update_block implementation
+/// REQUIRES RouterToken to ensure this is only called through CQRS
+pub async fn execute_update_block(
+    _token: &RouterToken,
+    graph_manager: &mut GraphManager,
+    block_id: &str,
+    content: String,
+    _graph_id: Uuid,
+) -> Result<()> {
+    // Update block with reference resolution
+    pkm_data::update_block_with_resolution(
+        graph_manager,
+        block_id,
+        content,
+    )?;
+    
+    Ok(())
+}
+
+/// Execute the delete block operation
+/// This contains the business logic extracted from the old delete_block implementation
+/// REQUIRES RouterToken to ensure this is only called through CQRS
+pub async fn execute_delete_block(
+    _token: &RouterToken,
+    graph_manager: &mut GraphManager,
+    block_id: &str,
+    graph_id: Uuid,
+) -> Result<()> {
+    if let Some(node_idx) = graph_manager.find_node(block_id) {
+        // Archive the node
+        graph_manager.delete_nodes(vec![(block_id.to_string(), node_idx)])
+            .map_err(|e| GraphError::lifecycle(e.to_string()))?;
+    } else {
+        return Err(GraphError::node_not_found(block_id, graph_id).into());
+    }
+    
+    Ok(())
+}
+
+/// Execute the create page operation
+/// This contains the business logic extracted from the old create_page implementation
+/// REQUIRES RouterToken to ensure this is only called through CQRS
+pub async fn execute_create_page(
+    _token: &RouterToken,
+    graph_manager: &mut GraphManager,
+    page_name: String,
+    properties: Option<serde_json::Value>,
+) -> Result<()> {
+    // Create or update page with properties
+    pkm_data::create_or_update_page(
+        graph_manager,
+        &page_name,
+        properties.as_ref(),
+    )?;
+    
+    Ok(())
+}
+
+/// Execute the delete page operation
+/// This contains the business logic extracted from the old delete_page implementation
+/// REQUIRES RouterToken to ensure this is only called through CQRS
+pub async fn execute_delete_page(
+    _token: &RouterToken,
+    graph_manager: &mut GraphManager,
+    page_name: &str,
+    graph_id: Uuid,
+) -> Result<()> {
+    // Find page by original or normalized name
+    let (normalized_name, node_idx) = pkm_data::find_page_for_deletion(
+        graph_manager,
+        page_name,
+    ).map_err(|_| GraphError::node_not_found(page_name, graph_id))?;
+    
+    // Archive the node
+    graph_manager.delete_nodes(vec![(normalized_name, node_idx)])
+        .map_err(|e| GraphError::lifecycle(e.to_string()))?;
+    
+    Ok(())
 }
 
 
@@ -634,7 +588,8 @@ impl GraphOps for Arc<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{Operation, wal::{Transaction, TransactionState}};
+    use crate::cqrs::{Command, GraphCommand};
+    use serde_json::json;
     
     #[test]
     fn test_error_types() {
@@ -649,12 +604,12 @@ mod tests {
     }
     
     #[test]
-    fn test_operation_variants() {
-        // Test that all GraphOperation variants can be created through Operation enum
+    fn test_command_variants() {
+        // Test that all GraphCommand variants can be created through Command enum
         let agent_id = uuid::Uuid::new_v4();
         let graph_id = uuid::Uuid::new_v4();
         
-        let create_block = Operation::Graph(GraphOperation::CreateBlock {
+        let create_block = Command::Graph(GraphCommand::CreateBlock {
             graph_id,
             agent_id,
             content: "Test content".to_string(),
@@ -662,70 +617,37 @@ mod tests {
             page_name: Some("TestPage".to_string()),
             properties: Some(json!({"key": "value"})),
         });
-        assert!(matches!(create_block, Operation::Graph(GraphOperation::CreateBlock { .. })));
+        assert!(matches!(create_block, Command::Graph(GraphCommand::CreateBlock { .. })));
         
-        let update_block = Operation::Graph(GraphOperation::UpdateBlock {
+        let update_block = Command::Graph(GraphCommand::UpdateBlock {
             graph_id,
             agent_id,
             block_id: "block-123".to_string(),
             content: "Updated content".to_string(),
         });
-        assert!(matches!(update_block, Operation::Graph(GraphOperation::UpdateBlock { .. })));
+        assert!(matches!(update_block, Command::Graph(GraphCommand::UpdateBlock { .. })));
         
-        let delete_block = Operation::Graph(GraphOperation::DeleteBlock {
+        let delete_block = Command::Graph(GraphCommand::DeleteBlock {
             graph_id,
             agent_id,
             block_id: "block-123".to_string(),
         });
-        assert!(matches!(delete_block, Operation::Graph(GraphOperation::DeleteBlock { .. })));
+        assert!(matches!(delete_block, Command::Graph(GraphCommand::DeleteBlock { .. })));
         
-        let create_page = Operation::Graph(GraphOperation::CreatePage {
+        let create_page = Command::Graph(GraphCommand::CreatePage {
             graph_id,
             agent_id,
             page_name: "NewPage".to_string(),
             properties: Some(json!({"type": "journal"})),
         });
-        assert!(matches!(create_page, Operation::Graph(GraphOperation::CreatePage { .. })));
+        assert!(matches!(create_page, Command::Graph(GraphCommand::CreatePage { .. })));
         
-        let delete_page = Operation::Graph(GraphOperation::DeletePage {
+        let delete_page = Command::Graph(GraphCommand::DeletePage {
             graph_id,
             agent_id,
             page_name: "OldPage".to_string(),
         });
-        assert!(matches!(delete_page, Operation::Graph(GraphOperation::DeletePage { .. })));
-    }
-    
-    #[test]
-    fn test_transaction_creation() {
-        // Test that transactions are created properly for operations
-        let agent_id = uuid::Uuid::new_v4();
-        let graph_id = uuid::Uuid::new_v4();
-        let operation = Operation::Graph(GraphOperation::CreateBlock {
-            graph_id,
-            agent_id,
-            content: "Test block".to_string(),
-            parent_id: None,
-            page_name: Some("TestPage".to_string()),
-            properties: None,
-        });
-        
-        let transaction = Transaction::new(operation.clone());
-        
-        // Verify transaction fields
-        assert!(!transaction.id.is_empty());
-        assert!(matches!(transaction.operation, Operation::Graph(GraphOperation::CreateBlock { .. })));
-        assert_eq!(transaction.state, TransactionState::Active);
-        assert!(transaction.content_hash.is_some()); // CreateBlock should have content hash
-        assert!(transaction.error_message.is_none());
-        
-        // Test operation without content hash
-        let delete_op = Operation::Graph(GraphOperation::DeleteBlock {
-            graph_id,
-            agent_id,
-            block_id: "block-456".to_string(),
-        });
-        let delete_tx = Transaction::new(delete_op);
-        assert!(delete_tx.content_hash.is_none()); // DeleteBlock should not have content hash
+        assert!(matches!(delete_page, Command::Graph(GraphCommand::DeletePage { .. })));
     }
     
     
@@ -754,41 +676,6 @@ mod tests {
                 assert_eq!(node_id, "node-123");
             }
             _ => panic!("Expected NodeNotFound"),
-        }
-    }
-    
-    #[test]
-    fn test_json_serialization_for_operations() {
-        // Test that operations can be serialized/deserialized for transaction log
-        let agent_id = uuid::Uuid::new_v4();
-        let graph_id = uuid::Uuid::new_v4();
-        let op = Operation::Graph(GraphOperation::CreateBlock {
-            graph_id,
-            agent_id,
-            content: "Test content with «reference»".to_string(),
-            parent_id: Some("parent-id".to_string()),
-            page_name: Some("Daily Note".to_string()),
-            properties: Some(json!({
-                "tags": ["important", "review"],
-                "priority": "high"
-            })),
-        });
-        
-        // Serialize
-        let json = serde_json::to_string(&op).unwrap();
-        assert!(json.contains("CreateBlock"));
-        assert!(json.contains("Test content with «reference»"));
-        
-        // Deserialize
-        let deserialized: Operation = serde_json::from_str(&json).unwrap();
-        match deserialized {
-            Operation::Graph(GraphOperation::CreateBlock { agent_id: _, content, parent_id, page_name, properties, .. }) => {
-                assert_eq!(content, "Test content with «reference»");
-                assert_eq!(parent_id, Some("parent-id".to_string()));
-                assert_eq!(page_name, Some("Daily Note".to_string()));
-                assert!(properties.is_some());
-            }
-            _ => panic!("Wrong operation type after deserialization"),
         }
     }
     

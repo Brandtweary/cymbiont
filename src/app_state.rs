@@ -1,89 +1,86 @@
-//! Application State Management - Multi-Agent Knowledge Graph Coordinator
+//! Application State Management - CQRS Resource Container
 //! 
-//! AppState is the central coordination hub for Cymbiont's multi-agent knowledge graph engine.
-//! It orchestrates graphs, agents, transactions, WebSocket connections, and authentication
-//! while delegating actual implementation to specialized components.
+//! AppState is the central resource container for Cymbiont's CQRS-based multi-agent knowledge 
+//! graph engine. It provides read-only access to graphs and agents while routing all mutations 
+//! through the CommandQueue for deadlock-free operation.
 //! 
-//! ## Core Responsibilities
+//! ## CQRS Architecture
 //! 
-//! ### Graph Lifecycle Management
-//! - **Multi-Graph Coordination**: Manages multiple isolated knowledge graphs simultaneously
-//! - **Resource Management**: Direct HashMap of graph managers without bundling
-//! - **State Management**: Open/closed graph states with automatic recovery
-//! - **Complete Workflows**: `create_new_graph()`, `delete_graph_completely()`, `open_graph()`, `close_graph()`
+//! ### Command-Query Responsibility Segregation
+//! - **Mutations**: All state changes go through `command_queue.execute()`
+//! - **Queries**: Direct read access to `graph_managers` and `agents` HashMaps
+//! - **Ownership**: CommandProcessor owns mutable state, AppState holds Arc references
+//! - **Concurrency**: Single-threaded command processing eliminates deadlocks
 //! 
-//! ### Agent Lifecycle Management  
-//! - **Agent Coordination**: Manages active agents in memory with persistent registry
-//! - **Authorization System**: Runtime permission checks via AgentRegistry
+//! ### Resource Container Pattern
+//! AppState is a **pure resource container** - all fields are public for direct access.
+//! Business logic belongs in domain modules:
+//! - Graph operations → GraphOps trait (via CommandQueue)
+//! - Agent operations → Agent methods (via CommandQueue for mutations)
+//! - Registry operations → Registry methods (via CommandQueue for mutations)
+//! - Recovery → CommandProcessor startup
+//! 
+//! ## Core Resources
+//! 
+//! ### CQRS Command System
+//! - **`command_queue`**: Primary interface for all mutations
+//! - **CommandProcessor**: Single-threaded owner of all mutable state
+//! - **CommandLog**: WAL for crash recovery and deterministic replay
+//! 
+//! ### Knowledge Graphs
+//! - **`graph_managers`**: HashMap of active graph managers (read-only from AppState)
+//! - **`graph_registry`**: Metadata and persistence for graph lifecycle
+//! - **Multi-graph**: Isolated knowledge domains with lazy loading
+//! 
+//! ### AI Agents  
+//! - **`agents`**: HashMap of active agents (read-only from AppState)
+//! - **`agent_registry`**: Metadata and authorization management
 //! - **Prime Agent**: Auto-created default agent with full graph access
-//! - **Complete Workflows**: `activate_agent()`, `deactivate_agent()`, agent loading/saving
 //! 
-//! ### Transaction Coordination
-//! - **Global WAL**: Single transaction log for all operations
-//! - **ACID Guarantees**: TransactionCoordinator ensures consistency
-//! - **Crash Recovery**: `run_unified_recovery()` replays all pending transactions
-//! - **Graceful Shutdown**: Coordinates transaction completion
-//! 
-//! ### Server Mode Features
-//! - **WebSocket Management**: Active connection tracking with agent association
-//! - **Authentication**: Token-based auth with automatic rotation
-//! - **Async Processing**: High-throughput command execution
+//! ### Server Infrastructure
+//! - **`ws_connections`**: WebSocket connection tracking (optional)
+//! - **`auth_token`**: Token-based authentication
+//! - **`operation_freeze`**: Test infrastructure for deterministic timing
 //! 
 //! ## Key Methods
 //! 
 //! ### Initialization
-//! - `new_with_config()` - Factory method with config loading
+//! ```rust
+//! let app_state = AppState::new_with_config(config, data_dir, with_server).await?;
+//! ```
 //! 
-//! ### Graph Operations
-//! - `create_new_graph()` - Complete graph creation with prime agent authorization
-//! - `delete_graph_completely()` - Archive graph and remove from memory
-//! - `open_graph()`, `close_graph()` - Explicit state management
-//! - `get_or_create_graph_manager()` - Lazy resource loading
+//! ### CQRS Operations
+//! ```rust
+//! // All mutations via CommandQueue
+//! let response = app_state.command_queue.execute(
+//!     Command::Graph(GraphCommand::CreateBlock { 
+//!         agent_id, graph_id, content, parent_id 
+//!     })
+//! ).await?;
 //! 
-//! ### Agent Operations
-//! - `activate_agent()`, `deactivate_agent()` - Memory management with WAL rebuild
+//! // Direct read access
+//! let graphs = app_state.graph_managers.read().await;
+//! ```
 //! 
-//! ### Transaction & Recovery
-//! - `run_unified_recovery()` - Replay all pending transactions from global WAL
+//! ### Graceful Shutdown
+//! ```rust
+//! let active_count = app_state.initiate_graceful_shutdown().await;
+//! let completed = app_state.wait_for_transactions(Duration::from_secs(30)).await;
+//! app_state.shutdown().await;
+//! ```
 //! 
-//! ### Shutdown Coordination
-//! - `initiate_graceful_shutdown()` - Stop new transactions, track active ones
-//! - `wait_for_transactions()` - Wait for completion with timeout
-//! - `cleanup_and_save()` - Save all graphs, agents, and registries
+//! ## Architecture Benefits
 //! 
-//! ## Architecture Patterns
+//! ### Deadlock Prevention
+//! - **Single-threaded mutations**: CommandProcessor owns all mutable state
+//! - **Lock-free reads**: Direct HashMap access for queries
+//! - **No lock ordering**: Eliminates complex lock hierarchies
 //! 
-//! ### Registry Pattern
-//! Both GraphRegistry and AgentRegistry serve as single sources of truth for
-//! metadata, with bidirectional consistency between authorization mappings.
-//! 
-//! ### Delegation Pattern
-//! AppState coordinates but doesn't implement domain logic:
-//! - Graph operations → GraphOps trait  
-//! - Graph storage → GraphManager
-//! - Transactions → TransactionCoordinator
-//! - Agent interactions → Agent struct
-//! - Authorization → AgentRegistry
-//! - Recovery execution → RecoveryContext in storage module
-//! 
-//! ### Concurrency Design
-//! - **Per-agent locking**: Each agent has its own RwLock, enabling parallel operations
-//! - **HashMap discipline**: The `agents` HashMap lock is ONLY for Arc management (get/insert/remove)
-//! - **Operation pattern**: Get Arc from HashMap → drop HashMap lock → work with individual agent
-//! - Async RwLocks for frequently accessed resources (graphs, connections)
-//! - Sync RwLocks for registries requiring immediate consistency
-//! - Double-check pattern prevents race conditions in resource creation
-//! - Debug assertions detect lock contention during development
-//! 
-//! ### Lock Ordering Rules
-//! To prevent deadlocks when acquiring MULTIPLE locks simultaneously:
-//! - **Registry locks**: Always acquire `graph_registry` before `agent_registry`
-//!   (use `lock_registries_for_write()` helper)
-//! - **Agent locks**: The `agents` HashMap lock should only be held briefly to get/insert/remove
-//!   Arc references. Never hold it while acquiring individual agent locks.
-//! - **Graph locks**: Similar pattern - brief HashMap access, then work with individual resources
-//! 
-//! Note: We never actually hold multiple agent locks or mix registry/agent locks simultaneously.
+//! ### ACID Guarantees
+//! - **Atomicity**: Each command is atomic via WAL
+//! - **Consistency**: CommandProcessor enforces invariants
+//! - **Isolation**: Sequential command processing
+//! - **Durability**: CommandLog persists all mutations
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -92,10 +89,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::fs;
 use std::time::Duration;
 use tokio::sync::{oneshot, RwLock};
-use tracing::{info, error};
+use tracing::error;
 use uuid::Uuid;
 
 use crate::error::*;
+use crate::utils::AsyncRwLockExt;
 
 use crate::{
     config::Config,
@@ -103,14 +101,9 @@ use crate::{
     graph::graph_registry::GraphRegistry,
     agent::agent::Agent,
     agent::agent_registry::AgentRegistry,
-    storage::{
-        TransactionLog, TransactionCoordinator,
-        recovery::export_all_json,
-    },
-    lock::AsyncRwLockExt,
+    cqrs::{CommandQueue, CommandProcessor, CommandLog},
     server::{
         auth::initialize_auth,
-        message_queue,
         websocket::WsConnection,
     },
 };
@@ -122,12 +115,12 @@ use crate::{
 /// DO NOT add helper methods here. All fields are public.
 /// Business logic belongs in domain modules (GraphOps, Agent, registries).
 pub struct AppState {
-    // Core resources - directly owned by AppState
-    pub graph_managers: Arc<RwLock<HashMap<Uuid, RwLock<GraphManager>>>>,
-    pub agents: Arc<RwLock<HashMap<Uuid, Arc<RwLock<Agent>>>>>,
+    // CQRS command queue - all mutations go through here
+    pub command_queue: CommandQueue,
     
-    // Single global transaction coordinator for all operations
-    pub transaction_coordinator: Arc<TransactionCoordinator>,
+    // Direct read access to graphs and agents (references from CommandProcessor)
+    pub graph_managers: Arc<RwLock<HashMap<Uuid, Arc<RwLock<GraphManager>>>>>,
+    pub agents: Arc<RwLock<HashMap<Uuid, Arc<RwLock<Agent>>>>>,
     
     // Registries for metadata and persistence
     pub graph_registry: Arc<RwLock<GraphRegistry>>,
@@ -173,31 +166,41 @@ impl AppState {
         fs::create_dir_all(&data_dir)
             .map_err(|e| CymbiontError::Other(format!("Failed to create data directory: {e}")))?;
         
-        // Initialize empty registries (will be populated from WAL)
+        // Initialize empty registries (owned by AppState)
         let graph_registry = Arc::new(RwLock::new(GraphRegistry::new()));
         let agent_registry = Arc::new(RwLock::new(AgentRegistry::new()));
         
-        // Initialize global transaction coordinator
+        // Set data directory for registries (needed for persistence paths)
+        {
+            let mut graph_reg = graph_registry.write_or_panic("set graph data dir").await;
+            graph_reg.set_data_dir(&data_dir);
+        }
+        {
+            let mut agent_reg = agent_registry.write_or_panic("set agent data dir").await;
+            agent_reg.set_data_dir(&data_dir);
+        }
+        
+        // Initialize CQRS system - this replaces the old transaction coordinator
         let transaction_log_dir = data_dir.join("transaction_log");
         fs::create_dir_all(&transaction_log_dir)?;
-        let wal = Arc::new(TransactionLog::new(transaction_log_dir)?);
-        let transaction_coordinator = Arc::new(TransactionCoordinator::new(wal));
+        let wal = Arc::new(CommandLog::new(transaction_log_dir)?);
         
-        // Initialize managers and agents - owned directly by AppState
-        let graph_managers = Arc::new(RwLock::new(HashMap::new()));
-        let agents = Arc::new(RwLock::new(HashMap::new()));
+        // Create the command processor with registry references
+        let mut processor = CommandProcessor::new(
+            wal.clone(),
+            graph_registry.clone(),
+            agent_registry.clone(),
+            data_dir.clone(),
+        );
         
-        // Set resources for registries (they'll get AppState reference later)
-        {
-            let mut graph_reg = graph_registry.write_or_panic("set graph registry resources").await;
-            graph_reg.set_resources(&data_dir, transaction_coordinator.clone());
-            // No longer giving managers to registry - AppState owns them
-        }
-        {
-            let mut agent_reg = agent_registry.write_or_panic("set agent registry resources").await;
-            agent_reg.set_resources(&data_dir, transaction_coordinator.clone());
-            // No longer giving agents to registry - AppState owns them
-        }
+        // Set up freeze state for testing - shared between AppState and CommandProcessor
+        let operation_freeze = Arc::new(RwLock::new(false));
+        processor.set_freeze_state(operation_freeze.clone());
+        
+        // Start the processor - this runs recovery and ensures prime agent exists
+        let (command_queue, resources) = processor.start().await?;
+        
+        
         
         // Create WebSocket connections if server mode
         let ws_connections = if with_server {
@@ -207,9 +210,9 @@ impl AppState {
         };
         
         let app_state = Arc::new(AppState {
-            graph_managers,
-            agents,
-            transaction_coordinator,
+            command_queue,
+            graph_managers: resources.graph_managers,
+            agents: resources.agents,
             graph_registry,
             agent_registry,
             config,
@@ -217,22 +220,10 @@ impl AppState {
             ws_ready_tx: std::sync::Mutex::new(None),
             ws_connections,
             auth_token: Arc::new(RwLock::new(None)),
-            operation_freeze: Arc::new(RwLock::new(false)),
+            operation_freeze,
             shutdown_initiated: Arc::new(AtomicBool::new(false)),
         });
         
-        // Give registries access to AppState for resource access
-        {
-            let mut graph_reg = app_state.graph_registry.write_or_panic("set graph registry app_state").await;
-            graph_reg.set_app_state(&app_state);
-        }
-        {
-            let mut agent_reg = app_state.agent_registry.write_or_panic("set agent registry app_state").await;
-            agent_reg.set_app_state(&app_state);
-        }
-        
-        // Give transaction coordinator access to freeze state for testing
-        app_state.transaction_coordinator.set_freeze_state(app_state.operation_freeze.clone()).await;
         
         // Note: Graphs and agents will be loaded from WAL during startup in main.rs
         
@@ -245,10 +236,6 @@ impl AppState {
             }
         }
         
-        // Initialize message queue with AppState reference
-        #[allow(deprecated)] // Temporary until CQRS refactor
-        message_queue::initialize_message_queue(&app_state);
-        
         Ok(app_state)
     }
     // NOTE: All business logic methods have been removed from AppState.
@@ -258,11 +245,8 @@ impl AppState {
     // - Agent operations: Access agents through app_state.agents
     // - Registry operations: Access registries through app_state.graph_registry/agent_registry
     
-    /// Cleanup and export all data on shutdown
-    pub async fn cleanup_and_save(&self) {
-        // Shutdown agent message queue workers first
-        #[allow(deprecated)] // Temporary until CQRS refactor
-        message_queue::shutdown_workers().await;
+    /// Shutdown - cleanup and export all data
+    pub async fn shutdown(self: &Arc<Self>) {
         
         // Close all WebSocket connections
         if let Some(ref connections) = self.ws_connections {
@@ -292,43 +276,59 @@ impl AppState {
         }
         
         // Export all data to JSON for debugging
-        if let Err(e) = export_all_json(self).await {
+        if let Err(e) = crate::utils::export_all_system_data(self).await {
             error!("Failed to export JSON: {}", e);
         }
         
-        // Flush and close global transaction log
-        if let Err(e) = self.transaction_coordinator.close().await {
-            error!("Failed to close global transaction log: {}", e);
-        }
     }
     
-    /// Initiate graceful shutdown on the global transaction coordinator
-    /// Returns the count of active transactions
+    /// Initiate graceful shutdown on the CQRS command queue
     pub async fn initiate_graceful_shutdown(&self) -> usize {
-        // Set the local shutdown flag to prevent new transactions
+        use crate::cqrs::{Command, SystemCommand};
+        
+        // Set the local shutdown flag to prevent new operations
         self.shutdown_initiated.store(true, Ordering::Release);
         
-        // Initiate shutdown on the global coordinator
-        let active_count = self.transaction_coordinator.initiate_shutdown().await;
-        
-        if active_count > 0 {
-            info!("⏳ {} active transactions to complete", active_count);
+        // Send shutdown command to the processor
+        if let Ok(result) = self.command_queue.execute(
+            Command::System(SystemCommand::InitiateShutdown)
+        ).await {
+            if let Some(data) = result.data {
+                if let Some(count) = data.get("active_count").and_then(|v| v.as_u64()) {
+                    return count as usize;
+                }
+            }
         }
         
-        active_count
+        0
     }
     
-    /// Wait for all transactions to complete
-    /// Returns true if all completed, false if timeout
+    /// Wait for active transactions to complete
     pub async fn wait_for_transactions(&self, timeout: Duration) -> bool {
-        self.transaction_coordinator.wait_for_completion(timeout).await
+        use crate::cqrs::{Command, SystemCommand};
+        
+        if let Ok(result) = self.command_queue.execute(
+            Command::System(SystemCommand::WaitForCompletion { 
+                timeout_secs: timeout.as_secs() 
+            })
+        ).await {
+            if let Some(data) = result.data {
+                if let Some(completed) = data.get("completed").and_then(|v| v.as_bool()) {
+                    return completed;
+                }
+            }
+        }
+        
+        false
     }
     
-    /// Force flush the global transaction coordinator for immediate shutdown
+    /// Force flush transactions for immediate shutdown
     pub async fn force_flush_transactions(&self) {
-        if let Err(e) = self.transaction_coordinator.force_shutdown().await {
-            error!("Failed to force flush global transaction log: {}", e);
-        }
+        use crate::cqrs::{Command, SystemCommand};
+        
+        let _ = self.command_queue.execute(
+            Command::System(SystemCommand::ForceFlush)
+        ).await;
     }
     
 }

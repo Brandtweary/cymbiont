@@ -81,13 +81,13 @@ use std::sync::Arc;
 use uuid::Uuid;
 use crate::error::*;
 use crate::AppState;
-use crate::agent::agent_registry::AgentRegistry;
 use crate::agent::llm::Message as LlmMessage;
-#[allow(deprecated)] // Temporary until CQRS refactor
-use crate::server::message_queue::{AgentRequest, queue_agent_message};
+use crate::agent::agent::process_agent_message;
+use crate::cqrs::{Command as CqrsCommand, AgentCommand};
 use crate::server::websocket::Command;
 use crate::server::websocket_utils::{send_success_response, send_error_response};
-use crate::lock::{lock_registries_for_write, AsyncRwLockExt};
+use crate::utils::AsyncRwLockExt;
+use serde_json::json;
 
 /// Main handler function for agent commands
 pub async fn handle(
@@ -122,24 +122,38 @@ pub async fn handle(
             // Ensure we have an agent ID
             let agent_id = agent_id.ok_or_else(|| ServerError::websocket("No agent available for chat"))?;
             
-            // Generate request ID for async tracking
-            let request_id = Uuid::new_v4();
+            // Send immediate ACK response
+            send_success_response(connection_id, state, Some(json!({
+                "status": "processing",
+                "agent_id": agent_id.to_string()
+            }))).await?;
             
-            // Queue the message for async processing
-            #[allow(deprecated)] // Temporary until CQRS refactor
-            let request = AgentRequest {
-                request_id,
-                connection_id: connection_id.to_string(),
-                message,
-                echo,
-                echo_tool,
-            };
+            // Spawn background task for LLM processing
+            let state_clone = state.clone();
+            let conn_id = connection_id.to_string();
+            tokio::spawn(async move {
+                // Process the message (all 4 phases encapsulated)
+                match process_agent_message(&state_clone, agent_id, message, echo, echo_tool).await {
+                    Ok(response) => {
+                        // Send final response via WebSocket
+                        let response_data = json!({
+                            "agent_id": agent_id.to_string(),
+                            "response": response
+                        });
+                        if let Err(e) = send_success_response(&conn_id, &state_clone, Some(response_data)).await {
+                            tracing::error!("Failed to send agent response: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        // Send error response
+                        if let Err(send_err) = send_error_response(&conn_id, &state_clone, &e.to_string()).await {
+                            tracing::error!("Failed to send error response: {}", send_err);
+                        }
+                    }
+                }
+            });
             
-            // Queue message for async processing - ACK will be sent in Phase 1
-            #[allow(deprecated)] // Temporary until CQRS refactor
-            queue_agent_message(agent_id, request).await?;
-            
-            // No immediate response - the message queue handles ACK and async response
+            // Return immediately after spawning background task
         }
         
         Command::AgentSelect { agent_id, agent_name } => {
@@ -167,12 +181,11 @@ pub async fn handle(
                 let registry = state.agent_registry.read_or_panic("check agent active").await;
                 if !registry.is_agent_active(&selected_id) {
                     drop(registry);
-                    // Try to activate the agent using the complete workflow
-                    AgentRegistry::activate_agent_complete(
-                        state.agent_registry.clone(),
-                        selected_id,
-                        false  // don't skip_wal - this is a real activation
-                    ).await?;
+                    // Submit command to activate the agent
+                    let command = CqrsCommand::Registry(crate::cqrs::RegistryCommand::Agent(
+                        crate::cqrs::AgentRegistryCommand::ActivateAgent { agent_id: selected_id }
+                    ));
+                    state.command_queue.execute(command).await?;
                 }
             }
             
@@ -261,10 +274,7 @@ pub async fn handle(
             
             // Get conversation history
             let history = {
-                let registry = state.agent_registry.read_or_panic("agent history - get registry").await;
-                let agents = registry.get_agents()
-                    .ok_or_else(|| ServerError::websocket("No agents available"))?;
-                let agents = agents.read().await;
+                let agents = state.agents.read_or_panic("agent history - read agents").await;
                 if let Some(agent_arc) = agents.get(&resolved_id) {
                     let agent = agent_arc.read_or_panic("agent history - read agent").await;
                     let messages = if let Some(limit) = limit {
@@ -351,20 +361,11 @@ pub async fn handle(
                 }.ok_or_else(|| ServerError::websocket("No agent selected"))?
             };
             
-            // Clear the agent's conversation history
-            {
-                let registry = state.agent_registry.read_or_panic("agent reset - get registry").await;
-                let agents = registry.get_agents()
-                    .ok_or_else(|| ServerError::websocket("No agents available"))?;
-                let agents = agents.read().await;
-                if let Some(agent_arc) = agents.get(&resolved_id) {
-                    let mut agent = agent_arc.write_or_panic("agent reset - clear history").await;
-                    agent.clear_history(false).await?;
-                } else {
-                    send_error_response(connection_id, state, &format!("Agent {} not found", resolved_id)).await?;
-                    return Ok(());
-                }
-            }
+            // Submit command to clear conversation history
+            let command = CqrsCommand::Agent(AgentCommand::ClearHistory {
+                agent_id: resolved_id,
+            });
+            state.command_queue.execute(command).await?;
             
             let data = serde_json::json!({
                 "agent_id": resolved_id.to_string(),
@@ -377,13 +378,16 @@ pub async fn handle(
         // Admin Commands
         Command::CreateAgent { name, description } => {
             
-            // Use the complete workflow method to create agent
-            let agent_info = AgentRegistry::create_agent_complete(
-                state.agent_registry.clone(),
-                Some(name.clone()),
-                description.clone(),
-                description.clone().or(Some("An intelligent assistant".to_string())),
-            ).await?;
+            // Submit command to create agent
+            let command = CqrsCommand::Registry(crate::cqrs::RegistryCommand::Agent(
+                crate::cqrs::AgentRegistryCommand::CreateAgent {
+                    name: Some(name.clone()),
+                    description: description.clone().or(Some("An intelligent assistant".to_string())),
+                    resolved_id: None,  // Will be resolved before WAL write
+                }
+            ));
+            let result = state.command_queue.execute(command).await?;
+            let agent_info: crate::agent::agent_registry::AgentInfo = serde_json::from_value(result.data.unwrap())?;
             
             // Save the registry after creating agent
             // Registry persisted through WAL, no need for JSON save
@@ -430,18 +434,11 @@ pub async fn handle(
                 }
             }
             
-            // Remove agent from memory if loaded
-            {
-                let mut registry = state.agent_registry.write_or_panic("deactivate agent").await;
-                registry.deactivate_agent(&resolved_id, false).await?;
-            }
-            
-            // Remove from registry and archive data
-            {
-                let mut registry = state.agent_registry.write_or_panic("write agent registry").await;
-                registry.remove_agent(&resolved_id, false).await
-                    ?;
-            }
+            // Submit command to remove agent (handles deactivation and archival)
+            let command = CqrsCommand::Registry(crate::cqrs::RegistryCommand::Agent(
+                crate::cqrs::AgentRegistryCommand::DeleteAgent { agent_id: resolved_id }
+            ));
+            state.command_queue.execute(command).await?;
             
             // Save registry after deletion
             // Registry persisted through WAL, no need for JSON save
@@ -472,12 +469,11 @@ pub async fn handle(
                 )?
             };
             
-            // Activate the agent using the complete workflow
-            AgentRegistry::activate_agent_complete(
-                state.agent_registry.clone(),
-                resolved_id,
-                false  // don't skip_wal - this is a real activation
-            ).await?;
+            // Submit command to activate agent
+            let command = CqrsCommand::Registry(crate::cqrs::RegistryCommand::Agent(
+                crate::cqrs::AgentRegistryCommand::ActivateAgent { agent_id: resolved_id }
+            ));
+            state.command_queue.execute(command).await?;
             
             let data = serde_json::json!({
                 "agent_id": resolved_id.to_string(),
@@ -505,11 +501,11 @@ pub async fn handle(
                 )?
             };
             
-            // Deactivate the agent
-            {
-                let mut registry = state.agent_registry.write_or_panic("deactivate agent").await;
-                registry.deactivate_agent(&resolved_id, false).await?;
-            }
+            // Submit command to deactivate agent
+            let command = CqrsCommand::Registry(crate::cqrs::RegistryCommand::Agent(
+                crate::cqrs::AgentRegistryCommand::DeactivateAgent { agent_id: resolved_id }
+            ));
+            state.command_queue.execute(command).await?;
             
             let data = serde_json::json!({
                 "agent_id": resolved_id.to_string(),
@@ -553,12 +549,14 @@ pub async fn handle(
                 )?
             };
             
-            // Authorize agent for graph using the complete workflow
-            AgentRegistry::authorize_agent_for_graph_complete(
-                state.agent_registry.clone(),
-                resolved_agent_id,
-                resolved_graph_id,
-            ).await?;
+            // Submit command to authorize agent for graph
+            let command = CqrsCommand::Registry(crate::cqrs::RegistryCommand::Agent(
+                crate::cqrs::AgentRegistryCommand::AuthorizeAgent {
+                    agent_id: resolved_agent_id,
+                    graph_id: resolved_graph_id,
+                }
+            ));
+            state.command_queue.execute(command).await?;
             
             let data = serde_json::json!({
                 "agent_id": resolved_agent_id.to_string(),
@@ -603,21 +601,14 @@ pub async fn handle(
                 )?
             };
             
-            // Deauthorize agent from graph
-            {
-                let (mut graph_registry, mut agent_registry) = lock_registries_for_write(
-                    &state.graph_registry,
-                    &state.agent_registry
-                ).await
-                    ?;
-                
-                agent_registry.deauthorize_agent_from_graph(
-                    &resolved_agent_id,
-                    &resolved_graph_id,
-                    &mut graph_registry,
-                    false,
-                ).await?;
-            }
+            // Submit command to deauthorize agent from graph
+            let command = CqrsCommand::Registry(crate::cqrs::RegistryCommand::Agent(
+                crate::cqrs::AgentRegistryCommand::DeauthorizeAgent { 
+                    agent_id: resolved_agent_id,
+                    graph_id: resolved_graph_id,
+                }
+            ));
+            state.command_queue.execute(command).await?;
             
             // Save both registries
             // Registry persisted through WAL, no need for JSON save
@@ -663,9 +654,7 @@ pub async fn handle(
             
             // Get conversation stats if agent is loaded
             let conversation_stats = if is_active {
-                let registry = state.agent_registry.read_or_panic("read agent registry").await;
-                let agents = registry.get_agents().ok_or_else(|| ServerError::websocket("Agents map not initialized".to_string()))?;
-                let agents_map = agents.read_or_panic("agent info - read agents").await;
+                let agents_map = state.agents.read_or_panic("agent info - read agents").await;
                 match agents_map.get(&resolved_id) {
                     Some(agent_arc) => {
                         let agent = agent_arc.read_or_panic("agent info - read agent").await;

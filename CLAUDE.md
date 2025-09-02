@@ -9,7 +9,8 @@
 ## Build/Test Commands
 ```bash
 # In cymbiont root
-cargo check                      # Quick syntax check - don't filter with grep/tail/head ever; cargo commands are always information-dense
+cargo check                      # Quick syntax check
+cargo check --message-format short  # Concise output (preferred over grep filtering - only use with 10+ errors)
 cargo build                      # Build cymbiont
 cargo test                       # Run full test suite (preferred - only filter by test during active troubleshooting)
 RUST_LOG=debug cargo run         # Run cymbiont with debug logging (do not change duration or set a timeout unless user requests it)
@@ -48,9 +49,9 @@ RUST_LOG=debug cargo run         # Run cymbiont with debug logging (do not chang
   - **dummy_graph/**: Test data for development
 - **data/**: Knowledge graph and agent persistence (configurable via data_dir in config.yaml)
   - **IMPORTANT**: The data/ directory is git-tracked (has .gitkeep) - never rm -rf it
-  - **transaction_log/**: Global WAL database (sled) - single source of truth
-  - **graph_registry.json**: JSON export for debugging (rebuilt from WAL)
-  - **agent_registry.json**: JSON export for debugging (rebuilt from WAL)
+  - **command_log/**: CQRS command database (sled) - single source of truth
+  - **graph_registry.json**: JSON export for debugging (rebuilt from command log)
+  - **agent_registry.json**: JSON export for debugging (rebuilt from command log)
   - **auth_token**: Auto-generated authentication token (rotates on restart)
   - **graphs/{graph-id}/**: Per-graph exports for debugging
   - **agents/{agent-id}/**: Per-agent exports for debugging
@@ -62,14 +63,13 @@ RUST_LOG=debug cargo run         # Run cymbiont with debug logging (do not chang
   - **main.rs**: Application entry point with 5-phase startup sequence
   - **cli.rs**: CLI argument parsing and command execution
   - **config.rs**: YAML configuration loading and validation
-  - **utils.rs**: Process management, datetime parsing, general utilities
+  - **utils.rs**: Process management, datetime parsing, lock utilities
   - **error.rs**: Hierarchical error system with domain-specific types
-  - **lock.rs**: Lock handling utilities with panic-on-poison strategy
   - **app_state.rs**: Centralized application state management with agent integration
+  - **cqrs/**: Command Query Responsibility Segregation - centralized state management
   - **graph/**: Graph management subsystem - see `src/graph/CLAUDE.md` for module details
   - **agent/**: Agent abstraction layer - see `src/agent/CLAUDE.md` for module details
   - **import/**: Data import functionality - see `src/import/CLAUDE.md` for module details
-  - **storage/**: Persistence layer - see `src/storage/CLAUDE.md` for module details
   - **server/**: HTTP/WebSocket server - see `src/server/CLAUDE.md` for API reference and module details
 - **tests/**: Test binaries (e.g. integration tests) - see `tests/CLAUDE.md` for test harness details
 - **autodebugger/**: Git submodule - LLM developer utilities with automated log verbosity detection
@@ -84,12 +84,11 @@ RUST_LOG=debug cargo run         # Run cymbiont with debug logging (do not chang
 ## Codebase Guidelines
 - Logging: use `tracing` macros - `error!()`, `warn!()`, `info!()`, `debug!()`, `trace!()` (enforced by build.rs)
 - Error handling: use the centralized `error.rs` system with domain-specific types (StorageError, ServerError, etc.) and the global `Result<T>` type alias
-- Lock handling: use `read_or_panic()` and `write_or_panic()` from the `lock.rs` module for all RwLock operations
+- Lock handling: use `read_or_panic()` and `write_or_panic()` from the `utils.rs` module for all RwLock operations
 - Whenever you update `config.example.yaml` ensure that you also update `config.yaml`
-- Don't make live LLM calls during tests
-- When modifying startup logic in `main.rs`, ensure BOTH the CLI path and server path are updated equally. Extract shared logic into functions to avoid divergence.
 - Don't ever delete TODO comments unless the user gives permission first
 - Don't inline imports ever (except for temp debugging like `tracing::debug!()`)
+- Keep all documentation evergreen - don't reference transient details, implementation events, or deprecated modules whatsoever
 
 ### Log Level Guidelines
 - **INFO**: Use sparingly, only for messages you would want to see on every single run
@@ -101,7 +100,3 @@ RUST_LOG=debug cargo run         # Run cymbiont with debug logging (do not chang
 ### Autodebugger Commands
 - **Remove debug! calls**: `autodebugger remove-debug` (default: targets src/ and tests/ directories)
 - **Validate documentation**: `autodebugger validate-docs` (checks module docs meet complexity thresholds)
-
-## Architectural Direction (CQRS Refactor)
-
-**IMPORTANT**: Cymbiont is transitioning from a lock-based concurrency model to a CQRS (Command Query Responsibility Segregation) architecture with a global command queue. This addresses persistent deadlock issues and creates a more maintainable, LLM-friendly codebase. Until this refactor is complete (see `docs/cqrs_refactor_plan.md`), avoid adding complex lock interactions and apply tactical fixes to work around existing deadlocks. The goal is to make all mutations explicit commands that flow through the transaction log, eliminating lock reentrancy issues while preserving read performance. When encountering new deadlock bugs, consider temporary workarounds rather than complex lock-based solutions, as the entire locking strategy will be replaced.

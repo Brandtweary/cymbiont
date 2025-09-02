@@ -73,7 +73,7 @@ server/
 - `Auth { token }` - Authenticate connection and set prime agent as current
 - `Test { message }` - Echo test with connection stats
 - `Heartbeat` - Client keep-alive (no response to prevent loops)
-- `FreezeOperations` - Pause graph operations after WAL write (testing)
+- `FreezeOperations` - Pause graph operations after command log write (testing)
 - `UnfreezeOperations` - Resume paused graph operations
 - `GetFreezeState` - Check if operations are frozen
 - `TestCliCommand { command, params }` - CLI command bridge (debug builds only)
@@ -92,7 +92,7 @@ server/
 
 ## Testing Support
 - **MockLLM**: Pass `echo` for text responses or `echo_tool` for tool execution in AgentChat
-- **Freeze/Unfreeze**: Pause operations after WAL write for crash testing
+- **Freeze/Unfreeze**: Pause operations after command log write for crash testing
 - **CLI Bridge**: TestCliCommand for integration test coverage
 
 ## Gotchas

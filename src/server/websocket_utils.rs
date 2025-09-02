@@ -8,7 +8,7 @@ use axum::extract::ws::Message;
 use std::sync::Arc;
 use crate::error::*;
 use crate::AppState;
-use crate::lock::AsyncRwLockExt;
+use crate::utils::AsyncRwLockExt;
 use crate::server::websocket::Response;
 
 /// Helper to resolve graph ID from optional graph_id and graph_name

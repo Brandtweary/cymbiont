@@ -113,10 +113,6 @@ pub enum StorageError {
     #[error("Transaction log error: {message}")]
     Wal { message: String },
 
-    /// Transaction coordination errors
-    #[error("Transaction error: {message}")]
-    Transaction { message: String },
-
     /// Entity not found errors
     #[error("Not found: {entity_type} with {identifier_type} '{identifier}'")]
     NotFound {
@@ -278,10 +274,6 @@ impl StorageError {
 
     pub fn wal(message: impl Into<String>) -> Self {
         StorageError::Wal { message: message.into() }
-    }
-
-    pub fn transaction(message: impl Into<String>) -> Self {
-        StorageError::Transaction { message: message.into() }
     }
 
     pub fn not_found(entity_type: impl Into<String>, identifier_type: impl Into<String>, identifier: impl Into<String>) -> Self {

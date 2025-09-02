@@ -4,7 +4,6 @@
 //! cymbiont-server binary.
 
 pub mod http_api;
-pub mod message_queue;
 pub mod websocket;
 pub mod websocket_utils;
 pub mod websocket_commands;

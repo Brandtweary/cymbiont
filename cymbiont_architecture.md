@@ -40,13 +40,15 @@ cymbiont/
 │   │   │   ├── graph_commands.rs  # Graph CRUD operations
 │   │   │   └── misc_commands.rs   # Auth, test, freeze commands
 │   │   └── auth.rs                # Token generation and validation
-│   └── storage/                   # Persistence layer
-│       ├── mod.rs                 # Storage module exports
-│       ├── recovery.rs            # WAL rebuild and entity reconstruction
-│       ├── wal.rs                 # Write-ahead logging with sled
-│       └── transaction_coordinator.rs  # Transaction coordination
+│   └── cqrs/                      # Command Query Responsibility Segregation
+│       ├── mod.rs                 # CQRS module exports
+│       ├── commands.rs            # All mutation commands with deterministic replay
+│       ├── queue.rs               # Public API for command submission
+│       ├── processor.rs           # Single-threaded state owner
+│       ├── router.rs              # Command routing with RouterToken authorization
+│       └── wal.rs                 # Command persistence with sled
 ├── data/                          # Graph and agent persistence (configurable path)
-│   ├── transaction_log/           # Global WAL database (sled)
+│   ├── command_log/               # CQRS command WAL database (sled)
 │   ├── graph_registry.json        # JSON export for debugging
 │   ├── agent_registry.json        # JSON export for debugging
 │   ├── auth_token                 # Authentication token (auto-generated)
@@ -59,8 +61,8 @@ cymbiont/
 ├── tests/                         # Integration tests - see tests/CLAUDE.md
 │   ├── common/                    # Shared test utilities
 │   │   ├── mod.rs                 # Test environment setup
-│   │   ├── test_harness.rs        # TestServer lifecycle management
-│   │   └── wal_validation.rs      # WAL-based state validation
+│   │   ├── test_harness.rs        # TestServer lifecycle management with CQRS
+│   │   └── wal_validation.rs      # CQRS command WAL-based state validation
 │   └── integration/               # Integration test suite (single binary - multiple test modules)
 ├── autodebugger/                  # Git submodule: LLM developer utilities toolbag
 └── build.rs                       # Build script: enforces tracing macro usage
@@ -81,17 +83,19 @@ cymbiont/
 - `run_startup_sequence()` - Common initialization for both modes
 - `check_orphaned_graphs()` - Warn about graphs with no authorized agents
 - `run_server_loop()` / `run_cli_loop()` - Mode-specific event loops
-- `handle_graceful_shutdown()` - Transaction completion during shutdown
-**Features**: Duration limits, signal handling, orphan detection, prime agent creation
+- `handle_graceful_shutdown()` - Command completion during shutdown
+**Startup**: CommandProcessor::start() handles WAL recovery and prime agent creation
+**Features**: Duration limits, signal handling, orphan detection
 
 ### cli.rs
-**Purpose**: CLI argument parsing and command execution
+**Purpose**: CLI argument parsing and CQRS command execution
 **Key macro**: `cli_commands!` - Single source of truth for all CLI commands
 **Generated**: `Args` struct with clap annotations, `from_json_with_args()` for WebSocket bridge
 **Functions**:
-- `handle_cli_commands()` - Process CLI commands, returns true for early exit
-- `show_cli_status()` - Display graph and agent status
+- `handle_cli_commands()` - Process CLI commands via CommandQueue, returns true for early exit
+- `show_cli_status()` - Display graph and agent status (read-only)
 - `dispatch_cli_command()` - WebSocket bridge for CLI execution
+**Architecture**: All create/delete/activate operations use `app_state.command_queue.execute()`
 **Commands**: Agent management, graph operations, system status
 **Contract**: Build script extracts commands for test verification
 
@@ -109,31 +113,73 @@ cymbiont/
 - Idiomatic `?` operator support
 **Usage**: `return Err(StorageError::not_found("graph", "id", id).into())` or `serde_json::from_str(&data)?`
 
-### lock.rs
-**Purpose**: Lock handling with panic-on-poison strategy
-**Traits**: `RwLockExt` (sync), `AsyncRwLockExt` (async)
-**Methods**: `read_or_panic()`, `write_or_panic()` with context messages
-**Features**: Async lock support for tokio RwLocks, contention warnings (debug)
-**Lock ordering**: Use `lock_registries_for_write()` for graph→agent order
+### cqrs/mod.rs
+**Purpose**: CQRS architecture implementation for deadlock-free mutations
+**Architecture**: Command-Query Responsibility Segregation with unified WAL
+**Pattern**: Single-threaded CommandProcessor owns all mutable state, eliminating deadlocks
+**Components**: Commands, CommandQueue, CommandProcessor, RouterToken, CommandLog
+
+### cqrs/commands.rs
+**Purpose**: All mutation commands with deterministic replay support
+**Command types**:
+- `RegistryCommand`: Graph/agent registry operations (CreateGraph, CreateAgent, etc.)
+- `GraphCommand`: Graph content operations (CreateBlock, UpdateBlock, DeleteBlock, etc.)
+- `AgentCommand`: Agent operations (AuthorizeAgent, DeauthorizeAgent, etc.)
+- `SystemCommand`: System operations (FreezeOperations, UnfreezeOperations)
+**Features**: Deterministic replay via `resolve()` method, resolved_id fields for UUID generation
+**WAL**: All commands logged before execution for crash recovery
+
+### cqrs/queue.rs
+**Purpose**: Public API for command submission with async futures
+**Type**: `CommandQueue` - thread-safe command submission interface
+**Methods**: `execute(command)` returns Future<Result<Response>>
+**Features**: Internal mpsc channel to CommandProcessor, future-based responses
+**Usage**: Primary mutation interface for all external callers
+
+### cqrs/processor.rs
+**Purpose**: Single-threaded owner of all mutable state
+**Type**: `CommandProcessor` - executes commands sequentially in background task
+**Responsibilities**: Command execution, WAL logging, state mutation, entity lazy loading
+**Features**: Startup recovery, entity rebuild from WAL, RouterToken authorization
+**Architecture**: Owns AppState resources, provides RouterTokens for authorized operations
+
+### cqrs/router.rs
+**Purpose**: Authorization system for command execution
+**Type**: `RouterToken` - proof of authorization for domain operations
+**Features**: Scoped access to specific registries and managers
+**Usage**: CommandProcessor creates tokens, domain modules require them for mutations
+**Security**: Prevents direct state mutation, ensures all changes go through CQRS
+
+### cqrs/wal.rs
+**Purpose**: Command Write-Ahead Log for crash recovery
+**Type**: `CommandLog` - sled-based persistent command storage
+**Features**: Command serialization, startup recovery, entity-specific filtering
+**Storage**: Commands stored with timestamps, entity IDs, and serialized data
+**Recovery**: Replay commands in chronological order for state reconstruction
+
+### utils.rs
+**Purpose**: Process management, utilities, and lock handling (moved from lock.rs)
+**Features**: Process utilities, datetime parsing, general helpers
+**Lock handling**: `read_or_panic()`, `write_or_panic()` for RwLock operations
+**Pattern**: Panic-on-poison strategy for lock errors
 
 ### app_state.rs
-**Purpose**: Pure resource container - central coordination hub
-**Architecture**: All fields public, NO helper methods (business logic in domain modules)
+**Purpose**: Pure resource container with CQRS command queue integration
+**Architecture**: All fields public, mutation via CommandQueue, direct read access
 **Resources**:
-- `graph_managers`: HashMap of graph managers
-- `agents`: HashMap of active agents
-- `transaction_coordinator`: Global WAL coordinator
+- `command_queue`: Primary interface for all mutations
+- `graph_managers`: HashMap of graph managers (read-only from external access)
+- `agents`: HashMap of active agents (read-only from external access)
 - `graph_registry`, `agent_registry`: Metadata registries
 - `ws_connections`: WebSocket connection tracking (server mode)
 - `auth_token`: Authentication token
 - `operation_freeze`: Test infrastructure
 **Key methods** (minimal - just lifecycle):
-- `new_with_config()` - Initialize with configuration
+- `new_with_config()` - Initialize with configuration and CommandQueue
 - `cleanup_and_save()` - Shutdown persistence
 - `initiate_graceful_shutdown()` - Start shutdown sequence
-- `wait_for_transactions()` - Wait for transaction completion
-**Pattern**: Weak refs passed to subsystems, which access resources directly
-**Delegation**: GraphOps trait, registries, and domain modules handle all logic
+**Pattern**: CommandQueue for mutations, direct access for reads
+**Architecture**: CQRS separates command/query responsibilities
 
 ### server/http_api.rs
 **Purpose**: HTTP API endpoints
@@ -152,31 +198,15 @@ cymbiont/
 **Types**: Defined by domain (PKM: Page/Block nodes, PageRef/BlockRef edges)
 
 ### graph/graph_operations.rs
-**Purpose**: Multi-agent graph operations with runtime authorization
+**Purpose**: Multi-agent graph operations via CQRS commands
 **Trait**: `GraphOps` - all operations require `agent_id: Uuid` and `graph_id: &Uuid`
 **Operations**:
 - Blocks: `add_block()`, `update_block()`, `delete_block()`
 - Pages: `create_page()`, `delete_page()`
 - Lifecycle: `create_graph()`, `delete_graph()`, `open_graph()`, `close_graph()`
 - Queries: `get_node()`, `query_graph_bfs()`, `list_graphs()`, `list_open_graphs()`
-**Skip WAL**: All operations take `skip_wal: bool` parameter for recovery replay
-**Transaction**: Operations store full parameters in WAL for recovery
-**Adding operations**: 1) Add to Operation enum 2) Add to GraphOps trait 3) Implement with auth check and skip_wal 4) Optional: Add to kg_tools 5) Optional: Add WebSocket command
-
-### storage/mod.rs
-**Purpose**: WAL-only persistence layer
-**Components**: TransactionLog, TransactionCoordinator, Recovery system
-**Features**: Write-ahead logging, ACID transactions, crash recovery
-**Details**: See `src/storage/CLAUDE.md`
-
-### storage/recovery.rs
-**Purpose**: WAL-based state reconstruction
-**Functions**:
-- `rebuild_from_wal()` - Rebuild registries and active entities from committed transactions
-- `recover_pending_transactions()` - Replay pending transactions after crash
-- `rebuild_graph_from_wal()` - Lazy reconstruction of specific graph
-- `rebuild_agent_from_wal()` - Lazy reconstruction of specific agent
-**Features**: Smart entity detection, self-referential operation filtering, lazy loading
+**Architecture**: Mutations route through CommandQueue, reads access state directly
+**Adding operations**: 1) Add to Command enum 2) Add to GraphOps trait 3) Implement via command_queue.execute() 4) Optional: Add to kg_tools 5) Optional: Add WebSocket command
 
 ### graph/graph_registry.rs
 **Purpose**: Multi-graph UUID tracking with open/closed state
@@ -194,42 +224,29 @@ cymbiont/
 **Details**: See `src/agent/CLAUDE.md` for module guide
 
 ### agent/agent_registry.rs
-**Purpose**: Agent lifecycle and authorization management
-**Operations**:
-- `register_agent()`, `remove_agent()` - lifecycle
-- `activate_agent()`, `deactivate_agent()` - memory management
-- `authorize_agent_for_graph()`, `deauthorize_agent_from_graph()` - bidirectional auth
-- `resolve_agent_target()` - UUID/name resolution
-- `ensure_default_agent()` - create prime agent on first run
-- `find_orphaned_graphs()` - detect graphs without agents
+**Purpose**: Agent lifecycle via CQRS commands
+**Operations**: All mutations route through CommandQueue
+- `register_agent()`, `remove_agent()` - lifecycle via CQRS
+- `activate_agent()`, `deactivate_agent()` - memory management via CQRS
+- `authorize_agent_for_graph()`, `deauthorize_agent_from_graph()` - bidirectional auth via CQRS
+- `resolve_agent_target()` - UUID/name resolution (read-only)
+- `ensure_default_agent()` - create prime agent on first run via CQRS
+- `find_orphaned_graphs()` - detect graphs without agents (read-only)
 **Prime agent**: Auto-created, full graph access, cannot be deleted
+**Architecture**: CommandProcessor owns registry, RouterToken required for mutations
 **Persistence**: `agent_registry.json` with active/inactive states
 
-### storage/wal.rs
-**Purpose**: Sled-based WAL
-**Features**: SHA-256 deduplication, ACID guarantees
-**Trees**: Transactions, content hash index, pending index
-
-### storage/transaction_coordinator.rs
-**Purpose**: Global transaction coordination with graceful shutdown
-**States**: Active → Committed | Aborted
-**Pattern**: `begin(operation)` returns TransactionHandle requiring explicit `commit()`
-**Methods**:
-- `begin()` - Start transaction (None for skip_wal)
-- `commit()` - Explicit commit required
-- `initiate_shutdown()`, `wait_for_completion()` - graceful shutdown
-**Global**: Single TransactionCoordinator at `data/transaction_log/`
-**Note**: Uncommitted transactions remain pending (Drop can't async rollback)
-
 ### agent/agent.rs
-**Purpose**: Core Agent with conversation management and tool execution
+**Purpose**: Core Agent with CQRS-based conversation management
 **Types**: `Agent`, `Message` (User/Assistant/Tool with AgentContext)
-**Features**: Conversation history, LLM backend, default graph, argument validation, auto-save
+**Features**: Conversation history, LLM backend, default graph, CQRS tool execution
+**Key function**: `process_agent_message()` - 4-phase LLM pipeline via CQRS commands
 **Methods**:
 - `chat()`, `process_message()` - LLM interaction
-- `execute_tool()` - Tool execution with auth
-- `get/set_default_graph_id()` - Default graph
-- `reset_conversation()`, `get_history()`, `save()`, `load()`
+- `execute_tool()` - Tool execution via CommandQueue
+- `get/set_default_graph_id()` - Default graph (read-only access)
+- `reset_conversation()`, `get_history()`, `save()`, `load()` - persistence
+**Architecture**: Tool calls route through CommandQueue for mutations
 
 ### agent/llm.rs
 **Purpose**: LLM backend abstraction with MockLLM
@@ -261,10 +278,11 @@ cymbiont/
 **Features**: Auto port selection, server info file, previous instance cleanup
 
 ### server/websocket.rs & websocket_commands/
-**Purpose**: WebSocket protocol and command routing
+**Purpose**: WebSocket protocol and CQRS command routing
 **Architecture**: Core in websocket.rs, handlers in websocket_commands/
-**Features**: Async task spawning, per-agent locking, smart resolution
-**Performance**: Parallel execution for different agents
+**Features**: Async task spawning, auth verification, command dispatch via CommandQueue
+**CQRS Integration**: All mutations route through CommandQueue for execution
+**Commands**: Agent chat/admin, graph CRUD, auth/testing utilities
 **Details**: See `src/server/CLAUDE.md` for full API
 
 ### import/mod.rs
@@ -397,12 +415,12 @@ transaction_log:
 
 | Flow | Steps |
 |------|-------|
-| **Import** | CLI/HTTP → Parse .md → Extract blocks → Create graph → Authorize prime agent |
-| **Transaction** | Begin → WAL write → State update → Explicit commit |
-| **WebSocket** | Auth → Agent select → Spawn task → Check auth → Transaction → Response |
-| **Agent Chat** | Resolve agent → LLM complete → Execute tools → Save conversation → Return |
-| **Agent Lifecycle** | Register → Activate → Chat → Deactivate → Archive |
-| **Recovery** | WAL rebuild → Pending recovery → Bootstrap → Entity activation |
+| **Import** | CLI/HTTP → Parse .md → Extract blocks → CQRS CreateGraph → Authorize prime agent |
+| **CQRS Command** | Submit to CommandQueue → WAL write → Execute via RouterToken → Return response |
+| **WebSocket** | Auth → Agent select → Spawn task → Check auth → CQRS command → Response |
+| **Agent Chat** | Resolve agent → LLM complete → Execute tools via CommandQueue → Save conversation → Return |
+| **Agent Lifecycle** | CQRS RegisterAgent → CQRS ActivateAgent → Chat → CQRS DeactivateAgent → Archive |
+| **Recovery** | CommandProcessor startup → CommandLog replay → Entity lazy loading → Bootstrap |
 | **Auth** | Generate token → Save to `auth_token` → HTTP: Bearer header, WS: Auth command |
 | **Prime Agent** | Auto-create → Authorize for all graphs → Cannot delete → Default agent |
 

@@ -57,12 +57,60 @@ use std::fs;
 use std::net::TcpListener;
 use std::collections::HashMap;
 use std::time::Duration;
+use std::sync::Arc;
 use serde::{Serialize, Deserialize};
 use serde_json;
 use tracing::{error, trace, warn};
+use tokio::sync::{RwLock as AsyncRwLock, RwLockReadGuard as AsyncRwLockReadGuard, RwLockWriteGuard as AsyncRwLockWriteGuard};
 use crate::config::BackendConfig;
 use crate::error::*;
 
+// ===== Async Lock Utilities =====
+
+/// Extension trait for tokio::sync::RwLock
+/// 
+/// Provides consistent API with panic-on-poison semantics for sync locks.
+/// Note that async locks cannot be poisoned.
+pub trait AsyncRwLockExt<T: 'static> {
+    /// Read the lock asynchronously
+    async fn read_or_panic(&self, context: &str) -> AsyncRwLockReadGuard<'_, T>;
+    
+    /// Write to the lock asynchronously with contention detection
+    async fn write_or_panic(&self, context: &str) -> AsyncRwLockWriteGuard<'_, T>;
+}
+
+impl<T: 'static> AsyncRwLockExt<T> for AsyncRwLock<T> {
+    async fn read_or_panic(&self, _context: &str) -> AsyncRwLockReadGuard<'_, T> {
+        // Async locks can't be poisoned, just await
+        self.read().await
+    }
+    
+    async fn write_or_panic(&self, context: &str) -> AsyncRwLockWriteGuard<'_, T> {
+        // Check for lock contention in debug builds and warn (not panic)
+        #[cfg(debug_assertions)]
+        {
+            if self.try_write().is_err() {
+                warn!(
+                    "⚠️ Lock contention detected during '{}': another task is holding the lock. \
+                    This may indicate a performance issue or the freeze mechanism in tests.",
+                    context
+                );
+            }
+        }
+        
+        self.write().await
+    }
+}
+
+impl<T: 'static> AsyncRwLockExt<T> for Arc<AsyncRwLock<T>> {
+    async fn read_or_panic(&self, context: &str) -> AsyncRwLockReadGuard<'_, T> {
+        self.as_ref().read_or_panic(context).await
+    }
+    
+    async fn write_or_panic(&self, context: &str) -> AsyncRwLockWriteGuard<'_, T> {
+        self.as_ref().write_or_panic(context).await
+    }
+}
 
 // ===== Process Management =====
 
@@ -236,6 +284,98 @@ pub fn find_available_port(config: &BackendConfig) -> Result<u16> {
 
 // ===== JSON Utilities =====
 
+/// Export all system data to JSON for debugging/inspection
+pub async fn export_all_system_data(app_state: &std::sync::Arc<crate::app_state::AppState>) -> crate::error::Result<()> {
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+    use crate::utils::AsyncRwLockExt;
+    use crate::graph::graph_manager::GraphManager;
+    
+    tracing::info!("Starting JSON export of all system data");
+    
+    // Export registries
+    {
+        let graph_registry = app_state.graph_registry.read_or_panic("export graph registry").await;
+        let path = app_state.data_dir.join("graph_registry.json");
+        graph_registry.export_json(&path)?;
+    }
+    
+    {
+        let agent_registry = app_state.agent_registry.read_or_panic("export agent registry").await;
+        let path = app_state.data_dir.join("agent_registry.json");
+        agent_registry.export_json(&path)?;
+    }
+    
+    // Export all graphs (both open and closed)
+    {
+        // Get all registered graphs from the registry
+        let all_graphs = {
+            let registry = app_state.graph_registry.read_or_panic("export - get all graphs").await;
+            registry.get_all_graphs()
+        };
+        
+        for graph_info in all_graphs {
+            let graph_id = graph_info.id;
+            
+            // Check if this graph already has a manager (is open)
+            let was_already_open = {
+                let managers = app_state.graph_managers.read().await;
+                managers.contains_key(&graph_id)
+            };
+            
+            // If not open, we need to temporarily load it to export
+            if !was_already_open {
+                let graph_path = app_state.data_dir.join("graphs").join(graph_id.to_string());
+                match GraphManager::new(&graph_path) {
+                    Ok(graph_manager) => {
+                        // Temporarily insert it
+                        {
+                            let mut managers = app_state.graph_managers.write().await;
+                            managers.insert(graph_id, Arc::new(RwLock::new(graph_manager)));
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to create graph manager {} for export: {}", graph_id, e);
+                        continue;
+                    }
+                }
+            }
+            
+            // Now export the graph (it definitely has a manager now)
+            {
+                let managers = app_state.graph_managers.read().await;
+                if let Some(manager_lock) = managers.get(&graph_id) {
+                    let manager = manager_lock.read_or_panic("export graph manager").await;
+                    let graph_dir = app_state.data_dir.join("graphs").join(graph_id.to_string());
+                    tokio::fs::create_dir_all(&graph_dir).await?;
+                    let path = graph_dir.join("knowledge_graph.json");
+                    manager.export_json(&path)?;
+                }
+            }
+            
+            // If we opened it just for export, close it again to free memory
+            if !was_already_open {
+                let mut managers = app_state.graph_managers.write().await;
+                managers.remove(&graph_id);
+            }
+        }
+    }
+    
+    // Export all agents
+    {
+        let agents = app_state.agents.read().await;
+        for (agent_id, agent_arc) in agents.iter() {
+            let agent = agent_arc.read_or_panic("export agent").await;
+            let agent_dir = app_state.data_dir.join("agents").join(agent_id.to_string());
+            tokio::fs::create_dir_all(&agent_dir).await?;
+            let path = agent_dir.join("agent.json");
+            agent.export_json(&path)?;
+        }
+    }
+    
+    tracing::info!("JSON export completed successfully");
+    Ok(())
+}
 
 /// Parse properties from a JSON value into a HashMap
 pub fn parse_properties(properties_json: &serde_json::Value) -> HashMap<String, String> {

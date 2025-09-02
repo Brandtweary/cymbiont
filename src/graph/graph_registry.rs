@@ -7,8 +7,8 @@
 //!
 //! The graph registry serves as the single source of truth for all knowledge graphs
 //! in the system. Each graph is identified by a UUID and has its own isolated storage
-//! directory, GraphManager instance, and TransactionCoordinator. Multiple graphs can
-//! be open simultaneously, replacing the previous single active graph model.
+//! directory and GraphManager instance. Multiple graphs can be open simultaneously, 
+//! with all mutations flowing through the CQRS CommandQueue for deadlock-free operation.
 //!
 //! ## Key Components
 //!
@@ -33,24 +33,22 @@
 //! ## Graph State Management
 //!
 //! Graphs exist in two states:
-//! - **Open**: Loaded in memory with active manager and transaction coordinator
+//! - **Open**: Loaded in memory with active GraphManager instance
 //! - **Closed**: Persisted to disk, resources freed from memory
 //!
 //! The registry tracks open graphs in memory during runtime.
 //!
 //! ## Concurrency Safety
 //!
-//! The GraphRegistry is accessed through `Arc<RwLock<GraphRegistry>>` with panic-on-poison
-//! strategy implemented via the lock.rs module:
+//! The GraphRegistry is owned by CommandProcessor in the CQRS architecture:
 //! 
-//! - **Lock Pattern**: Use `read_or_panic()` and `write_or_panic()` for all lock operations
-//! - **Contention Detection**: Write operations automatically warn about lock contention in debug builds
-//! - **Lock Ordering**: When acquiring both graph_registry and agent_registry, use `lock_registries_for_write()`
-//! - **Scope Management**: Keep lock scopes minimal to reduce contention
+//! - **Sequential Access**: CommandProcessor ensures sequential mutations
+//! - **RouterToken**: All mutations require RouterToken authorization
+//! - **Read Access**: External reads via Arc<RwLock> for queries
+//! - **Write Access**: Only CommandProcessor can mutate via RouterToken
 //! 
-//! The panic-on-poison strategy ensures data integrity by immediately halting execution
-//! when a thread panics while holding a lock, preventing continued operation with
-//! potentially corrupted state.
+//! The CQRS pattern eliminates deadlocks by serializing all mutations through
+//! a single-threaded command processor while allowing unlimited concurrent reads.
 //!
 //! ## Complete Workflow Methods
 //!
@@ -77,16 +75,12 @@ use tracing::info;
 use tokio::sync::RwLock;
 use std::sync::Arc;
 
-use crate::storage::TransactionCoordinator;
-use crate::storage::wal::{Operation, RegistryOperation, GraphRegistryOp};
-use crate::storage::recovery::RecoveryContext;
 use crate::graph::graph_manager::GraphManager;
+use crate::agent::agent_registry::AgentRegistry;
 use crate::error::*;
-use crate::lock::AsyncRwLockExt;
-use crate::AppState;
-use std::sync::Weak;
 // Result type from error module
 use crate::Result;
+use crate::cqrs::router::RouterToken;
 
 
 
@@ -125,15 +119,6 @@ pub struct GraphRegistry {
     /// Base data directory (not serialized)
     #[serde(skip)]
     data_dir: Option<PathBuf>,
-    
-    /// Transaction coordinator for WAL operations (not serialized)
-    #[serde(skip)]
-    transaction_coordinator: Option<Arc<TransactionCoordinator>>,
-    
-    /// Reference to AppState for accessing graph managers and other resources
-    /// Uses Weak to avoid reference cycles
-    #[serde(skip)]
-    app_state: Option<Weak<AppState>>,
 }
 
 
@@ -144,93 +129,40 @@ impl GraphRegistry {
             graphs: HashMap::new(),
             open_graphs: HashSet::new(),
             data_dir: None,
-            transaction_coordinator: None,
-            app_state: None,
         }
     }
 
-    /// Set the data directory and transaction coordinator
-    pub fn set_resources(&mut self, data_dir: &Path, transaction_coordinator: Arc<TransactionCoordinator>) {
+    /// Set the data directory for graph persistence
+    pub fn set_data_dir(&mut self, data_dir: &Path) {
         self.data_dir = Some(data_dir.to_path_buf());
-        self.transaction_coordinator = Some(transaction_coordinator);
     }
     
-    /// Set the AppState reference
-    /// Called during AppState initialization to give registry access to resources
-    pub fn set_app_state(&mut self, app_state: &Arc<AppState>) {
-        self.app_state = Some(Arc::downgrade(app_state));
-    }
-    
-    /// Open a graph (complete workflow with loading and WAL rebuild)
+    /// Open a graph (complete workflow with loading)
     /// 
     /// This method orchestrates the full open workflow:
     /// 1. Mark graph as open in registry
     /// 2. Load or create the GraphManager
-    /// 3. Rebuild from WAL if needed
     /// 
-    /// Uses Arc<RwLock<Self>> to minimize lock holding time.
+    /// Takes resources as parameters to avoid weak references.
     pub async fn open_graph_complete(
-        registry: Arc<RwLock<GraphRegistry>>,
+        &mut self,
+        _token: &RouterToken,
         graph_id: Uuid,
-        skip_wal: bool,
+        graph_managers: &mut HashMap<Uuid, Arc<RwLock<GraphManager>>>,
+        data_dir: &Path,
     ) -> Result<()> {
-        // Step 1: Update registry to mark open (brief lock)
-        let _graph_info = {
-            let mut reg = registry.write_or_panic("open graph - registry update").await;
-            reg.open_graph(&graph_id, skip_wal).await?
-        };
-        // Registry lock released
+        // Step 1: Mark graph as open in registry
+        self.open_graph(&graph_id).await?;
         
-        // Step 2: Get app_state for further operations
-        let app_state = {
-            let reg = registry.read_or_panic("open graph - get app_state").await;
-            reg.app_state.as_ref()
-                .and_then(|weak| weak.upgrade())
-                .ok_or_else(|| StorageError::graph_registry("No AppState reference"))?
-        };
-        
-        // Step 3: Create GraphManager if not in memory
-        let needs_rebuild = {
-            let managers = app_state.graph_managers.read().await;
+        // Step 2: Create GraphManager if not in memory
+        if !graph_managers.contains_key(&graph_id) {
+            // Create graph manager
+            let graph_dir = data_dir.join("graphs").join(graph_id.to_string());
+            std::fs::create_dir_all(&graph_dir)?;
+            let graph_manager = GraphManager::new(graph_dir)?;
             
-            if !managers.contains_key(&graph_id) {
-                drop(managers); // Release read lock
-                
-                // Create graph manager
-                let graph_dir = app_state.data_dir.join("graphs").join(graph_id.to_string());
-                std::fs::create_dir_all(&graph_dir)?;
-                let graph_manager = GraphManager::new(graph_dir)?;
-                
-                // Insert into HashMap
-                let mut managers_write = app_state.graph_managers.write().await;
-                managers_write.insert(graph_id, RwLock::new(graph_manager));
-                
-                // New managers need rebuilding from WAL
-                true
-            } else {
-                // Check if existing manager needs rebuilding
-                if let Some(manager_lock) = managers.get(&graph_id) {
-                    let manager = manager_lock.read().await;
-                    manager.graph.node_count() == 0
-                } else {
-                    false
-                }
-            }
-        };
-        
-        // Step 4: Rebuild from WAL if needed (no locks held)
-        if needs_rebuild {
-            let context = RecoveryContext {
-                app_state: app_state.clone(),
-                is_rebuilding: true,
-            };
-            
-            crate::storage::recovery::rebuild_graph_from_wal(
-                &graph_id,
-                &app_state.transaction_coordinator,
-                &context
-            ).await?;
-        } else {
+            // Insert into HashMap
+            graph_managers.insert(graph_id, Arc::new(RwLock::new(graph_manager)));
         }
         
         Ok(())
@@ -243,65 +175,31 @@ impl GraphRegistry {
     /// 2. Create GraphManager
     /// 3. Authorize prime agent
     /// 
-    /// Uses Arc<RwLock<Self>> to minimize lock holding time.
+    /// Takes resources as parameters to avoid weak references.
     pub async fn create_graph_complete(
-        registry: Arc<RwLock<GraphRegistry>>,
+        &mut self,
+        _token: &RouterToken,
+        graph_id: Uuid,  // Now passed as parameter from resolved command
         name: Option<String>,  
         description: Option<String>,
+        graph_managers: &mut HashMap<Uuid, Arc<RwLock<GraphManager>>>,
+        agent_registry: &mut AgentRegistry,
+        data_dir: &Path,
     ) -> Result<GraphInfo> {
-        tracing::debug!("create_graph_complete: Starting");
-        // Get app_state
-        let app_state = {
-            let reg = registry.read_or_panic("create graph - get app_state").await;
-            let state = reg.app_state.as_ref()
-                .and_then(|weak| weak.upgrade())
-                .ok_or_else(|| StorageError::graph_registry("No AppState reference"))?;
-            state
-        };
-        tracing::debug!("create_graph_complete: Got app_state");
-        
         // Create the graph directory
-        let graph_id = Uuid::new_v4();
-        let graph_dir = app_state.data_dir.join("graphs").join(graph_id.to_string());
+        let graph_dir = data_dir.join("graphs").join(graph_id.to_string());
         std::fs::create_dir_all(&graph_dir)?;
         
-        // Step 1: Register the graph (brief lock)
-        let graph_info = {
-            let mut reg = registry.write_or_panic("create graph - register").await;
-            let info = reg.register_graph(Some(graph_id), name, description, &graph_dir, false).await?;
-            info
-        };
+        // Step 1: Register the graph
+        let graph_info = self.register_graph(Some(graph_id), name, description, &graph_dir).await?;
         
-        // Step 2: Create the GraphManager (no registry lock)
-        {
-            let graph_manager = GraphManager::new(&graph_dir)?;
-            tracing::debug!("create_graph_complete: Created GraphManager, acquiring managers write lock");
-            let mut managers = app_state.graph_managers.write().await;
-            tracing::debug!("create_graph_complete: Got managers write lock, inserting");
-            managers.insert(graph_id, RwLock::new(graph_manager));
-            tracing::debug!("create_graph_complete: GraphManager inserted");
-        }
+        // Step 2: Create the GraphManager
+        let graph_manager = GraphManager::new(&graph_dir)?;
+        graph_managers.insert(graph_id, Arc::new(RwLock::new(graph_manager)));
         
-        // Step 3: Authorize prime agent if it exists (proper lock ordering)
-        let prime_id = {
-            tracing::debug!("create_graph_complete: Getting prime agent ID");
-            let agent_registry = app_state.agent_registry.read_or_panic("get prime agent").await;
-            let id = agent_registry.get_prime_agent_id();
-            tracing::debug!("create_graph_complete: Prime agent ID: {:?}", id);
-            id
-        };
-        
-        if let Some(prime_id) = prime_id {
-            // Use proper lock ordering with both registries
-            tracing::debug!("create_graph_complete: Authorizing prime agent for graph");
-            use crate::lock::lock_registries_for_write;
-            
-            let (mut graph_registry, mut agent_registry) = lock_registries_for_write(
-                &app_state.graph_registry,
-                &app_state.agent_registry
-            ).await?;
-            agent_registry.authorize_agent_for_graph(&prime_id, &graph_info.id, &mut graph_registry, false).await?;
-            tracing::debug!("create_graph_complete: Prime agent authorized");
+        // Step 3: Authorize prime agent if it exists
+        if let Some(prime_id) = agent_registry.get_prime_agent_id() {
+            agent_registry.authorize_agent_for_graph(_token, &prime_id, &graph_info.id, self).await?;
         }
         
         info!("✅ Created graph {} with prime agent authorization", graph_info.name);
@@ -322,7 +220,6 @@ impl GraphRegistry {
         name: Option<String>,
         description: Option<String>,
         data_dir: &Path,
-        skip_wal: bool
     ) -> Result<GraphInfo> {
         let graph_id = id.unwrap_or_else(|| Uuid::new_v4());
         let name = name.unwrap_or_else(|| format!("Graph {}", &graph_id.to_string()[..8]));
@@ -338,30 +235,6 @@ impl GraphRegistry {
             return Ok(existing.clone());
         }
         
-        // Create WAL operation conditionally
-        let operation = if skip_wal {
-            None
-        } else {
-            Some(Operation::Registry(RegistryOperation::Graph(
-                GraphRegistryOp::RegisterGraph {
-                    graph_id,
-                    name: Some(name.clone()),
-                    description: description.clone(),
-                }
-            )))
-        };
-        
-        let coordinator = self.transaction_coordinator.as_ref()
-            .ok_or_else(|| StorageError::graph_registry("No transaction coordinator set"))?
-            .clone();
-        
-        // Extract fields needed by the closure
-        let graphs = &mut self.graphs;
-        let open_graphs = &mut self.open_graphs;
-        let data_dir = data_dir.to_path_buf();
-        
-        let tx = coordinator.begin(operation).await?;
-        
         // Create new graph
         let kg_path = data_dir.join("graphs").join(graph_id.to_string());
         
@@ -375,12 +248,11 @@ impl GraphRegistry {
             authorized_agents: Vec::new(),  // AgentRegistry will manage this
         };
 
-        graphs.insert(graph_id, graph_info.clone());
+        self.graphs.insert(graph_id, graph_info.clone());
         
         // Always open newly registered graphs
-        open_graphs.insert(graph_id);
+        self.open_graphs.insert(graph_id);
         
-        tx.commit().await?;
         Ok(graph_info)
     }
 
@@ -410,86 +282,46 @@ impl GraphRegistry {
     
     /// Open a graph (pure registry operation)
     /// 
-    /// This method ONLY updates registry state. It does not create GraphManagers or rebuild from WAL.
+    /// This method ONLY updates registry state. It does not create GraphManagers or rebuild from command log.
     /// For the complete workflow, use open_graph_complete().
-    pub async fn open_graph(&mut self, graph_id: &Uuid, skip_wal: bool) -> Result<GraphInfo> {
+    pub async fn open_graph(&mut self, graph_id: &Uuid) -> Result<GraphInfo> {
         // Validate graph exists
         let graph_info = self.graphs.get(graph_id)
             .ok_or_else(|| StorageError::not_found("graph", "ID", graph_id.to_string()))?
             .clone();
         
-        // Create WAL operation conditionally
-        let operation = if skip_wal {
-            None
-        } else {
-            Some(Operation::Registry(RegistryOperation::Graph(
-                GraphRegistryOp::OpenGraph {
-                    graph_id: *graph_id,
-                }
-            )))
-        };
-        
-        let coordinator = self.transaction_coordinator.as_ref()
-            .ok_or_else(|| StorageError::graph_registry("No transaction coordinator set"))?
-            .clone();
-        
-        // Extract fields needed by the closure
-        let open_graphs = &mut self.open_graphs;
-        let graphs = &mut self.graphs;
-        
-        let tx = coordinator.begin(operation).await?;
-        
         // Add to open set
-        if open_graphs.insert(*graph_id) {
-        }
+        self.open_graphs.insert(*graph_id);
         
         // Update last accessed time
-        if let Some(graph) = graphs.get_mut(graph_id) {
+        if let Some(graph) = self.graphs.get_mut(graph_id) {
             graph.last_accessed = Utc::now();
         }
         
-        tx.commit().await?;
         Ok(graph_info)
     }
     
     /// Close a graph (remove from open set and unload manager)
-    pub async fn close_graph(&mut self, graph_id: &Uuid, skip_wal: bool) -> Result<()> {
+    /// 
+    /// Takes graph_managers to properly remove the manager from memory.
+    pub async fn close_graph(
+        &mut self,
+        _token: &RouterToken,
+        graph_id: &Uuid,
+        graph_managers: &mut HashMap<Uuid, Arc<RwLock<GraphManager>>>,
+    ) -> Result<()> {
         // Validate graph is open
         if !self.open_graphs.contains(graph_id) {
             return Err(StorageError::graph_registry(format!("Graph '{}' was not open", graph_id)).into());
         }
         
-        // Remove manager from memory
-        if let Some(app_state) = self.app_state.as_ref().and_then(|w| w.upgrade()) {
-            let mut managers = app_state.graph_managers.write().await;
-            managers.remove(graph_id);
-        }
+        // Remove manager from memory to prevent memory leak
+        graph_managers.remove(graph_id);
         
-        // Create WAL operation conditionally
-        let operation = if skip_wal {
-            None
-        } else {
-            Some(Operation::Registry(RegistryOperation::Graph(
-                GraphRegistryOp::CloseGraph {
-                    graph_id: *graph_id,
-                }
-            )))
-        };
+        // Remove from open set
+        self.open_graphs.remove(graph_id);
         
-        let coordinator = self.transaction_coordinator.as_ref()
-            .ok_or_else(|| StorageError::graph_registry("No transaction coordinator set"))?
-            .clone();
-        
-        // Extract fields needed by the closure
-        let open_graphs = &mut self.open_graphs;
-        
-        let tx = coordinator.begin(operation).await?;
-        
-        if !open_graphs.remove(graph_id) {
-            // Graph was not open, but we still commit since desired state is achieved
-        }
-        
-        tx.commit().await
+        Ok(())
     }
     
     /// Resolve graph target from optional UUID and name with smart defaults
@@ -533,36 +365,21 @@ impl GraphRegistry {
     /// Remove a graph from the registry and archive its data
     /// 
     /// Archives the graph directory to `{data_dir}/archived_graphs/` with timestamp.
-    pub async fn remove_graph(&mut self, graph_id: &Uuid, skip_wal: bool) -> Result<()> {
+    /// Takes graph_managers to properly remove the manager from memory if the graph is open.
+    pub async fn remove_graph(
+        &mut self,
+        _token: &RouterToken,
+        graph_id: &Uuid,
+        graph_managers: &mut HashMap<Uuid, Arc<RwLock<GraphManager>>>,
+        agent_registry: &mut AgentRegistry,
+    ) -> Result<()> {
         // Get the graph info
         let graph_info = self.graphs.get(graph_id)
             .ok_or_else(|| StorageError::not_found("graph", "ID", graph_id.to_string()))?
             .clone();
         
-        // Create WAL operation conditionally
-        let operation = if skip_wal {
-            None
-        } else {
-            Some(Operation::Registry(RegistryOperation::Graph(
-                GraphRegistryOp::RemoveGraph {
-                    graph_id: *graph_id,
-                }
-            )))
-        };
-        
-        let coordinator = self.transaction_coordinator.as_ref()
-            .ok_or_else(|| StorageError::graph_registry("No transaction coordinator set"))?
-            .clone();
-        
-        // Extract fields needed by the closure
-        let data_dir = self.data_dir.clone();
-        let graphs = &mut self.graphs;
-        let open_graphs = &mut self.open_graphs;
-        
-        let tx = coordinator.begin(operation).await?;
-        
         // Archive the graph data if we have a data directory
-        if let Some(data_dir) = &data_dir {
+        if let Some(data_dir) = &self.data_dir {
             let graph_data_dir = data_dir.join("graphs").join(graph_id.to_string());
             if graph_data_dir.exists() {
                 // Create archive directory if it doesn't exist
@@ -583,17 +400,22 @@ impl GraphRegistry {
         }
         
         // Remove from registry
-        graphs.remove(graph_id);
+        self.graphs.remove(graph_id);
         
         // Also remove from open graphs if it was open
-        if open_graphs.remove(graph_id) {
+        if self.open_graphs.remove(graph_id) {
+            // Remove manager from memory to prevent memory leak
+            graph_managers.remove(graph_id);
         }
         
-        tx.commit().await
+        // Clean up this graph from all agents' authorized_graphs lists
+        agent_registry.remove_graph_from_all_agents(graph_id);
+        
+        Ok(())
     }
     
     // ========== Recovery-Only Methods ==========
-    // These methods are ONLY for WAL recovery and bypass transaction logging
+    // These methods are ONLY for command recovery and bypass logging
     
     
     /// Add an agent to a graph's authorized list (called by AgentRegistry)
@@ -615,10 +437,17 @@ impl GraphRegistry {
         }
     }
     
+    /// Remove an agent from ALL graphs' authorized lists (used when deleting an agent)
+    pub fn remove_agent_from_all_graphs(&mut self, agent_id: &Uuid) {
+        for graph in self.graphs.values_mut() {
+            graph.authorized_agents.retain(|id| id != agent_id);
+        }
+    }
+    
     /// Export the registry to JSON for debugging/inspection
     /// 
-    /// Note: This is NOT for persistence - WAL is the source of truth
-    /// The test harness (tests/common/wal_validation.rs) reads the WAL for validation
+    /// Note: This is NOT for persistence - command log is the source of truth
+    /// The test harness (tests/common/wal_validation.rs) reads the command log for validation
     pub fn export_json(&self, path: &Path) -> Result<()> {
         let json = serde_json::to_string_pretty(&self)?;
         

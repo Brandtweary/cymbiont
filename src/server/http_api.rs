@@ -75,7 +75,7 @@ use axum::{
 use std::sync::Arc;
 use tracing::{info, error};
 use serde::{Deserialize, Serialize};
-use crate::lock::AsyncRwLockExt;
+use crate::utils::AsyncRwLockExt;
 use crate::AppState;
 use crate::server::websocket::websocket_handler;
 use crate::server::auth::auth_middleware;

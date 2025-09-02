@@ -16,7 +16,7 @@
 //! - `TestCliCommand`: CLI command bridge (debug builds only)
 //! 
 //! ### Operation Control
-//! - `FreezeOperations`: Pause graph operations after WAL write
+//! - `FreezeOperations`: Pause graph operations after command log write
 //! - `UnfreezeOperations`: Resume paused graph operations
 //! - `GetFreezeState`: Query current freeze status
 //! 
@@ -32,7 +32,7 @@
 //! ## Freeze Mechanism
 //! 
 //! The freeze/unfreeze commands enable deterministic testing by pausing
-//! transaction execution after WAL writes but before graph updates. This
+//! command execution after command log writes but before state updates. This
 //! allows tests to simulate crashes and verify recovery behavior.
 //! 
 //! ## Heartbeat Design
@@ -51,7 +51,7 @@
 use std::sync::Arc;
 use tracing::{info, warn, error};
 use crate::error::*;
-use crate::lock::AsyncRwLockExt;
+use crate::utils::AsyncRwLockExt;
 use crate::AppState;
 use crate::server::websocket::Command;
 use crate::server::websocket_utils::{

@@ -839,17 +839,8 @@ pub fn read_pending_response(ws: &mut WsConnection) -> Value {
 
 /// Send agent chat and get request_id (for async processing)
 /// 
-/// TODO: This function is DEPRECATED and will be replaced by the CQRS refactor.
-/// The async agent chat pattern was a band-aid fix for deadlock issues.
-/// See docs/cqrs_refactor_plan.md for the new architecture.
-/// 
-/// DO NOT extend this function or use it as a pattern for other features.
-#[deprecated(
-    since = "0.1.0",
-    note = "Will be replaced by CQRS-based agent commands. See docs/cqrs_refactor_plan.md"
-)]
-#[allow(deprecated)] // Allow use within the test harness
-pub fn send_agent_chat(ws: &mut WsConnection, message: &str, echo: Option<&str>, echo_tool: Option<&str>) -> String {
+/// Send agent chat command and wait for processing ACK
+pub fn send_agent_chat(ws: &mut WsConnection, message: &str, echo: Option<&str>, echo_tool: Option<&str>) {
     let cmd = json!({
         "type": "agent_chat",
         "message": message,
@@ -870,14 +861,16 @@ pub fn send_agent_chat(ws: &mut WsConnection, message: &str, echo: Option<&str>,
                 let response: Value = serde_json::from_str(&text)
                     .expect("Failed to parse response");
                 
-                // Check for ACK response
-                if response["type"] == "agent_chat_ack" {
-                    return response["request_id"].as_str()
-                        .expect("No request_id in ACK")
-                        .to_string();
+                // Check for success ACK with processing status
+                if response["type"] == "success" {
+                    if let Some(data) = response.get("data") {
+                        if data["status"] == "processing" {
+                            return; // ACK received
+                        }
+                    }
                 }
                 
-                // Skip other messages
+                // Skip heartbeats
                 if response["type"] == "heartbeat" {
                     continue;
                 }
@@ -893,19 +886,8 @@ pub fn send_agent_chat(ws: &mut WsConnection, message: &str, echo: Option<&str>,
     }
 }
 
-/// Wait for specific agent response by request_id
-/// 
-/// TODO: This function is DEPRECATED and will be replaced by the CQRS refactor.
-/// The async agent chat pattern was a band-aid fix for deadlock issues.
-/// See docs/cqrs_refactor_plan.md for the new architecture.
-/// 
-/// DO NOT extend this function or use it as a pattern for other features.
-#[deprecated(
-    since = "0.1.0",
-    note = "Will be replaced by CQRS-based agent commands. See docs/cqrs_refactor_plan.md"
-)]
-#[allow(deprecated)] // Allow use within the test harness
-pub fn wait_for_agent_response(ws: &mut WsConnection, request_id: &str) -> Value {
+/// Wait for agent response after ACK
+pub fn wait_for_agent_response(ws: &mut WsConnection) -> Value {
     let timeout = Duration::from_secs(30); // Generous for tool execution
     let start = Instant::now();
     
@@ -915,21 +897,26 @@ pub fn wait_for_agent_response(ws: &mut WsConnection, request_id: &str) -> Value
                 let msg: Value = serde_json::from_str(&text)
                     .expect("Failed to parse response");
                 
-                // Check if this is our response
-                if msg["type"] == "agent_chat_response" {
-                    if msg["data"]["request_id"] == request_id {
-                        return msg["data"].clone();
+                // Check if this is the final response (success with response field)
+                if msg["type"] == "success" {
+                    if let Some(data) = msg.get("data") {
+                        if data.get("response").is_some() {
+                            return data.clone();
+                        }
                     }
                 }
-                // Skip other messages (heartbeats, other responses)
+                // Skip heartbeats
+                if msg["type"] == "heartbeat" {
+                    continue;
+                }
             }
             Ok(Message::Close(_)) => {
-                panic!("WebSocket connection closed while waiting for agent response {}", request_id);
+                panic!("WebSocket connection closed while waiting for agent response");
             }
             Ok(_) => {}
             Err(e) => {
                 if start.elapsed() > timeout {
-                    panic!("Timeout waiting for agent response {}: {}", request_id, e);
+                    panic!("Timeout waiting for agent response: {}", e);
                 }
                 thread::sleep(Duration::from_millis(10));
             }
@@ -937,21 +924,10 @@ pub fn wait_for_agent_response(ws: &mut WsConnection, request_id: &str) -> Value
     }
 }
 
-/// Helper for simple agent chat (combines send + wait)
-/// 
-/// TODO: This function is DEPRECATED and will be replaced by the CQRS refactor.
-/// The async agent chat pattern was a band-aid fix for deadlock issues.
-/// See docs/cqrs_refactor_plan.md for the new architecture.
-/// 
-/// DO NOT extend this function or use it as a pattern for other features.
-#[deprecated(
-    since = "0.1.0",
-    note = "Will be replaced by CQRS-based agent commands. See docs/cqrs_refactor_plan.md"
-)]
-#[allow(deprecated)] // Allow use within the test harness
+/// Synchronous agent chat helper that sends message and waits for response
 pub fn agent_chat_sync(ws: &mut WsConnection, message: &str, echo: Option<&str>, echo_tool: Option<&str>) -> Value {
-    let request_id = send_agent_chat(ws, message, echo, echo_tool);
-    wait_for_agent_response(ws, &request_id)
+    send_agent_chat(ws, message, echo, echo_tool);
+    wait_for_agent_response(ws)
 }
 
 

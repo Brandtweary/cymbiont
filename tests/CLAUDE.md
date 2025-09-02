@@ -1,5 +1,12 @@
 # CYMBIONT TEST GUIDE
 
+⚠️ **MAJOR REFACTOR IN PROGRESS** ⚠️
+The test harness is currently outdated due to the CQRS refactor.
+- WAL validation needs to be updated to work with the new command log
+- Agent chat utilities are deprecated and need CQRS replacements
+- Many test helpers still reference the old transaction system
+Tests are expected to fail until the harness is updated (Phase 8 of CQRS refactor)
+
 ## Test Structure
 - **common/**: Shared test utilities - imported via `#[path = "../common/mod.rs"]`
   - **mod.rs**: Test environment setup (`setup_test_env()`, `cleanup_test_env()`)

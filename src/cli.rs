@@ -14,9 +14,9 @@
 //!
 //! ## Concurrency Considerations
 //!
-//! Authorization operations that modify both agent and graph registries use
-//! `lock_registries_for_write()` to acquire locks in the canonical
-//! order (graph_registry → agent_registry) preventing potential deadlocks
+//! All state mutations are serialized through the CQRS CommandQueue, eliminating
+//! concurrency issues. The CommandProcessor owns all mutable state and processes
+//! commands sequentially, ensuring atomic operations without deadlocks
 //!
 //! ## Single Source of Truth: The `cli_commands!` Macro
 //!
@@ -106,11 +106,11 @@ use clap::Parser;
 use tracing::{info, error};
 use uuid::Uuid;
 use crate::error::*;
-use crate::lock::{AsyncRwLockExt, lock_registries_for_write};
+use crate::utils::AsyncRwLockExt;
 use crate::app_state::AppState;
-use crate::agent::agent_registry::AgentRegistry;
 use crate::graph::graph_operations::GraphOps;
 use crate::import;
+use crate::cqrs::{Command, RegistryCommand, AgentRegistryCommand};
 
 /// CLI Commands Contract Enforcement Macro
 /// Developer must specify ALL CLI commands exhaustively
@@ -320,15 +320,24 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
     
     // Create agent
     if let Some(agent_name) = &args.create_agent {
-        // Use the complete workflow method
-        let agent_info = AgentRegistry::create_agent_complete(
-            app_state.agent_registry.clone(),
-            Some(agent_name.clone()),
-            args.agent_description.clone(),
-            args.agent_description.clone().or(Some("An intelligent assistant".to_string())),
-        ).await?;
+        // Submit command to CQRS system
+        let command = Command::Registry(RegistryCommand::Agent(
+            AgentRegistryCommand::CreateAgent {
+                name: Some(agent_name.clone()),
+                description: args.agent_description.clone(),
+                resolved_id: None,  // Will be resolved before WAL write
+            }
+        ));
         
-        info!("✅ Created agent '{}' with ID: {}", agent_info.name, agent_info.id);
+        let result = app_state.command_queue.execute(command).await?;
+        
+        if let Some(data) = result.data {
+            if let (Some(agent_id), Some(name)) = (data["id"].as_str(), data["name"].as_str()) {
+                info!("✅ Created agent '{}' with ID: {}", name, agent_id);
+            } else {
+                info!("✅ Created agent successfully");
+            }
+        }
     }
     
     // Delete agent
@@ -354,20 +363,11 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
             }
         }
         
-        // Remove agent from memory if loaded
-        {
-            let mut registry = app_state.agent_registry.write_or_panic("deactivate agent").await;
-            registry.deactivate_agent(&resolved_id, false).await?;
-        }
-        
-        // Remove from registry and archive data
-        {
-            let mut registry = app_state.agent_registry.write_or_panic("delete agent - write registry").await;
-            registry.remove_agent(&resolved_id, false).await?;
-        }
-        
-        // Save registry after deletion
-        // Registry persisted through WAL, no need for JSON save
+        // Submit command to delete agent (handles deactivation and archival)
+        let command = Command::Registry(RegistryCommand::Agent(
+            AgentRegistryCommand::DeleteAgent { agent_id: resolved_id }
+        ));
+        app_state.command_queue.execute(command).await?;
         
         info!("✅ Deleted agent: {}", resolved_id);
     }
@@ -387,10 +387,11 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
             )?
         };
         
-        {
-            let mut registry = app_state.agent_registry.write_or_panic("activate agent").await;
-            registry.activate_agent(&resolved_id, false).await?
-        };
+        // Submit command to activate agent
+        let command = Command::Registry(RegistryCommand::Agent(
+            AgentRegistryCommand::ActivateAgent { agent_id: resolved_id }
+        ));
+        app_state.command_queue.execute(command).await?;
         
         info!("✅ Activated agent: {}", resolved_id);
     }
@@ -421,10 +422,11 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
             }
         }
         
-        {
-            let mut registry = app_state.agent_registry.write_or_panic("deactivate agent").await;
-            registry.deactivate_agent(&resolved_id, false).await?
-        };
+        // Submit command to deactivate agent
+        let command = Command::Registry(RegistryCommand::Agent(
+            AgentRegistryCommand::DeactivateAgent { agent_id: resolved_id }
+        ));
+        app_state.command_queue.execute(command).await?;
         
         info!("✅ Deactivated agent: {}", resolved_id);
     }
@@ -462,12 +464,14 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
             )?
         };
         
-        // Authorize agent for graph using the complete workflow
-        AgentRegistry::authorize_agent_for_graph_complete(
-            app_state.agent_registry.clone(),
-            resolved_agent_id,
-            resolved_graph_id,
-        ).await?;
+        // Submit command to authorize agent for graph
+        let command = Command::Registry(RegistryCommand::Agent(
+            AgentRegistryCommand::AuthorizeAgent {
+                agent_id: resolved_agent_id,
+                graph_id: resolved_graph_id,
+            }
+        ));
+        app_state.command_queue.execute(command).await?;
         
         info!("✅ Authorized agent {} for graph {}", resolved_agent_id, resolved_graph_id);
     }
@@ -505,23 +509,14 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
             )?
         };
         
-        // Deauthorize agent from graph
-        {
-            let (mut graph_registry, mut agent_registry) = lock_registries_for_write(
-                &app_state.graph_registry,
-                &app_state.agent_registry
-            ).await?;
-            
-            agent_registry.deauthorize_agent_from_graph(
-                &resolved_agent_id,
-                &resolved_graph_id,
-                &mut graph_registry,
-                false,
-            ).await?;
-        }
-        
-        // Save both registries
-        // Registries persisted through WAL, no need for JSON save
+        // Submit command to deauthorize agent from graph
+        let command = Command::Registry(RegistryCommand::Agent(
+            AgentRegistryCommand::DeauthorizeAgent {
+                agent_id: resolved_agent_id,
+                graph_id: resolved_graph_id,
+            }
+        ));
+        app_state.command_queue.execute(command).await?;
         
         info!("✅ Deauthorized agent {} from graph {}", resolved_agent_id, resolved_graph_id);
     }
@@ -583,13 +578,10 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
         
         // Show conversation stats if agent is loaded
         if is_active {
-            let registry = app_state.agent_registry.read_or_panic("show agent status - read registry").await;
-            if let Some(agents) = registry.get_agents() {
-                let agents = agents.read().await;
-                if let Some(agent_arc) = agents.get(&resolved_id) {
-                    let agent = agent_arc.read_or_panic("show agent status - read agent").await;
-                    info!("  Conversation Messages: {}", agent.conversation_history.len());
-                }
+            let agents = app_state.agents.read_or_panic("show agent status - read agents").await;
+            if let Some(agent_arc) = agents.get(&resolved_id) {
+                let agent = agent_arc.read_or_panic("show agent status - read agent").await;
+                info!("  Conversation Messages: {}", agent.conversation_history.len());
             }
         }
         

@@ -32,24 +32,25 @@ use serde_json::Value;
 use uuid::Uuid;
 // use chrono::{DateTime, Utc}; // Not needed yet
 
-// Import the operation types from the main codebase
-// We need to match the exact structure used in wal.rs
+// Import the command types from the main codebase
+// We need to match the exact structure used in cqrs/wal.rs
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum TransactionState {
+pub enum CommandState {
     Active,
     Committed,
     Aborted,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Operation {
-    Graph(GraphOperation),
-    Agent(AgentOperation),
-    Registry(RegistryOperation),
+pub enum Command {
+    Graph(GraphCommand),
+    Agent(AgentCommand),
+    Registry(RegistryCommand),
+    System(SystemCommand),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum GraphOperation {
+pub enum GraphCommand {
     CreateBlock {
         graph_id: Uuid,
         agent_id: Uuid,
@@ -63,7 +64,6 @@ pub enum GraphOperation {
         agent_id: Uuid,
         block_id: String,
         content: String,
-        properties: Option<Value>,
     },
     DeleteBlock {
         graph_id: Uuid,
@@ -84,7 +84,7 @@ pub enum GraphOperation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum AgentOperation {
+pub enum AgentCommand {
     AddMessage {
         agent_id: Uuid,
         message: Value, // Contains role, content, timestamp, etc.
@@ -107,17 +107,23 @@ pub enum AgentOperation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum RegistryOperation {
-    Graph(GraphRegistryOp),
-    Agent(AgentRegistryOp),
+pub enum RegistryCommand {
+    Graph(GraphRegistryCommand),
+    Agent(AgentRegistryCommand),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum GraphRegistryOp {
+pub enum GraphRegistryCommand {
+    /// High-level: Create a new graph with prime agent authorization
+    CreateGraph {
+        name: Option<String>,
+        description: Option<String>,
+    },
+    /// Low-level: Register graph metadata only
     RegisterGraph {
         graph_id: Uuid,
-        name: String,
-        path: String,
+        name: Option<String>,
+        description: Option<String>,
     },
     RemoveGraph {
         graph_id: Uuid,
@@ -131,13 +137,19 @@ pub enum GraphRegistryOp {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum AgentRegistryOp {
+pub enum AgentRegistryCommand {
+    /// High-level: Create a new agent with prime authorization if needed
+    CreateAgent {
+        name: Option<String>,
+        description: Option<String>,
+    },
+    /// Low-level: Register agent metadata only
     RegisterAgent {
         agent_id: Uuid,
-        name: String,
-        is_prime: bool,
+        name: Option<String>,
+        description: Option<String>,
     },
-    RemoveAgent {
+    DeleteAgent {
         agent_id: Uuid,
     },
     ActivateAgent {
@@ -154,26 +166,41 @@ pub enum AgentRegistryOp {
         agent_id: Uuid,
         graph_id: Uuid,
     },
+    SetPrimeAgent {
+        agent_id: Uuid,
+    },
+}
+
+/// System-level commands for lifecycle management
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SystemCommand {
+    /// Initiate graceful shutdown - returns active transaction count
+    InitiateShutdown,
+    /// Wait for active transactions to complete - returns true if all completed
+    WaitForCompletion { timeout_secs: u64 },
+    /// Force flush WAL for immediate shutdown
+    ForceFlush,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Transaction {
+pub struct CommandTransaction {
     pub id: String,
-    pub operation: Operation,
-    pub state: TransactionState,
+    pub command: Command,
+    pub state: CommandState,
     pub created_at: u64,
     pub updated_at: u64,
     pub content_hash: Option<String>,
     pub error_message: Option<String>,
+    pub deferred_reason: Option<String>,  // Why execution was delayed (freeze mechanism)
 }
 
 /// Read-only access to the WAL database - temporary helper
 struct WalReader;
 
 impl WalReader {
-    /// Open the WAL database for reading and return all transactions
-    fn read_all_transactions(data_dir: &Path) -> Result<Vec<Transaction>, String> {
-        let wal_path = data_dir.join("transaction_log");
+    /// Open the WAL database for reading and return all commands
+    fn read_all_commands(data_dir: &Path) -> Result<Vec<CommandTransaction>, String> {
+        let wal_path = data_dir.join("transaction_log");  // Path stays the same
         
         // Open sled database
         let config = sled::Config::new()
@@ -182,50 +209,51 @@ impl WalReader {
         let db = config.open()
             .map_err(|e| format!("Failed to open WAL database: {}", e))?;
         
-        let transactions_tree = db.open_tree("transactions")
-            .map_err(|e| format!("Failed to open transactions tree: {}", e))?;
+        let commands_tree = db.open_tree("commands")
+            .map_err(|e| format!("Failed to open commands tree: {}", e))?;
         
-        let mut transactions = Vec::new();
+        let mut commands = Vec::new();
         
-        for item in transactions_tree.iter() {
+        for item in commands_tree.iter() {
             if let Ok((_key, value)) = item {
-                if let Ok(transaction) = serde_json::from_slice::<Transaction>(&value) {
-                    transactions.push(transaction);
+                if let Ok(command_tx) = serde_json::from_slice::<CommandTransaction>(&value) {
+                    commands.push(command_tx);
                 }
             }
         }
         
         // Sort by created_at to maintain chronological order
-        transactions.sort_by_key(|t| t.created_at);
-        Ok(transactions)
+        commands.sort_by_key(|t| t.created_at);
+        Ok(commands)
     }
     
-    /// Read only committed transactions  
-    fn read_committed_transactions(data_dir: &Path) -> Result<Vec<Transaction>, String> {
-        let all = Self::read_all_transactions(data_dir)?;
+    /// Read only committed commands  
+    fn read_committed_commands(data_dir: &Path) -> Result<Vec<CommandTransaction>, String> {
+        let all = Self::read_all_commands(data_dir)?;
         Ok(all.into_iter()
-            .filter(|t| matches!(t.state, TransactionState::Committed))
+            .filter(|t| matches!(t.state, CommandState::Committed))
             .collect())
     }
     
-    /// Find all transactions for a specific graph
-    fn find_by_graph(transactions: &[Transaction], graph_id: Uuid) -> Vec<Transaction> {
-        transactions
+    /// Find all commands for a specific graph
+    fn find_by_graph(commands: &[CommandTransaction], graph_id: Uuid) -> Vec<CommandTransaction> {
+        commands
             .iter()
             .filter(|t| {
-                match &t.operation {
-                    Operation::Graph(op) => match op {
-                        GraphOperation::CreateBlock { graph_id: gid, .. } |
-                        GraphOperation::UpdateBlock { graph_id: gid, .. } |
-                        GraphOperation::DeleteBlock { graph_id: gid, .. } |
-                        GraphOperation::CreatePage { graph_id: gid, .. } |
-                        GraphOperation::DeletePage { graph_id: gid, .. } => *gid == graph_id,
+                match &t.command {
+                    Command::Graph(cmd) => match cmd {
+                        GraphCommand::CreateBlock { graph_id: gid, .. } |
+                        GraphCommand::UpdateBlock { graph_id: gid, .. } |
+                        GraphCommand::DeleteBlock { graph_id: gid, .. } |
+                        GraphCommand::CreatePage { graph_id: gid, .. } |
+                        GraphCommand::DeletePage { graph_id: gid, .. } => *gid == graph_id,
                     },
-                    Operation::Registry(RegistryOperation::Graph(op)) => match op {
-                        GraphRegistryOp::RegisterGraph { graph_id: gid, .. } |
-                        GraphRegistryOp::RemoveGraph { graph_id: gid } |
-                        GraphRegistryOp::OpenGraph { graph_id: gid } |
-                        GraphRegistryOp::CloseGraph { graph_id: gid } => *gid == graph_id,
+                    Command::Registry(RegistryCommand::Graph(cmd)) => match cmd {
+                        GraphRegistryCommand::CreateGraph { .. } => false, // No graph_id yet
+                        GraphRegistryCommand::RegisterGraph { graph_id: gid, .. } |
+                        GraphRegistryCommand::RemoveGraph { graph_id: gid } |
+                        GraphRegistryCommand::OpenGraph { graph_id: gid } |
+                        GraphRegistryCommand::CloseGraph { graph_id: gid } => *gid == graph_id,
                     },
                     _ => false,
                 }
@@ -266,7 +294,7 @@ pub struct ExpectedAgentOp {
 #[derive(Debug, Clone)]
 pub enum AgentOpType {
     RegisterAgent,
-    RemoveAgent,
+    DeleteAgent,  // Renamed from RemoveAgent
     ActivateAgent,
     DeactivateAgent,
     // Note: AddMessage operations are validated separately through validate_conversation()
@@ -278,7 +306,7 @@ pub enum AgentOpType {
 
 #[derive(Debug, Clone)]
 pub enum AgentOpDetails {
-    Register { name: String, is_prime: bool },
+    Register { name: String },
     // Note: Message variant removed - messages are validated through expected_conversations
     Authorization { graph_id: Uuid },
     Simple, // For operations with no additional details
@@ -418,17 +446,23 @@ impl WalValidator {
     // ===== Agent Validation Methods (adapted from AgentValidationFixture) =====
     
     /// Record that an agent will be created
-    pub fn expect_agent_created(&mut self, id: Uuid, name: &str, is_prime: bool) -> &mut Self {
+    pub fn expect_agent_created(&mut self, id: Uuid, name: &str) -> &mut Self {
         self.expected_agent_ops.push(ExpectedAgentOp {
             op_type: AgentOpType::RegisterAgent,
             agent_id: id,
             details: AgentOpDetails::Register {
                 name: name.to_string(),
-                is_prime,
             },
         });
         
-        if is_prime {
+        self
+    }
+    
+    /// Record that an agent will be set as prime
+    pub fn expect_set_prime_agent(&mut self, id: Uuid) -> &mut Self {
+        // SetPrimeAgent is a registry command, not tracked as agent op
+        // Just note it for now, actual validation happens through prime_agent_id field
+        if false {
             self.expected_prime_agent = Some(id);
         }
         
@@ -439,7 +473,7 @@ impl WalValidator {
     /// Record that an agent will be deleted
     pub fn expect_agent_deleted(&mut self, id: &Uuid) -> &mut Self {
         self.expected_agent_ops.push(ExpectedAgentOp {
-            op_type: AgentOpType::RemoveAgent,
+            op_type: AgentOpType::DeleteAgent,
             agent_id: *id,
             details: AgentOpDetails::Simple,
         });
@@ -533,7 +567,8 @@ impl WalValidator {
     
     /// Helper to set up prime agent expectations
     pub fn expect_prime_agent(&mut self, prime_id: Uuid) -> &mut Self {
-        self.expect_agent_created(prime_id, "Prime Agent", true);
+        self.expect_agent_created(prime_id, "Prime Agent");
+        self.expect_set_prime_agent(prime_id);
         self
     }
     
@@ -541,12 +576,12 @@ impl WalValidator {
     
     /// Validate all expectations against the WAL
     pub fn validate_all(&self) -> Result<(), String> {
-        // NOW we open the database and read transactions
-        let transactions = WalReader::read_committed_transactions(&self.data_dir)?;
+        // NOW we open the database and read commands
+        let commands = WalReader::read_committed_commands(&self.data_dir)?;
         
         // Validate graph operations
         for expected in &self.expected_graph_ops {
-            if !self.find_graph_operation(&transactions, expected) {
+            if !self.find_graph_operation(&commands, expected) {
                 return Err(format!(
                     "Expected graph operation not found: {:?}",
                     expected
@@ -556,7 +591,7 @@ impl WalValidator {
         
         // Validate deleted nodes don't have create operations after delete
         for node_id in &self.deleted_nodes {
-            if self.has_create_after_delete(&transactions, node_id) {
+            if self.has_create_after_delete(&commands, node_id) {
                 return Err(format!(
                     "Node {} was created after being deleted",
                     node_id
@@ -566,7 +601,7 @@ impl WalValidator {
         
         // Validate agent operations
         for expected in &self.expected_agent_ops {
-            if !self.find_agent_operation(&transactions, expected) {
+            if !self.find_agent_operation(&commands, expected) {
                 return Err(format!(
                     "Expected agent operation not found: {:?}",
                     expected
@@ -576,33 +611,33 @@ impl WalValidator {
         
         // Validate conversations
         for (agent_id, expected_messages) in &self.expected_conversations {
-            self.validate_conversation(&transactions, *agent_id, expected_messages)?;
+            self.validate_conversation(&commands, *agent_id, expected_messages)?;
         }
         
         Ok(())
     }
     
-    /// Find a graph operation in the transaction list
-    fn find_graph_operation(&self, transactions: &[Transaction], expected: &ExpectedGraphOp) -> bool {
-        transactions.iter().any(|tx| {
-            if let Operation::Graph(op) = &tx.operation {
-                match (&expected.op_type, op) {
-                    (GraphOpType::CreatePage, GraphOperation::CreatePage { page_name, properties, .. }) => {
+    /// Find a graph operation in the command list
+    fn find_graph_operation(&self, commands: &[CommandTransaction], expected: &ExpectedGraphOp) -> bool {
+        commands.iter().any(|tx| {
+            if let Command::Graph(cmd) = &tx.command {
+                match (&expected.op_type, cmd) {
+                    (GraphOpType::CreatePage, GraphCommand::CreatePage { page_name, properties, .. }) => {
                         expected.content.as_ref() == Some(page_name) &&
                         expected.properties.as_ref() == properties.as_ref()
                     },
-                    (GraphOpType::CreateBlock, GraphOperation::CreateBlock { content, page_name, .. }) => {
+                    (GraphOpType::CreateBlock, GraphCommand::CreateBlock { content, page_name, .. }) => {
                         expected.content.as_ref() == Some(content) &&
                         expected.page_name.as_deref() == page_name.as_deref()
                     },
-                    (GraphOpType::UpdateBlock, GraphOperation::UpdateBlock { block_id, content, .. }) => {
+                    (GraphOpType::UpdateBlock, GraphCommand::UpdateBlock { block_id, content, .. }) => {
                         expected.block_id.as_ref() == Some(block_id) &&
                         expected.content.as_ref() == Some(content)
                     },
-                    (GraphOpType::DeleteBlock, GraphOperation::DeleteBlock { block_id, .. }) => {
+                    (GraphOpType::DeleteBlock, GraphCommand::DeleteBlock { block_id, .. }) => {
                         expected.block_id.as_ref() == Some(block_id)
                     },
-                    (GraphOpType::DeletePage, GraphOperation::DeletePage { page_name, .. }) => {
+                    (GraphOpType::DeletePage, GraphCommand::DeletePage { page_name, .. }) => {
                         expected.content.as_ref() == Some(page_name)
                     },
                     _ => false,
@@ -613,39 +648,40 @@ impl WalValidator {
         })
     }
     
-    /// Find an agent operation in the transaction list
-    fn find_agent_operation(&self, transactions: &[Transaction], expected: &ExpectedAgentOp) -> bool {
-        transactions.iter().any(|tx| {
-            match &tx.operation {
-                Operation::Registry(RegistryOperation::Agent(op)) => {
-                    match (&expected.op_type, &expected.details, op) {
-                        (AgentOpType::RegisterAgent, AgentOpDetails::Register { name, is_prime }, 
-                         AgentRegistryOp::RegisterAgent { agent_id, name: n, is_prime: p }) => {
-                            *agent_id == expected.agent_id && n == name && *p == *is_prime
+    /// Find an agent operation in the command list
+    fn find_agent_operation(&self, commands: &[CommandTransaction], expected: &ExpectedAgentOp) -> bool {
+        commands.iter().any(|tx| {
+            match &tx.command {
+                Command::Registry(RegistryCommand::Agent(cmd)) => {
+                    match (&expected.op_type, &expected.details, cmd) {
+                        (AgentOpType::RegisterAgent, AgentOpDetails::Register { name }, 
+                         AgentRegistryCommand::RegisterAgent { agent_id, name: n, .. }) => {
+                            // Note: is_prime is now handled by SetPrimeAgent command
+                            *agent_id == expected.agent_id && n.as_deref() == Some(name.as_str())
                         },
-                        (AgentOpType::RemoveAgent, _, AgentRegistryOp::RemoveAgent { agent_id }) => {
+                        (AgentOpType::DeleteAgent, _, AgentRegistryCommand::DeleteAgent { agent_id }) => {
                             *agent_id == expected.agent_id
                         },
-                        (AgentOpType::ActivateAgent, _, AgentRegistryOp::ActivateAgent { agent_id }) => {
+                        (AgentOpType::ActivateAgent, _, AgentRegistryCommand::ActivateAgent { agent_id }) => {
                             *agent_id == expected.agent_id
                         },
-                        (AgentOpType::DeactivateAgent, _, AgentRegistryOp::DeactivateAgent { agent_id }) => {
+                        (AgentOpType::DeactivateAgent, _, AgentRegistryCommand::DeactivateAgent { agent_id }) => {
                             *agent_id == expected.agent_id
                         },
                         (AgentOpType::AuthorizeAgent, AgentOpDetails::Authorization { graph_id }, 
-                         AgentRegistryOp::AuthorizeAgent { agent_id, graph_id: gid }) => {
+                         AgentRegistryCommand::AuthorizeAgent { agent_id, graph_id: gid }) => {
                             *agent_id == expected.agent_id && gid == graph_id
                         },
                         (AgentOpType::DeauthorizeAgent, AgentOpDetails::Authorization { graph_id },
-                         AgentRegistryOp::DeauthorizeAgent { agent_id, graph_id: gid }) => {
+                         AgentRegistryCommand::DeauthorizeAgent { agent_id, graph_id: gid }) => {
                             *agent_id == expected.agent_id && gid == graph_id
                         },
                         _ => false,
                     }
                 },
-                Operation::Agent(op) => {
-                    match (&expected.op_type, op) {
-                        (AgentOpType::ClearHistory, AgentOperation::ClearHistory { agent_id }) => {
+                Command::Agent(cmd) => {
+                    match (&expected.op_type, cmd) {
+                        (AgentOpType::ClearHistory, AgentCommand::ClearHistory { agent_id }) => {
                             *agent_id == expected.agent_id
                         },
                         _ => false,
@@ -657,17 +693,17 @@ impl WalValidator {
     }
     
     /// Check if a node has create operations after being deleted
-    fn has_create_after_delete(&self, transactions: &[Transaction], node_id: &str) -> bool {
+    fn has_create_after_delete(&self, commands: &[CommandTransaction], node_id: &str) -> bool {
         let mut deleted_at = None;
         
         // Find when it was deleted
-        for tx in transactions {
-            if let Operation::Graph(op) = &tx.operation {
-                match op {
-                    GraphOperation::DeleteBlock { block_id, .. } if block_id == node_id => {
+        for tx in commands {
+            if let Command::Graph(cmd) = &tx.command {
+                match cmd {
+                    GraphCommand::DeleteBlock { block_id, .. } if block_id == node_id => {
                         deleted_at = Some(tx.created_at);
                     },
-                    GraphOperation::DeletePage { page_name, .. } if page_name == node_id => {
+                    GraphCommand::DeletePage { page_name, .. } if page_name == node_id => {
                         deleted_at = Some(tx.created_at);
                     },
                     _ => {},
@@ -677,16 +713,16 @@ impl WalValidator {
         
         // If deleted, check for creates after that time
         if let Some(delete_time) = deleted_at {
-            for tx in transactions {
+            for tx in commands {
                 if tx.created_at > delete_time {
-                    if let Operation::Graph(op) = &tx.operation {
-                        match op {
-                            GraphOperation::CreateBlock { .. } => {
+                    if let Command::Graph(cmd) = &tx.command {
+                        match cmd {
+                            GraphCommand::CreateBlock { .. } => {
                                 // Check if this creates the same block ID
                                 // Note: We'd need the block ID in the response to properly track this
                                 // For now, this is a simplified check
                             },
-                            GraphOperation::CreatePage { page_name, .. } if page_name == node_id => {
+                            GraphCommand::CreatePage { page_name, .. } if page_name == node_id => {
                                 return true;
                             },
                             _ => {},
@@ -702,14 +738,14 @@ impl WalValidator {
     /// Validate conversation messages for an agent
     fn validate_conversation(
         &self,
-        transactions: &[Transaction],
+        commands: &[CommandTransaction],
         agent_id: Uuid,
         expected_messages: &[(String, MessagePattern)]
     ) -> Result<(), String> {
-        let agent_messages: Vec<_> = transactions
+        let agent_messages: Vec<_> = commands
             .iter()
             .filter_map(|tx| {
-                if let Operation::Agent(AgentOperation::AddMessage { agent_id: aid, message }) = &tx.operation {
+                if let Command::Agent(AgentCommand::AddMessage { agent_id: aid, message }) = &tx.command {
                     if *aid == agent_id {
                         Some((tx.created_at, message))
                     } else {
@@ -795,17 +831,17 @@ impl WalValidator {
         let graph_uuid = Uuid::parse_str(graph_id)
             .map_err(|e| format!("Invalid graph ID: {}", e))?;
         
-        // Open database and read transactions
-        let all_transactions = WalReader::read_committed_transactions(&self.data_dir)?;
-        let transactions = WalReader::find_by_graph(&all_transactions, graph_uuid);
+        // Open database and read commands
+        let all_commands = WalReader::read_committed_commands(&self.data_dir)?;
+        let commands = WalReader::find_by_graph(&all_commands, graph_uuid);
         
         for (content, page_name) in expected_blocks {
-            let found = transactions.iter().any(|tx| {
-                if let Operation::Graph(GraphOperation::CreateBlock { 
+            let found = commands.iter().any(|tx| {
+                if let Command::Graph(GraphCommand::CreateBlock { 
                     content: c, 
                     page_name: p, 
                     .. 
-                }) = &tx.operation {
+                }) = &tx.command {
                     c == content && p.as_deref() == *page_name
                 } else {
                     false

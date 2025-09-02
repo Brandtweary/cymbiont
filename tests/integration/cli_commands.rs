@@ -140,7 +140,7 @@ pub fn test_all_cli_commands() {
             Uuid::parse_str(test_agent["id"].as_str().unwrap()).unwrap()
         };
         
-        validator.expect_agent_created(test_agent_id, test_agent_name, false);
+        validator.expect_agent_created(test_agent_id, test_agent_name);
         
         // Test agent_info
         {

@@ -33,7 +33,7 @@ use crate::app_state::AppState;
 use crate::graph::graph_operations::GraphOps;
 use super::logseq;
 use crate::error::*;
-use crate::lock::AsyncRwLockExt;
+use crate::utils::AsyncRwLockExt;
 use serde_json;
 
 /// Result of a Logseq import operation
@@ -110,7 +110,6 @@ pub async fn import_logseq_graph(
             page.name.clone(),
             properties,
             &graph_id,
-            false, // don't skip WAL
         ).await {
             Ok(_) => page_count += 1,
             Err(e) => {
@@ -137,7 +136,6 @@ pub async fn import_logseq_graph(
             block.page.clone(),       // Page name (will create page if needed)
             properties,
             &graph_id,
-            false, // don't skip WAL
         ).await {
             Ok(_) => block_count += 1,
             Err(e) => {

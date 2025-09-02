@@ -20,13 +20,13 @@ Petgraph-based knowledge graph engine with multi-graph support and agent authori
 All operations automatically check agent authorization - no manual auth needed.
 
 ### Block Operations
-- `add_block(agent_id, content, parent_id?, page_name?, properties?, graph_id, skip_wal)` - Create new block
-- `update_block(agent_id, block_id, content, graph_id, skip_wal)` - Update block content
-- `delete_block(agent_id, block_id, graph_id, skip_wal)` - Archive block and edges
+- `add_block(agent_id, content, parent_id?, page_name?, properties?, graph_id)` - Create new block
+- `update_block(agent_id, block_id, content, graph_id)` - Update block content
+- `delete_block(agent_id, block_id, graph_id)` - Archive block and edges
 
 ### Page Operations  
-- `create_page(agent_id, name, properties?, graph_id, skip_wal)` - Create or update page
-- `delete_page(agent_id, name, graph_id, skip_wal)` - Archive page and child blocks
+- `create_page(agent_id, name, properties?, graph_id)` - Create or update page
+- `delete_page(agent_id, name, graph_id)` - Archive page and child blocks
 
 ### Query Operations
 - `get_node(agent_id, node_id, graph_id)` - Retrieve node data as JSON
@@ -35,24 +35,24 @@ All operations automatically check agent authorization - no manual auth needed.
 ### Graph Management
 - `create_graph(name?, description?)` - Create new graph with prime agent auth
 - `delete_graph(graph_id)` - Archive graph to timestamped directory
-- `open_graph(graph_id)` - Load graph and replay WAL transactions
+- `open_graph(graph_id)` - Load graph and replay command log
 - `close_graph(graph_id)` - Save and unload from memory
 - `list_graphs()` - Return all graphs with metadata
 - `list_open_graphs()` - Return currently loaded graph IDs
 
 ## Key Patterns 🔑
 
-### Lock Ordering
-1. graph_registry (async)
-2. agent_registry (async)  
-3. graph_managers → specific manager
-4. Use `lock_registries_for_write()` helper when acquiring both
+### CQRS Architecture
+- All mutations route through CommandQueue
+- CommandProcessor owns all mutable state
+- RouterToken required for authorized operations
+- No manual locking needed - sequential command processing
 
 ### Adding New Operations
-1. Define `GraphOperation::NewOp { params }` variant in storage/wal.rs
+1. Define new Command variant in cqrs/commands.rs
 2. Add method to GraphOps trait with agent_id + graph_id params
-3. Implement: check auth → create operation → begin tx → do work → commit tx
-4. Add recovery match arm in storage/recovery.rs (calls method with skip_wal: true)
+3. Implement method using command_queue.execute()
+4. Add command handling in cqrs/router.rs
 5. Optional: Add to cli.rs, WebSocket commands, or kg_tools.rs
 
 ### Error Handling

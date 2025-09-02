@@ -37,7 +37,7 @@
 //! - `get_active_agents()` - List currently loaded agents
 //!
 //! ### Prime Agent
-//! - `ensure_default_agent()` - Create prime agent on first run
+//! - `ensure_prime_agent()` - Check if prime agent needs creation
 //! - `get_prime_agent_id()` - Get the prime agent UUID
 //!
 //! ## Prime Agent Behavior
@@ -77,17 +77,12 @@ use tracing::info;
 use tokio::sync::RwLock;
 use std::sync::Arc;
 
-use crate::storage::{TransactionCoordinator, Operation};
-use crate::storage::wal::{AgentRegistryOp, RegistryOperation};
-use crate::storage::recovery::RecoveryContext;
 use crate::agent::agent::Agent;
 use crate::agent::llm::LLMConfig;
 use crate::graph::graph_registry::GraphRegistry;
 use crate::error::*;
-use crate::lock::AsyncRwLockExt;
-use crate::AppState;
-use std::sync::Weak;
 use crate::Result;
+use crate::cqrs::router::RouterToken;
 
 
 
@@ -143,15 +138,6 @@ pub struct AgentRegistry {
     /// Base data directory (not serialized)
     #[serde(skip)]
     data_dir: Option<PathBuf>,
-    
-    /// Transaction coordinator for WAL operations (not serialized)
-    #[serde(skip)]
-    transaction_coordinator: Option<Arc<TransactionCoordinator>>,
-    
-    /// Reference to AppState for accessing agents and other resources
-    /// Uses Weak to avoid reference cycles
-    #[serde(skip)]
-    app_state: Option<Weak<AppState>>,
 }
 
 
@@ -163,137 +149,45 @@ impl AgentRegistry {
             active_agents: HashSet::new(),
             prime_agent_id: None,
             data_dir: None,
-            transaction_coordinator: None,
-            app_state: None,
         }
     }
 
-    /// Set the data directory and transaction coordinator
-    pub fn set_resources(&mut self, data_dir: &Path, transaction_coordinator: Arc<TransactionCoordinator>) {
+    /// Set the data directory for agent persistence
+    pub fn set_data_dir(&mut self, data_dir: &Path) {
         self.data_dir = Some(data_dir.to_path_buf());
-        self.transaction_coordinator = Some(transaction_coordinator);
     }
     
-    /// Set the AppState reference
-    /// Called during AppState initialization to give registry access to resources
-    pub fn set_app_state(&mut self, app_state: &Arc<AppState>) {
-        self.app_state = Some(Arc::downgrade(app_state));
-    }
-    
-    /// Get a reference to the agents map from AppState
-    pub fn get_agents(&self) -> Option<Arc<RwLock<HashMap<Uuid, Arc<RwLock<Agent>>>>>> {
-        self.app_state.as_ref()
-            .and_then(|weak| weak.upgrade())
-            .map(|app_state| app_state.agents.clone())
-    }
-    
-    /// Activate an agent (complete workflow with loading and WAL rebuild)
+    /// Activate an agent (complete workflow with loading)
     /// 
     /// This method orchestrates the full activation workflow:
     /// 1. Mark agent as active in registry
     /// 2. Load or create the Agent instance
-    /// 3. Rebuild from WAL if needed
     /// 
-    /// Uses Arc<RwLock<Self>> to minimize lock holding time.
+    /// Takes resources as parameters to avoid weak references.
     pub async fn activate_agent_complete(
-        registry: Arc<RwLock<AgentRegistry>>, 
+        &mut self,
+        _token: &RouterToken,
         agent_id: Uuid,
-        skip_wal: bool
+        agents: &mut HashMap<Uuid, Arc<RwLock<Agent>>>,
     ) -> Result<()> {
-        // Step 1: Update registry to mark active (brief lock)
-        let agent_info = {
-            let mut reg = registry.write_or_panic("activate agent - registry update").await;
-            reg.activate_agent(&agent_id, skip_wal).await?
-        };
-        // Registry lock released
+        // Step 1: Mark agent as active in registry
+        let agent_info = self.activate_agent(&agent_id).await?;
         
-        // Step 2: Get app_state for further operations
-        let app_state = {
-            let reg = registry.read_or_panic("activate agent - get app_state").await;
-            reg.app_state.as_ref()
-                .and_then(|weak| weak.upgrade())
-                .ok_or_else(|| StorageError::agent_registry("No AppState reference"))?
-        };
-        
-        // Step 3: Load or create the Agent instance if not in memory
-        let needs_rebuild = {
-            let agents = app_state.agents.read().await;
+        // Step 2: Load or create the Agent instance if not in memory
+        if !agents.contains_key(&agent_id) {
+            // Create empty agent (will be rebuilt from WAL if needed)
+            let agent = Agent::new_empty(
+                agent_id,
+                agent_info.name.clone()
+            );
             
-            if !agents.contains_key(&agent_id) {
-                drop(agents); // Release read lock
-                
-                // Create empty agent for WAL rebuild
-                let agent = Agent::new_empty(
-                    agent_id,
-                    agent_info.name.clone(),
-                    app_state.transaction_coordinator.clone()
-                );
-                
-                // Insert into HashMap
-                let mut agents_write = app_state.agents.write().await;
-                agents_write.insert(agent_id, Arc::new(RwLock::new(agent)));
-                
-                // New agents need rebuilding from WAL
-                true
-            } else {
-                // Check if existing agent needs rebuilding
-                if let Some(agent_arc) = agents.get(&agent_id) {
-                    let agent = agent_arc.read_or_panic("check agent history").await;
-                    agent.conversation_history.is_empty()
-                } else {
-                    false
-                }
-            }
-        };
-        
-        // Step 4: Rebuild from WAL if needed (no locks held)
-        if needs_rebuild {
-            let context = RecoveryContext {
-                app_state: app_state.clone(),
-                is_rebuilding: true,
-            };
-            
-            crate::storage::recovery::rebuild_agent_from_wal(
-                &agent_id,
-                &app_state.transaction_coordinator,
-                &context
-            ).await?;
+            // Insert into HashMap
+            agents.insert(agent_id, Arc::new(RwLock::new(agent)));
         }
         
         Ok(())
     }
     
-    
-    /// Authorize an agent for a graph (complete workflow)
-    /// 
-    /// Uses Arc<RwLock<Self>> to properly acquire both registries in the correct order.
-    pub async fn authorize_agent_for_graph_complete(
-        agent_registry: Arc<RwLock<AgentRegistry>>,
-        agent_id: Uuid,
-        graph_id: Uuid,
-    ) -> Result<()> {
-        // Get app_state
-        let app_state = {
-            let reg = agent_registry.read_or_panic("authorize - get app_state").await;
-            reg.app_state.as_ref()
-                .and_then(|weak| weak.upgrade())
-                .ok_or_else(|| StorageError::agent_registry("No AppState reference"))?
-        };
-        
-        // Acquire both registries in correct order
-        {
-            use crate::lock::lock_registries_for_write;
-            let (mut graph_registry, mut agent_registry) = lock_registries_for_write(
-                &app_state.graph_registry,
-                &app_state.agent_registry
-            ).await?;
-            
-            agent_registry.authorize_agent_for_graph(&agent_id, &graph_id, &mut graph_registry, false).await?;
-        }
-        
-        Ok(())
-    }
-
     /// Create a new agent (complete workflow)
     /// 
     /// This method orchestrates the full agent creation workflow:
@@ -301,52 +195,43 @@ impl AgentRegistry {
     /// 2. Creates the Agent instance
     /// 3. Inserts it into the active agents HashMap
     /// 
-    /// Uses Arc<RwLock<Self>> to minimize lock holding time.
+    /// Takes resources as parameters to avoid weak references.
     pub async fn create_agent_complete(
-        registry: Arc<RwLock<AgentRegistry>>,
+        &mut self,
+        _token: &RouterToken,
+        agent_id: Uuid,  // Now passed as parameter from resolved command
         name: Option<String>,
         description: Option<String>,
         system_prompt: Option<String>,
+        agents_map: &mut HashMap<Uuid, Arc<RwLock<Agent>>>,
+        data_dir: &Path,
     ) -> Result<AgentInfo> {
-        // Step 1: Register the agent (brief lock)
-        let agent_info = {
-            let mut reg = registry.write_or_panic("create agent - registry").await;
-            reg.register_agent(
-                None,  // Let it generate a new UUID
-                name.clone(),
-                description.clone(),
-                false,  // Do log to WAL
-            ).await?
-        };
-        // Registry lock released
+        // Step 1: Register the agent
+        let agent_info = self.register_agent(
+            _token,
+            Some(agent_id),  // Use the resolved ID
+            name.clone(),
+            description.clone(),
+        ).await?;
         
-        // Step 2: Get app_state for further operations
-        let app_state = {
-            let reg = registry.read_or_panic("create agent - get app_state").await;
-            reg.app_state.as_ref()
-                .and_then(|weak| weak.upgrade())
-                .ok_or_else(|| StorageError::agent_registry("No AppState reference"))?
-        };
+        // Step 2: Create the actual Agent instance
+        // Ensure agent directory exists
+        let agent_dir = data_dir.join("agents").join(agent_info.id.to_string());
+        std::fs::create_dir_all(&agent_dir)?;
         
-        // Step 3: Create the actual Agent instance (no registry lock)
-        {
-            
-            // Ensure agent directory exists
-            std::fs::create_dir_all(&agent_info.data_path)?;
-            
-            // Create agent with default MockLLM config
-            let agent = Agent::new(
-                agent_info.id,
-                agent_info.name.clone(),
-                LLMConfig::default(),  // MockLLM by default
-                system_prompt.or(Some("You are a helpful assistant".to_string())),
-                app_state.transaction_coordinator.clone(),
-            );
-            
-            // Insert into active agents HashMap
-            let mut agents_map = app_state.agents.write_or_panic("create agent - insert").await;
-            agents_map.insert(agent_info.id, Arc::new(RwLock::new(agent)));
-        }
+        // Create agent with default MockLLM config
+        let agent = Agent::new(
+            agent_info.id,
+            agent_info.name.clone(),
+            LLMConfig::default(),  // MockLLM by default
+            system_prompt.or(Some("You are a helpful assistant".to_string())),
+        );
+        
+        // Step 3: Insert into active agents HashMap
+        agents_map.insert(agent_info.id, Arc::new(RwLock::new(agent)));
+        
+        // Step 4: Mark as active
+        self.active_agents.insert(agent_info.id);
         
         info!("✅ Created and activated agent: {} ({})", agent_info.name, agent_info.id);
         
@@ -361,10 +246,10 @@ impl AgentRegistry {
     /// names or warning the user.
     pub async fn register_agent(
         &mut self,
+        _token: &RouterToken,
         id: Option<Uuid>,
         name: Option<String>,
         description: Option<String>,
-        skip_wal: bool,
     ) -> Result<AgentInfo> {
         let agent_id = id.unwrap_or_else(|| Uuid::new_v4());
         let final_name = name.unwrap_or_else(|| format!("Agent {}", &agent_id.to_string()[..8]));
@@ -380,30 +265,10 @@ impl AgentRegistry {
             return Ok(existing.clone());
         }
         
-        // Create WAL operation for new agent conditionally
-        let operation = if skip_wal {
-            None
-        } else {
-            Some(Operation::Registry(RegistryOperation::Agent(AgentRegistryOp::RegisterAgent {
-                agent_id,
-                name: Some(final_name.clone()),
-                description: description.clone(),
-            })))
-        };
-        
-        let coordinator = self.transaction_coordinator.as_ref()
-            .ok_or_else(|| StorageError::agent_registry("No transaction coordinator set"))?
-            .clone();
-        
-        // Extract fields needed by the closure
+        // Create new agent metadata
         let data_dir = self.data_dir.clone()
             .ok_or_else(|| StorageError::agent_registry("No data directory set"))?;
-        let agents = &mut self.agents;
-        let active_agents = &mut self.active_agents;
         
-        let tx = coordinator.begin(operation).await?;
-        
-        // Create new agent metadata
         let data_path = data_dir
             .join("agents")
             .join(agent_id.to_string());
@@ -419,13 +284,11 @@ impl AgentRegistry {
             is_prime: false,  // Will be set separately if needed
         };
 
-        agents.insert(agent_id, agent_info.clone());
+        self.agents.insert(agent_id, agent_info.clone());
         
         // New agents start as active
-        active_agents.insert(agent_id);
+        self.active_agents.insert(agent_id);
         info!("✅ Created agent: {} ({})", final_name, agent_id);
-        
-        tx.commit().await?;
         Ok(agent_info)
     }
 
@@ -453,179 +316,88 @@ impl AgentRegistry {
     /// 
     /// This method ONLY updates registry state. It does not load agents or rebuild from WAL.
     /// For the complete workflow, use activate_agent_complete().
-    pub async fn activate_agent(&mut self, agent_id: &Uuid, skip_wal: bool) -> Result<AgentInfo> {
+    pub async fn activate_agent(&mut self, agent_id: &Uuid) -> Result<AgentInfo> {
         // Validate agent exists
         let agent_info = self.agents.get(agent_id)
             .ok_or_else(|| StorageError::not_found("agent", "ID", agent_id.to_string()))?
             .clone();
         
-        // Create WAL operation conditionally
-        let operation = if skip_wal {
-            None
-        } else {
-            Some(Operation::Registry(RegistryOperation::Agent(AgentRegistryOp::ActivateAgent {
-                agent_id: *agent_id,
-            })))
-        };
-        
-        let coordinator = self.transaction_coordinator.as_ref()
-            .ok_or_else(|| StorageError::agent_registry("No transaction coordinator set"))?
-            .clone();
-        
-        // Extract fields needed by the closure
-        let active_agents = &mut self.active_agents;
-        let agents = &mut self.agents;
-        
-        let tx = coordinator.begin(operation).await?;
-        
         // Add to active set
-        if active_agents.insert(*agent_id) {
-        }
+        self.active_agents.insert(*agent_id);
         
         // Update last active time
-        if let Some(agent) = agents.get_mut(agent_id) {
+        if let Some(agent) = self.agents.get_mut(agent_id) {
             agent.last_active = Utc::now();
         }
-        
-        tx.commit().await?;
         Ok(agent_info)
     }
 
-    /// Deactivate an agent (unload from memory and mark as inactive)
-    pub async fn deactivate_agent(&mut self, agent_id: &Uuid, skip_wal: bool) -> Result<()> {
+    /// Deactivate an agent (complete workflow with unloading)
+    /// 
+    /// This method orchestrates the full deactivation workflow:
+    /// 1. Mark agent as inactive in registry
+    /// 2. Remove agent from memory to prevent memory leak
+    /// 
+    /// Takes resources as parameters to avoid weak references.
+    pub async fn deactivate_agent_complete(
+        &mut self,
+        _token: &RouterToken,
+        agent_id: Uuid,
+        agents: &mut HashMap<Uuid, Arc<RwLock<Agent>>>,
+    ) -> Result<()> {
+        // Step 1: Mark agent as inactive in registry
+        self.deactivate_agent(&agent_id).await?;
+        
+        // Step 2: Remove agent from memory to prevent memory leak
+        agents.remove(&agent_id);
+        
+        Ok(())
+    }
+    
+    /// Deactivate an agent (mark as inactive only)
+    /// 
+    /// Note: The caller is responsible for removing the agent from memory.
+    pub async fn deactivate_agent(&mut self, agent_id: &Uuid) -> Result<()> {
         // Validate agent is active
         if !self.active_agents.contains(agent_id) {
             return Err(StorageError::agent_registry(format!("Agent '{}' was not active", agent_id)).into());
         }
         
-        // Remove agent instance from memory
-        if let Some(app_state) = self.app_state.as_ref().and_then(|w| w.upgrade()) {
-            let mut agents_map = app_state.agents.write().await;
-            agents_map.remove(agent_id);
+        if !self.active_agents.remove(agent_id) {
+            // Agent was not active, but the desired state is achieved
         }
         
-        // Create WAL operation conditionally
-        let operation = if skip_wal {
-            None
-        } else {
-            Some(Operation::Registry(RegistryOperation::Agent(AgentRegistryOp::DeactivateAgent {
-                agent_id: *agent_id,
-            })))
-        };
-        
-        let coordinator = self.transaction_coordinator.as_ref()
-            .ok_or_else(|| StorageError::agent_registry("No transaction coordinator set"))?
-            .clone();
-        
-        // Extract fields needed by the closure
-        let active_agents = &mut self.active_agents;
-        
-        let tx = coordinator.begin(operation).await?;
-        
-        if !active_agents.remove(agent_id) {
-            // Agent was not active, but we still commit the transaction
-            // since the desired state is achieved
-        }
-        
-        tx.commit().await
+        Ok(())
     }
 
     /// Set an agent as the prime agent
     /// 
     /// The prime agent is the default agent with special privileges.
     /// This operation is logged to WAL for persistence across restarts.
-    pub async fn set_prime_agent(&mut self, agent_id: &Uuid, skip_wal: bool) -> Result<()> {
+    pub async fn set_prime_agent(&mut self, _token: &RouterToken, agent_id: &Uuid) -> Result<()> {
         // Verify agent exists
         if !self.agents.contains_key(agent_id) {
             return Err(StorageError::not_found("agent", "id", agent_id.to_string()).into());
         }
         
-        // Create WAL operation conditionally
-        let operation = if skip_wal {
-            None
-        } else {
-            Some(Operation::Registry(RegistryOperation::Agent(
-                AgentRegistryOp::SetPrimeAgent {
-                    agent_id: *agent_id,
-                }
-            )))
-        };
-        
-        let coordinator = self.transaction_coordinator.as_ref()
-            .ok_or_else(|| StorageError::agent_registry("No transaction coordinator set"))?
-            .clone();
-        
-        let agents = &mut self.agents;
-        let prime_agent_id = &mut self.prime_agent_id;
-        
-        let tx = coordinator.begin(operation).await?;
-        
         // Update agent's prime status
-        if let Some(agent) = agents.get_mut(agent_id) {
+        if let Some(agent) = self.agents.get_mut(agent_id) {
             agent.is_prime = true;
         }
         
         // Set registry's prime agent ID
-        *prime_agent_id = Some(*agent_id);
+        self.prime_agent_id = Some(*agent_id);
         
-        tx.commit().await
+        Ok(())
     }
     
-    /// Ensure at least one agent exists (for first-run experience)
+    /// Check if a prime agent exists.
+    /// Returns true if prime agent needs to be created, false if it already exists.
     /// 
-    /// If no agents exist, creates the prime agent which gets auto-authorized for all graphs.
-    /// If agents exist but none are active, activates the first one.
-    /// 
-    /// Uses Arc<RwLock<Self>> to properly create agents without holding locks.
-    pub async fn ensure_default_agent(
-        registry: Arc<RwLock<AgentRegistry>>,
-    ) -> Result<AgentInfo> {
-        // Check if we need to create prime agent
-        let needs_creation = {
-            let reg = registry.read_or_panic("check for prime agent").await;
-            reg.prime_agent_id.is_none()  // Check for prime agent, not just any agent
-        };
-        
-        if needs_creation {
-            // Create the prime agent using the complete workflow
-            let agent_info = Self::create_agent_complete(
-                registry.clone(),
-                Some("Prime Agent".to_string()),
-                Some("Primary assistant with full graph access".to_string()),
-                Some("You are the prime agent, a helpful assistant with full access to knowledge graphs.".to_string()),
-            ).await?;
-            
-            // Mark as prime agent using proper transaction
-            {
-                let mut reg = registry.write_or_panic("set prime agent").await;
-                reg.set_prime_agent(&agent_info.id, false).await?;
-            }
-            
-            info!("👑 Created prime agent: {} ({})", agent_info.name, agent_info.id);
-            Ok(agent_info)
-        } else {
-            // Check if we need to activate an agent
-            let (needs_activation, first_id) = {
-                let reg = registry.read_or_panic("check active agents").await;
-                if reg.active_agents.is_empty() {
-                    // Need to activate first agent
-                    let first_id = *reg.agents.keys().next().unwrap();
-                    (true, Some(first_id))
-                } else {
-                    // Return existing active agent
-                    let active_id = *reg.active_agents.iter().next().unwrap();
-                    return Ok(reg.agents[&active_id].clone());
-                }
-            };
-            
-            if needs_activation {
-                let first_id = first_id.unwrap();
-                let mut reg = registry.write_or_panic("activate first agent").await;
-                reg.activate_agent(&first_id, false).await
-            } else {
-                unreachable!()
-            }
-        }
+    /// This is a read-only check. If true is returned, the caller should submit
+    /// a CreateAgent command through the CQRS system to actually create the prime agent.
+    pub fn ensure_prime_agent(&self) -> bool {
+        self.prime_agent_id.is_none()
     }
     
     /// Get the prime agent ID (if any)
@@ -677,57 +449,28 @@ impl AgentRegistry {
     /// set this graph as the agent's default graph.
     pub async fn authorize_agent_for_graph(
         &mut self,
+        _token: &RouterToken,
         agent_id: &Uuid,
         graph_id: &Uuid,
         graph_registry: &mut GraphRegistry,
-        skip_wal: bool,
     ) -> Result<()> {
         // Validate agent exists
         if !self.agents.contains_key(agent_id) {
             return Err(StorageError::not_found("agent", "ID", agent_id.to_string()).into());
         }
         
-        // Track if this is the first graph (check before modifying)
-        // No longer used here since default graph setting moved to Phase 4
-        let _is_first_graph = self.agents.get(agent_id)
-            .map(|a| a.authorized_graphs.is_empty())
-            .unwrap_or(false);
         
-        // Create WAL operation for authorization conditionally
-        let operation = if skip_wal {
-            None
-        } else {
-            Some(Operation::Registry(RegistryOperation::Agent(AgentRegistryOp::AuthorizeAgent {
-                agent_id: *agent_id,
-                graph_id: *graph_id,
-            })))
-        };
+        // Get the agent
+        let agent = self.agents.get_mut(agent_id)
+            .ok_or_else(|| StorageError::not_found("agent", "ID", agent_id.to_string()))?;
         
-        let coordinator = self.transaction_coordinator.as_ref()
-            .ok_or_else(|| StorageError::agent_registry("No transaction coordinator set"))?
-            .clone();
-        
-        // First transaction: Authorize the agent
-        {
-            // Extract fields needed by the closure
-            let agents = &mut self.agents;
-            
-            let tx = coordinator.begin(operation).await?;
-            
-            // Get the agent
-            let agent = agents.get_mut(agent_id)
-                .ok_or_else(|| StorageError::not_found("agent", "ID", agent_id.to_string()))?;
-            
-            // Add graph to agent's authorized list if not already there
-            if !agent.authorized_graphs.contains(graph_id) {
-                agent.authorized_graphs.push(*graph_id);
-            }
-            
-            // Update graph's authorized_agents list for bidirectional tracking
-            graph_registry.add_authorized_agent(graph_id, agent_id)?;
-            
-            tx.commit().await?;
+        // Add graph to agent's authorized list if not already there
+        if !agent.authorized_graphs.contains(graph_id) {
+            agent.authorized_graphs.push(*graph_id);
         }
+        
+        // Update graph's authorized_agents list for bidirectional tracking
+        graph_registry.add_authorized_agent(graph_id, agent_id)?;
         
         
         // NOTE: Default graph setting moved to Phase 4 of message queue to avoid deadlock
@@ -740,39 +483,20 @@ impl AgentRegistry {
     /// Remove agent authorization from a graph
     pub async fn deauthorize_agent_from_graph(
         &mut self,
+        _token: &RouterToken,
         agent_id: &Uuid,
         graph_id: &Uuid,
         graph_registry: &mut GraphRegistry,
-        skip_wal: bool,
     ) -> Result<()> {
-        // Create WAL operation conditionally
-        let operation = if skip_wal {
-            None
-        } else {
-            Some(Operation::Registry(RegistryOperation::Agent(AgentRegistryOp::DeauthorizeAgent {
-                agent_id: *agent_id,
-                graph_id: *graph_id,
-            })))
-        };
-        
-        let coordinator = self.transaction_coordinator.as_ref()
-            .ok_or_else(|| StorageError::agent_registry("No transaction coordinator set"))?
-            .clone();
-        
-        // Extract fields needed by the closure
-        let agents = &mut self.agents;
-        
-        let tx = coordinator.begin(operation).await?;
-        
         // Update agent's authorized list
-        if let Some(agent) = agents.get_mut(agent_id) {
+        if let Some(agent) = self.agents.get_mut(agent_id) {
             agent.authorized_graphs.retain(|id| id != graph_id);
         }
         
         // Update graph's authorized_agents list
         graph_registry.remove_authorized_agent(graph_id, agent_id);
         
-        tx.commit().await
+        Ok(())
     }
     
     /// Check if an agent is authorized for a graph
@@ -809,35 +533,24 @@ impl AgentRegistry {
     }
 
     /// Remove an agent from the registry and archive its data
-    pub async fn remove_agent(&mut self, agent_id: &Uuid, skip_wal: bool) -> Result<()> {
+    /// 
+    /// Takes agents parameter to properly remove the agent from memory if it's active.
+    /// Also removes the agent from all graphs' authorized_agents lists.
+    pub async fn remove_agent(
+        &mut self,
+        _token: &RouterToken,
+        agent_id: &Uuid,
+        agents_map: &mut HashMap<Uuid, Arc<RwLock<Agent>>>,
+        graph_registry: &mut GraphRegistry,
+    ) -> Result<()> {
         // Get the agent info
         let agent_info = self.agents.get(agent_id)
             .ok_or_else(|| StorageError::not_found("agent", "ID", agent_id.to_string()))?
             .clone();
         
-        // Create WAL operation conditionally
-        let operation = if skip_wal {
-            None
-        } else {
-            Some(Operation::Registry(RegistryOperation::Agent(AgentRegistryOp::RemoveAgent {
-                agent_id: *agent_id,
-            })))
-        };
-        
-        let coordinator = self.transaction_coordinator.as_ref()
-            .ok_or_else(|| StorageError::agent_registry("No transaction coordinator set"))?
-            .clone();
-        
-        // Extract fields needed by the closure
-        let data_dir = self.data_dir.clone();
-        let agents = &mut self.agents;
-        let active_agents = &mut self.active_agents;
-        
-        let tx = coordinator.begin(operation).await?;
-        
         // Archive the agent data if it exists
         if agent_info.data_path.exists() {
-            if let Some(data_dir) = &data_dir {
+            if let Some(data_dir) = &self.data_dir {
                 // Create archive directory if it doesn't exist
                 let archive_dir = data_dir.join("archived_agents");
                 fs::create_dir_all(&archive_dir)
@@ -856,13 +569,25 @@ impl AgentRegistry {
         }
         
         // Remove from registry
-        agents.remove(agent_id);
+        self.agents.remove(agent_id);
         
         // Also remove from active agents if it was active
-        if active_agents.remove(agent_id) {
+        if self.active_agents.remove(agent_id) {
+            // Remove agent from memory to prevent memory leak
+            agents_map.remove(agent_id);
         }
         
-        tx.commit().await
+        // Clean up this agent from all graphs' authorized_agents lists
+        graph_registry.remove_agent_from_all_graphs(agent_id);
+        
+        Ok(())
+    }
+    
+    /// Remove a graph from ALL agents' authorized lists (used when deleting a graph)
+    pub fn remove_graph_from_all_agents(&mut self, graph_id: &Uuid) {
+        for agent in self.agents.values_mut() {
+            agent.authorized_graphs.retain(|id| id != graph_id);
+        }
     }
     
     /// Export the registry to JSON for debugging/inspection

@@ -14,7 +14,6 @@ use crate::common::test_harness::{
     TestServer
 };
 
-#[allow(deprecated)] // Using deprecated agent_chat_sync until CQRS refactor
 use crate::common::test_harness::agent_chat_sync;
 
 /// Test graph management tools (create, list, open, close, delete graphs)
@@ -51,13 +50,7 @@ pub fn test_agent_graph_management_tools() {
         
         // Test list_graphs tool
         {
-            let cmd = json!({
-                "type": "agent_chat",
-                "message": "List all graphs",
-                "echo_tool": "list_graphs"
-            });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
+            let data = agent_chat_sync(&mut ws, "List all graphs", None, Some("list_graphs"));
             
             // Verify response mentions the tool
             // MockLLM returns the tool invocation message
@@ -81,13 +74,7 @@ pub fn test_agent_graph_management_tools() {
         
         // Test create_graph tool
         let new_graph_id = {
-            let cmd = json!({
-                "type": "agent_chat",
-                "message": "Create a new graph",
-                "echo_tool": "create_graph"
-            });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
+            let data = agent_chat_sync(&mut ws, "Create a new graph", None, Some("create_graph"));
             
             // MockLLM returns the tool invocation message
             assert!(data["response"].as_str().unwrap().contains("I've executed the create_graph tool"));
@@ -131,13 +118,7 @@ pub fn test_agent_graph_management_tools() {
         
         // Test list_open_graphs tool
         {
-            let cmd = json!({
-                "type": "agent_chat",
-                "message": "List open graphs",
-                "echo_tool": "list_open_graphs"
-            });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
+            let data = agent_chat_sync(&mut ws, "List open graphs", None, Some("list_open_graphs"));
             
             assert!(data["response"].as_str().unwrap().contains("I've executed the list_open_graphs tool"));
             
@@ -158,13 +139,7 @@ pub fn test_agent_graph_management_tools() {
         
         // Test close_graph tool
         {
-            let cmd = json!({
-                "type": "agent_chat",
-                "message": "Close the initial graph",
-                "echo_tool": "close_graph"
-            });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
+            let data = agent_chat_sync(&mut ws, "Close the initial graph", None, Some("close_graph"));
             
             assert!(data["response"].as_str().unwrap().contains("I've executed the close_graph tool"));
             
@@ -185,13 +160,7 @@ pub fn test_agent_graph_management_tools() {
         
         // Test open_graph tool
         {
-            let cmd = json!({
-                "type": "agent_chat",
-                "message": "Open the graph again",
-                "echo_tool": "open_graph"
-            });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
+            let data = agent_chat_sync(&mut ws, "Open the graph again", None, Some("open_graph"));
             
             assert!(data["response"].as_str().unwrap().contains("I've executed the open_graph tool"));
             
@@ -212,13 +181,7 @@ pub fn test_agent_graph_management_tools() {
         
         // Test delete_graph tool (on the new graph)
         {
-            let cmd = json!({
-                "type": "agent_chat",
-                "message": "Delete the new graph",
-                "echo_tool": "delete_graph"
-            });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
+            let data = agent_chat_sync(&mut ws, "Delete the new graph", None, Some("delete_graph"));
             
             assert!(data["response"].as_str().unwrap().contains("I've executed the delete_graph tool"));
             
@@ -297,13 +260,7 @@ pub fn test_agent_block_operations() {
         
         // Test add_block tool - simple content
         {
-            let cmd = json!({
-                "type": "agent_chat",
-                "message": "Add a new block with content",
-                "echo_tool": "add_block"
-            });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
+            let data = agent_chat_sync(&mut ws, "Add a new block with content", None, Some("add_block"));
             
             // MockLLM returns the tool execution message
             assert!(data["response"].as_str().unwrap().contains("I've executed the add_block tool"));
@@ -328,13 +285,7 @@ pub fn test_agent_block_operations() {
         
         // Test update_block tool
         {
-            let cmd = json!({
-                "type": "agent_chat",
-                "message": "Update the block content",
-                "echo_tool": "update_block"
-            });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
+            let data = agent_chat_sync(&mut ws, "Update the block content", None, Some("update_block"));
             
             // MockLLM returns the tool invocation message
             assert!(data["response"].as_str().unwrap().contains("I've executed the update_block tool"));
@@ -360,13 +311,7 @@ pub fn test_agent_block_operations() {
         
         // Test add_block with parent_id
         {
-            let cmd = json!({
-                "type": "agent_chat",
-                "message": "Add a child block",
-                "echo_tool": "add_block"
-            });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
+            let data = agent_chat_sync(&mut ws, "Add a child block", None, Some("add_block"));
             
             // MockLLM returns the tool invocation message
             assert!(data["response"].as_str().unwrap().contains("I've executed the add_block tool"));
@@ -389,13 +334,7 @@ pub fn test_agent_block_operations() {
         
         // Test add_block with page_name
         {
-            let cmd = json!({
-                "type": "agent_chat",
-                "message": "Add a block to a page",
-                "echo_tool": "add_block"
-            });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
+            let data = agent_chat_sync(&mut ws, "Add a block to a page", None, Some("add_block"));
             
             // MockLLM returns the tool invocation message
             assert!(data["response"].as_str().unwrap().contains("I've executed the add_block tool"));
@@ -418,13 +357,7 @@ pub fn test_agent_block_operations() {
         
         // Test delete_block tool
         {
-            let cmd = json!({
-                "type": "agent_chat",
-                "message": "Delete a block",
-                "echo_tool": "delete_block"
-            });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
+            let data = agent_chat_sync(&mut ws, "Delete a block", None, Some("delete_block"));
             
             assert!(data["response"].as_str().unwrap().contains("I've executed the delete_block tool"));
             
@@ -516,13 +449,7 @@ pub fn test_agent_page_operations() {
         
         // Test create_page tool
         {
-            let cmd = json!({
-                "type": "agent_chat",
-                "message": "Create a new page",
-                "echo_tool": "create_page"
-            });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
+            let data = agent_chat_sync(&mut ws, "Create a new page", None, Some("create_page"));
             
             assert!(data["response"].as_str().unwrap().contains("I've executed the create_page tool"));
             
@@ -532,13 +459,7 @@ pub fn test_agent_page_operations() {
         
         // Test delete_page tool
         {
-            let cmd = json!({
-                "type": "agent_chat",
-                "message": "Delete the page",
-                "echo_tool": "delete_page"
-            });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
+            let data = agent_chat_sync(&mut ws, "Delete the page", None, Some("delete_page"));
             
             assert!(data["response"].as_str().unwrap().contains("I've executed the delete_page tool"));
             
@@ -596,13 +517,7 @@ pub fn test_agent_query_operations() {
         
         // Test get_node tool
         {
-            let cmd = json!({
-                "type": "agent_chat",
-                "message": "Get node information",
-                "echo_tool": "get_node"
-            });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
+            let data = agent_chat_sync(&mut ws, "Get node information", None, Some("get_node"));
             
             assert!(data["response"].as_str().unwrap().contains("I've executed the get_node tool"));
         }
@@ -670,7 +585,7 @@ pub fn test_agent_authorization_failures() {
             let id_str = data["agent_id"].as_str().unwrap();
             let id = Uuid::parse_str(id_str).unwrap();
             
-            validator.expect_agent_created(id, "Unauthorized Agent", false);
+            validator.expect_agent_created(id, "Unauthorized Agent");
             id
         };
         
@@ -697,13 +612,7 @@ pub fn test_agent_authorization_failures() {
             expect_success(response);
             
             // Set default using the tool
-            let cmd = json!({
-                "type": "agent_chat", 
-                "message": "Set my default graph",
-                "echo_tool": "set_default_graph"
-            });
-            let response = send_command(&mut ws, cmd);
-            expect_success(response);
+            agent_chat_sync(&mut ws, "Set my default graph", None, Some("set_default_graph"));
             
             // Deauthorize
             let cmd = json!({
@@ -717,13 +626,7 @@ pub fn test_agent_authorization_failures() {
         
         // Now try to use add_block tool - should fail due to no authorization
         {
-            let cmd = json!({
-                "type": "agent_chat",
-                "message": "Add a block",
-                "echo_tool": "add_block"
-            });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
+            let data = agent_chat_sync(&mut ws, "Add a block", None, Some("add_block"));
             
             // The tool should have been called but returned an error
             // MockLLM returns the tool invocation message
@@ -749,13 +652,7 @@ pub fn test_agent_authorization_failures() {
         
         // Now the same tool should succeed
         {
-            let cmd = json!({
-                "type": "agent_chat",
-                "message": "Add a block now",
-                "echo_tool": "add_block"
-            });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
+            let data = agent_chat_sync(&mut ws, "Add a block now", None, Some("add_block"));
             
             // MockLLM returns the tool invocation message
             assert!(data["response"].as_str().unwrap().contains("I've executed the add_block tool"));
@@ -817,13 +714,7 @@ pub fn test_agent_tool_validation_errors() {
         
         // Test tool with mock-generated args (should have valid UUIDs)
         {
-            let cmd = json!({
-                "type": "agent_chat",
-                "message": "Try to update a block",
-                "echo_tool": "update_block"
-            });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
+            let data = agent_chat_sync(&mut ws, "Try to update a block", None, Some("update_block"));
             
             // MockLLM generates valid test args, so this should attempt the operation
             // MockLLM returns the tool invocation message
@@ -883,13 +774,7 @@ pub fn test_agent_graph_management_tools_direct() {
         
         // Test get_default_graph - should be the initial graph (first authorized)
         {
-            let cmd = json!({
-                "type": "agent_chat",
-                "message": "Get my default graph",
-                "echo_tool": "get_default_graph"
-            });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
+            let data = agent_chat_sync(&mut ws, "Get my default graph", None, Some("get_default_graph"));
             
             assert!(data["response"].as_str().unwrap().contains("I've executed the get_default_graph tool"));
             
@@ -911,13 +796,7 @@ pub fn test_agent_graph_management_tools_direct() {
         
         // Test list_my_graphs - should show the initial graph
         {
-            let cmd = json!({
-                "type": "agent_chat",
-                "message": "List my authorized graphs",
-                "echo_tool": "list_my_graphs"
-            });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
+            let data = agent_chat_sync(&mut ws, "List my authorized graphs", None, Some("list_my_graphs"));
             
             assert!(data["response"].as_str().unwrap().contains("I've executed the list_my_graphs tool"));
             
@@ -938,13 +817,7 @@ pub fn test_agent_graph_management_tools_direct() {
         
         // Create a second graph
         let second_graph_id = {
-            let cmd = json!({
-                "type": "agent_chat",
-                "message": "Create another graph",
-                "echo_tool": "create_graph"
-            });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
+            let data = agent_chat_sync(&mut ws, "Create another graph", None, Some("create_graph"));
             
             assert!(data["response"].as_str().unwrap().contains("I've executed the create_graph tool"));
             
@@ -997,13 +870,7 @@ pub fn test_agent_graph_management_tools_direct() {
         
         // Test set_default_graph with smart default (only 1 graph open now)
         {
-            let cmd = json!({
-                "type": "agent_chat",
-                "message": "Set my default to the new graph",
-                "echo_tool": "set_default_graph"
-            });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
+            let data = agent_chat_sync(&mut ws, "Set my default to the new graph", None, Some("set_default_graph"));
             
             assert!(data["response"].as_str().unwrap().contains("I've executed the set_default_graph tool"));
             
@@ -1024,13 +891,7 @@ pub fn test_agent_graph_management_tools_direct() {
         
         // Verify default changed with get_default_graph
         {
-            let cmd = json!({
-                "type": "agent_chat",
-                "message": "Check my default graph again",
-                "echo_tool": "get_default_graph"
-            });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
+            let data = agent_chat_sync(&mut ws, "Check my default graph again", None, Some("get_default_graph"));
             
             assert!(data["response"].as_str().unwrap().contains("I've executed the get_default_graph tool"));
             
@@ -1051,13 +912,7 @@ pub fn test_agent_graph_management_tools_direct() {
         
         // Test list_my_graphs again - should now show 2 graphs
         {
-            let cmd = json!({
-                "type": "agent_chat",
-                "message": "List all my graphs again",
-                "echo_tool": "list_my_graphs"
-            });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
+            let data = agent_chat_sync(&mut ws, "List all my graphs again", None, Some("list_my_graphs"));
             
             assert!(data["response"].as_str().unwrap().contains("I've executed the list_my_graphs tool"));
             
@@ -1132,33 +987,33 @@ pub fn test_agent_tool_chaining() {
         
         // Step 1: Create a graph
         {
-            let response = agent_chat_sync(&mut ws, "Create a test graph", None, Some("create_graph"));
+            let data = agent_chat_sync(&mut ws, "Create a test graph", None, Some("create_graph"));
             
             // MockLLM returns the tool invocation message
-            assert!(response["response"].as_str().unwrap().contains("I've executed the create_graph tool"));
+            assert!(data["response"].as_str().unwrap().contains("I've executed the create_graph tool"));
         }
         
         // Step 2: Create a page in the new graph
         {
-            let response = agent_chat_sync(&mut ws, "Create a page in the graph", None, Some("create_page"));
+            let data = agent_chat_sync(&mut ws, "Create a page in the graph", None, Some("create_page"));
             
-            assert!(response["response"].as_str().unwrap().contains("I've executed the create_page tool"));
+            assert!(data["response"].as_str().unwrap().contains("I've executed the create_page tool"));
         }
         
         // Step 3: Add blocks to the page
         {
-            let response = agent_chat_sync(&mut ws, "Add content to the page", None, Some("add_block"));
+            let data = agent_chat_sync(&mut ws, "Add content to the page", None, Some("add_block"));
             
             // MockLLM returns the tool invocation message
-            assert!(response["response"].as_str().unwrap().contains("I've executed the add_block tool"));
+            assert!(data["response"].as_str().unwrap().contains("I've executed the add_block tool"));
         }
         
         // Step 4: List the graphs to verify creation
         {
-            let response = agent_chat_sync(&mut ws, "List all graphs", None, Some("list_graphs"));
+            let data = agent_chat_sync(&mut ws, "List all graphs", None, Some("list_graphs"));
             
             // MockLLM returns the tool invocation message
-            assert!(response["response"].as_str().unwrap().contains("I've executed the list_graphs tool"));
+            assert!(data["response"].as_str().unwrap().contains("I've executed the list_graphs tool"));
         }
         
         // Verify conversation has all the tool calls tracked

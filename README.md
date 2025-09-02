@@ -1,6 +1,6 @@
 # Cymbiont
 
-> **A knowledge graph engine for self-organizing AI agents**
+> **A self-organizing knowledge graph engine**
 
 Transform your notes into an intelligent, queryable network. Cymbiont is building the infrastructure for a new kind of knowledge management system—one where local AI agents work directly with your personal knowledge graphs, learning patterns in your notes and connecting ideas across domains. Instead of static notes or rigid databases, Cymbiont creates living knowledge structures that evolve and adapt.
 
@@ -14,20 +14,12 @@ Imagine local AI agents that can:
 - **Learn your thinking patterns** and proactively surface relevant information as you work
 - **Maintain graph health** by identifying orphaned nodes, broken links, and redundant information
 
-## Graph Consensus
-
-At its core, Cymbiont implements a self-organizing graph consensus system. Multiple agents—whether AI models, import scripts, or API clients—propose changes to shared knowledge graphs through a unified transaction system. Each agent operates with specific authorization scopes, and the system resolves concurrent modifications through deterministic transaction ordering. This creates a substrate for collective intelligence where diverse sources contribute to an evolving knowledge structure.
-
-Like a colony of social insects coordinating, Cymbiont enables distributed actors to reach consensus on a shared information state. Each agent contributes its specialized knowledge while the system maintains coherence across the whole. The result is software that doesn't just store data—it accumulates collective understanding through structured collaboration.
-
 ## Current Foundation
 
 Cymbiont currently provides the core engine that makes this vision possible:
 
 - **🏗️ Robust Graph Storage**: Petgraph-based engine with typed nodes and edges
-- **🔄 ACID Transactions**: Write-ahead logging ensures data integrity  
 - **🗂️ Multi-Graph Support**: Isolated storage for different knowledge domains
-- **🤝 Multi-Agent Framework**: Flexible graph-to-agent authorization system
 - **📥 Logseq Import**: Complete import system with reference resolution
 - **🌐 Real-time Updates**: WebSocket protocol for live synchronization
 - **🔌 HTTP API**: RESTful interface for data ingestion and querying
@@ -40,7 +32,6 @@ The roadmap includes:
 - **Terminal chat interface** for interactive graph exploration and querying
 - **Additional import adapters** for Obsidian, Roam Research, and more
 - **Export formats** for interoperability with existing tools
-- **High-performance distributed multi-actor consensus** for massively parallel knowledge operations
 - **Quorum-replicated backups** with automatic data corruption detection and recovery
 
 ## Getting Started
@@ -80,7 +71,7 @@ cd cymbiont
    cargo run -- --server
    ```
 
-That's it! Cymbiont will handle graph storage, transactions, and data persistence automatically.
+That's it! Cymbiont will handle graph storage and data persistence automatically.
 
 ### Import Your Knowledge
 
@@ -219,16 +210,6 @@ cargo run -- --server --duration 60        # Run server for 60 seconds
 cargo run -- --import-logseq ~/Documents/notes  # Import Logseq graph
 cargo run -- --delete-graph my-notes       # Delete a graph by name
 cargo run -- --list-graphs                  # List all graphs with metadata
-
-# Agent management
-cargo run -- --create-agent "Research Assistant" --agent-description "Handles research queries"
-cargo run -- --agent-info "Research Assistant"  # View specific agent
-cargo run -- --agent-info                  # Defaults to prime agent if not specified
-cargo run -- --delete-agent "Old Assistant"  # Delete by name
-cargo run -- --activate-agent 550e8400-e29b-41d4-a716-446655440000  # Activate by UUID
-cargo run -- --deactivate-agent "Research Assistant"  # Deactivate by name
-cargo run -- --authorize-agent "Research Assistant" --for-graph "my-notes"
-cargo run -- --deauthorize-agent "Research Assistant" --from-graph "old-notes"
 
 # Use Ctrl+C to gracefully stop any instance
 ```

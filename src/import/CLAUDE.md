@@ -68,7 +68,7 @@ Import-specific errors with context:
 ## Testing
 Test graphs in `logseq_databases/`:
 - `dummy_graph/` - Simple test data
-- Validated via WAL operations
+- Validated via command log operations
 
 ## Future Extensions 🌟
 - Additional PKM formats (Obsidian, Roam)

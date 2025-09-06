@@ -65,6 +65,37 @@ You should see a black or purple window with text that ends in `$` or `>`
 
 This is good. You're in. Welcome to the command line, where everything is text and the points don't matter. (Except they do. Every character matters. Linux is very literal.)
 
+### Terminal Survival Commands
+
+Practice these before you need them:
+
+```bash
+pwd              # Where am I? (print working directory)
+ls               # What's here? (list files)
+ls -la           # What's REALLY here? (including hidden files)
+cd /path/to/go   # Go somewhere else (change directory)
+cd ..            # Go up one level
+cd ~             # Go home
+```
+
+Moving and reading files:
+```bash
+cp file1 file2   # Copy file1 to file2
+mv old new       # Move or rename
+cat filename     # Show file contents
+nano filename    # Edit file (Ctrl+X to exit)
+rm filename      # Delete (NO UNDO - be careful!)
+```
+
+The magic word:
+```bash
+sudo command     # Do it with admin powers
+                 # "sudo" = "Super User DO"
+                 # Like saying "Simon Says" to Linux
+```
+
+Pro tip: Press TAB to auto-complete file names. Press ↑ arrow to repeat previous commands.
+
 ---
 
 ## PART 3: INSTALLING CYMBIONT

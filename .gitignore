@@ -50,3 +50,7 @@ docs/
 
 # Server state
 server_info.json
+
+# Emergency manual backups (auto-generated)
+emergency_backups/
+CYMBIONT_EMERGENCY_DEPLOYMENT_ASCII.txt

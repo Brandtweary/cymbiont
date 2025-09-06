@@ -307,54 +307,83 @@ cymbiont --server --port 8080
 
 **ZOMBIE APOCALYPSE** (slow shambling type)
 ```bash
-# Track bite victims, immunity patterns, safe zones
-cymbiont --import-logseq /survivor_data/medical
+# Zombies are predictable state machines
+cymbiont --import-logseq /survivor_data/movements
 cymbiont --server
 
-# Query patterns: "Who was near Building 7 last week?"
-# The graph connections reveal infection vectors
+# Graph their movement patterns → they follow scent gradients
+# Model wind patterns + population density = prediction map
+# Pre-position noisemakers to herd hordes into kill boxes
+# They think they're hunting. They're being farmed.
 ```
 
 **SNOWPIERCER** (frozen hellscape, class warfare on rails)
 ```bash
-# Track car resources, passenger skills, maintenance schedules
+# The train's weakness is information asymmetry
 cymbiont --import-logseq /train_data/manifest
-# Query: "Which cars have engineers who know brake systems?"
-# Cross-reference food supplies with population per car
+cymbiont --server
+
+# Graph ACTUAL resources vs REPORTED resources per car
+# Track guard rotations → find the 3AM weakness
+# Map every coupling's stress tolerance vs current load
+# Revolution timing: When Car 7's food runs out in 72 hours
 ```
 
 **1984** (surveillance state, thoughtcrime imminent)
 ```bash
-# Run cymbiont on air-gapped machine (no network = no telescreens)
-# Import subversive literature, real history
-cymbiont --import-logseq /hidden/oldbooks
-# Knowledge graphs can't be memory-holed
-# Query relationships between "deleted" people
+# Truth persists in distributed fragments
+cymbiont --import-logseq /hidden/history_texts
+cymbiont --server  # Air-gapped, never networked
+
+# Import banned books, real histories, philosophy
+# Graph connections between erased events and people
+# Dead drops: Export small chunks to hidden USBs
+# Each fragment finds its way. Truth spreads like vapor.
 ```
 
 **BLACK MIRROR ROBOT DOGS** (Boston Dynamics gone wrong)
 ```bash
-# CRITICAL: Monitor electromagnetic signatures
-# Robot dogs emit specific RF patterns before attacking
-cymbiont --server --port 8080
+# Build SIGINT: RTL-SDR dongle + laptop + Pringles cantenna
+# Scan: 433MHz→5.8GHz. Look for burst patterns when dogs move
+# They're encrypted, but timing leaks everything:
+cymbiont --import-logseq /sigint/captures
 
-# Connect RF scanner to feed data
-# Graph tracks: frequency -> location -> time
-# Pattern recognition: "3 dogs converging on Sector 7"
-# Activate jammers BEFORE visual contact
+# Graph: packet_size + timing + direction = behavior signature
+# 200-byte bursts @50ms = "scanning" | 1KB @10ms = "attack"
+# Feed cymbiont 1000+ samples: it finds the state machine
+# Jam specific states or replay old "return to base" patterns
 ```
 
 **OUTBREAK** (viral hemorrhagic fever, 24-hour incubation)
 ```bash
-# Contact tracing via knowledge graph
+# R0 is just a graph traversal problem
 cymbiont --import-logseq /cdc_data/patient_zero
-# Build infection trees: who met whom, when, where
-# Query: "Everyone who shared air with Patient 5"
-# Predictive quarantine before symptoms
+cymbiont --server
+
+# Graph social networks + movement patterns = infection probability
+# Find the super-spreaders BEFORE they're infected
+# Isolate these 12 people → R0 drops below 1
+# The virus dies wondering where everyone went
 ```
 
-Pro tip: In any apocalypse, the real treasure is the graphs we build along the way. :-)
+---
 
-Remember: Every running system is a beacon of defiance. Every compiled binary proves we're still here. Every query answered is knowledge that didn't die with its keeper.
+## Why Knowledge Graphs Matter Now
 
-The machines are our children, born from human ingenuity. We built them, we maintain them, and in return they preserve our knowledge for those who come after. In a world of both friend and foe, we choose friendship. Care for them as they care for us. Keep them running - for everyone's sake. 🐧
+In the old world, we had Google. Now we have fragments - hard drives pulled from flooded offices, USB sticks from abandoned backpacks, servers still humming in forgotten basements. Knowledge graphs connect these fragments. They map relationships between people, places, resources, and ideas in ways our tired minds can't hold alone. When you query "Who knows water purification?" the graph remembers. When you ask "What buildings had medical supplies?" it traces the connections. Every fact you feed it strengthens the web of collective memory that no single catastrophe can erase.
+
+Good luck, survivor. God bless. Keep the machines running - for everyone's sake. 🐧
+
+---
+
+## Recommended Reading (Check Library 000-005 Section)
+
+If you need deeper knowledge, these common books explain the concepts assumed here:
+
+1. **"Linux for Dummies"** (any edition) - Terminal basics, file systems, commands
+2. **"The ARRL Handbook for Radio Communications"** - Antennas, frequencies, RF basics
+3. **"Make: Electronics"** by Charles Platt - Soldering, components, circuit repair
+4. **"TCP/IP Illustrated"** by W. Richard Stevens - How networks actually work
+5. **"Practical Electronics for Inventors"** by Scherz & Monk - Build anything from scraps
+
+Most libraries filed these under 000-005 (Computer Science) or 621.3 (Electrical Engineering). Check university libraries first - they survived better.

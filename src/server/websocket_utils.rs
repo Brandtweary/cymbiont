@@ -1,16 +1,16 @@
 //! @module websocket_utils
 //! @description Utility functions for WebSocket operations
-//! 
+//!
 //! This module contains shared helper functions used by command handlers,
 //! including graph resolution, authentication checks, and response sending.
 
+use crate::error::*;
+use crate::server::websocket::Response;
+use crate::utils::AsyncRwLockExt;
+use crate::AppState;
 use axum::extract::ws::Message;
 use std::sync::Arc;
 use uuid::Uuid;
-use crate::error::*;
-use crate::AppState;
-use crate::utils::AsyncRwLockExt;
-use crate::server::websocket::Response;
 
 /// Helper to resolve graph ID from optional graph_id and graph_name
 pub async fn resolve_graph_for_command(
@@ -19,15 +19,20 @@ pub async fn resolve_graph_for_command(
     graph_name: Option<&str>,
     allow_smart_default: bool,
 ) -> Result<Uuid> {
-    let registry = state.graph_registry.read_or_panic("read graph registry").await;
-    
-    let graph_uuid = if let Some(id_str) = graph_id {
-        Some(Uuid::parse_str(id_str)
-            .map_err(|_| ServerError::invalid_request(format!("Invalid graph UUID: {}", id_str)))?)
-    } else {
-        None
-    };
-    
+    let registry = state
+        .graph_registry
+        .read_or_panic("read graph registry")
+        .await;
+
+    let graph_uuid =
+        if let Some(id_str) = graph_id {
+            Some(Uuid::parse_str(id_str).map_err(|_| {
+                ServerError::invalid_request(format!("Invalid graph UUID: {}", id_str))
+            })?)
+        } else {
+            None
+        };
+
     Ok(registry.resolve_graph_target(
         graph_uuid.as_ref(),
         graph_name.as_deref(),
@@ -36,12 +41,11 @@ pub async fn resolve_graph_for_command(
 }
 
 /// Check if a connection is authenticated (safe, read-only)
-pub async fn is_authenticated(
-    connection_id: &str,
-    state: &Arc<AppState>,
-) -> bool {
+pub async fn is_authenticated(connection_id: &str, state: &Arc<AppState>) -> bool {
     if let Some(ref connections) = state.ws_connections {
-        let conns = connections.read_or_panic("send response - read connections").await;
+        let conns = connections
+            .read_or_panic("send response - read connections")
+            .await;
         if let Some(conn) = conns.get(connection_id) {
             return conn.authenticated;
         }
@@ -50,12 +54,11 @@ pub async fn is_authenticated(
 }
 
 /// Set a connection as authenticated (safe, atomic write)
-pub async fn set_authenticated(
-    connection_id: &str,
-    state: &Arc<AppState>,
-) -> Result<bool> {
+pub async fn set_authenticated(connection_id: &str, state: &Arc<AppState>) -> Result<bool> {
     if let Some(ref connections) = state.ws_connections {
-        let mut conns = connections.write_or_panic("set auth state - write connections").await;
+        let mut conns = connections
+            .write_or_panic("set auth state - write connections")
+            .await;
         if let Some(conn) = conns.get_mut(connection_id) {
             conn.authenticated = true;
             // Return true if this is the first authenticated connection
@@ -69,11 +72,11 @@ pub async fn set_authenticated(
 }
 
 /// Get connection stats (safe, read-only)
-pub async fn get_connection_stats(
-    state: &Arc<AppState>,
-) -> (usize, usize) {
+pub async fn get_connection_stats(state: &Arc<AppState>) -> (usize, usize) {
     if let Some(ref connections) = state.ws_connections {
-        let conns = connections.read_or_panic("send response - read connections").await;
+        let conns = connections
+            .read_or_panic("send response - read connections")
+            .await;
         let total = conns.len();
         let authenticated = conns.values().filter(|c| c.authenticated).count();
         (total, authenticated)
@@ -90,20 +93,26 @@ pub async fn send_response(
 ) -> Result<()> {
     // Get the sender without holding lock
     let sender = if let Some(ref connections) = state.ws_connections {
-        let conns = connections.read_or_panic("send response - read connections").await;
+        let conns = connections
+            .read_or_panic("send response - read connections")
+            .await;
         if let Some(conn) = conns.get(connection_id) {
             conn.sender.clone()
         } else {
-            tracing::warn!("Attempted to send response to disconnected client: {}", connection_id);
+            tracing::warn!(
+                "Attempted to send response to disconnected client: {}",
+                connection_id
+            );
             return Ok(()); // Connection gone, silently succeed
         }
     } else {
         return Ok(());
     };
-    
+
     // Now send without holding any lock
     let msg = serde_json::to_string(&response)?;
-    sender.send(Message::Text(msg.into()))
+    sender
+        .send(Message::Text(msg.into()))
         .map_err(|_| ServerError::websocket("Failed to send message on channel"))?;
     Ok(())
 }
@@ -114,9 +123,7 @@ pub async fn send_success_response(
     state: &Arc<AppState>,
     data: Option<serde_json::Value>,
 ) -> Result<()> {
-    let response = Response::Success {
-        data,
-    };
+    let response = Response::Success { data };
     send_response(connection_id, state, response).await
 }
 

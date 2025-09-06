@@ -57,7 +57,7 @@
 //! ```rust
 //! // Initiate shutdown - stops accepting new commands
 //! processor.initiate_shutdown();
-//! 
+//!
 //! // Wait up to 30 seconds for active commands
 //! let completed = processor.wait_for_completion(Duration::from_secs(30));
 //! ```
@@ -111,20 +111,20 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot, RwLock, Notify};
-use tracing::{info, warn, error};
+use tokio::sync::{mpsc, oneshot, Notify, RwLock};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use crate::error::*;
-use crate::graph::graph_manager::GraphManager;
-use crate::graph::graph_registry::GraphRegistry;
-use crate::agent::agent::Agent;
 use super::commands::{Command, CommandResult, GraphCommand};
 use super::queue::CommandQueue;
 use super::router;
+use crate::agent::agent::Agent;
+use crate::error::*;
+use crate::graph::graph_manager::GraphManager;
+use crate::graph::graph_registry::GraphRegistry;
 
 /// Envelope for command submission with response channel
 pub struct CommandEnvelope {
@@ -143,9 +143,9 @@ pub struct ProcessorResources {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ProcessorState {
-    Accepting = 0,  // Normal operation
-    Draining = 1,   // Rejecting non-system commands
-    Shutdown = 2,   // Rejecting everything
+    Accepting = 0, // Normal operation
+    Draining = 1,  // Rejecting non-system commands
+    Shutdown = 2,  // Rejecting everything
 }
 
 impl From<u8> for ProcessorState {
@@ -162,17 +162,17 @@ impl From<u8> for ProcessorState {
 pub struct CommandProcessor {
     // Owned mutable state (wrapped for sharing with AppState)
     graph_managers: Arc<RwLock<HashMap<Uuid, Arc<RwLock<GraphManager>>>>>,
-    
+
     // Agent state (reference from AppState)
     agent: Arc<RwLock<Option<Agent>>>,
-    
+
     // Registry for metadata (reference from AppState)
     graph_registry: Arc<RwLock<GraphRegistry>>,
-    
+
     // Shutdown coordination
     state: Arc<AtomicU8>,
     active_count_notify: Arc<Notify>,
-    
+
     // Configuration
     data_dir: PathBuf,
 }
@@ -193,30 +193,29 @@ impl CommandProcessor {
             data_dir,
         }
     }
-    
-    
+
     /// Start the command processor in a background task
     /// Returns a CommandQueue for submitting commands and ProcessorResources for queries
     pub async fn start(self) -> Result<(CommandQueue, ProcessorResources)> {
         info!("🚀 Command processor started");
-        
+
         // Create channel for command submission
         let (sender, receiver) = mpsc::channel(100);
-        
+
         // Extract references before moving self
         let resources = ProcessorResources {
             graph_managers: self.graph_managers.clone(),
         };
-        
+
         // Spawn processor in background for command processing
         tokio::spawn(async move {
             self.run(receiver).await;
         });
-        
+
         // Return queue with sender and resources
         Ok((CommandQueue::new_with_sender(sender), resources))
     }
-    
+
     /// Run the command processing loop
     pub async fn run(mut self, mut receiver: mpsc::Receiver<CommandEnvelope>) {
         while let Some(envelope) = receiver.recv().await {
@@ -230,38 +229,42 @@ impl CommandProcessor {
                     // Only allow System commands through
                     if !matches!(envelope.command, Command::System(_)) {
                         warn!("Rejecting command during shutdown: {:?}", envelope.command);
-                        let _ = envelope.response.send(Err(
-                            ProcessorError::ShuttingDown.into()
-                        ));
+                        let _ = envelope
+                            .response
+                            .send(Err(ProcessorError::ShuttingDown.into()));
                         continue;
                     }
                 }
                 ProcessorState::Shutdown => {
                     // Reject everything
-                    warn!("Rejecting command - processor is shut down: {:?}", envelope.command);
-                    let _ = envelope.response.send(Err(
-                        ProcessorError::Shutdown.into()
-                    ));
+                    warn!(
+                        "Rejecting command - processor is shut down: {:?}",
+                        envelope.command
+                    );
+                    let _ = envelope.response.send(Err(ProcessorError::Shutdown.into()));
                     continue;
                 }
             }
-            
+
             // Process the command
             let result = self.process_command(envelope.command).await;
-            
+
             // Send response (ignore send errors if receiver dropped)
             let _ = envelope.response.send(result);
         }
-        
+
         info!("Command processor stopped");
     }
-    
+
     /// Process a single command
-    fn process_command(&mut self, command: Command) -> Pin<Box<dyn Future<Output = Result<CommandResult>> + Send + '_>> {
+    fn process_command(
+        &mut self,
+        command: Command,
+    ) -> Pin<Box<dyn Future<Output = Result<CommandResult>> + Send + '_>> {
         Box::pin(async move {
             // Apply the command directly
             let result = self.apply_command(command).await;
-            
+
             // Execute child commands if any
             if let Ok(cmd_result) = &result {
                 for child_cmd in &cmd_result.child_commands {
@@ -273,40 +276,32 @@ impl CommandProcessor {
                     }
                 }
             }
-            
+
             result
         })
     }
-    
-    
-    
+
     /// Apply a mutation command
     async fn apply_command(&mut self, command: Command) -> Result<CommandResult> {
         match command {
             Command::Graph(graph_cmd) => {
                 // Extract graph_id for loading
                 let graph_id = match &graph_cmd {
-                    GraphCommand::CreateBlock { graph_id, .. } |
-                    GraphCommand::UpdateBlock { graph_id, .. } |
-                    GraphCommand::DeleteBlock { graph_id, .. } |
-                    GraphCommand::CreatePage { graph_id, .. } |
-                    GraphCommand::DeletePage { graph_id, .. } => *graph_id,
+                    GraphCommand::CreateBlock { graph_id, .. }
+                    | GraphCommand::UpdateBlock { graph_id, .. }
+                    | GraphCommand::DeleteBlock { graph_id, .. }
+                    | GraphCommand::CreatePage { graph_id, .. }
+                    | GraphCommand::DeletePage { graph_id, .. } => *graph_id,
                 };
-                
+
                 // Ensure graph is loaded before routing
                 self.ensure_graph_loaded(graph_id).await?;
-                
-                router::route_graph_command(
-                    &self.graph_managers,
-                    graph_cmd,
-                ).await
+
+                router::route_graph_command(&self.graph_managers, graph_cmd).await
             }
             Command::Agent(agent_cmd) => {
                 // Route to the single agent
-                router::route_agent_command(
-                    &self.agent,
-                    agent_cmd,
-                ).await
+                router::route_agent_command(&self.agent, agent_cmd).await
             }
             Command::Registry(reg_cmd) => {
                 router::route_registry_command(
@@ -314,23 +309,25 @@ impl CommandProcessor {
                     &self.graph_registry,
                     reg_cmd,
                     &self.data_dir,
-                ).await
+                )
+                .await
             }
-            Command::System(sys_cmd) => {
-                self.handle_system_command(sys_cmd).await
-            }
+            Command::System(sys_cmd) => self.handle_system_command(sys_cmd).await,
         }
     }
-    
+
     /// Handle system-level commands for lifecycle management
-    async fn handle_system_command(&mut self, command: super::commands::SystemCommand) -> Result<CommandResult> {
+    async fn handle_system_command(
+        &mut self,
+        command: super::commands::SystemCommand,
+    ) -> Result<CommandResult> {
         use super::commands::SystemCommand;
-        
+
         match command {
             SystemCommand::InitiateShutdown => {
                 // Set state to draining to reject new non-system commands
                 self.initiate_shutdown();
-                
+
                 Ok(CommandResult {
                     success: true,
                     data: Some(serde_json::json!({
@@ -342,8 +339,10 @@ impl CommandProcessor {
             }
             SystemCommand::WaitForCompletion { timeout_secs } => {
                 // Wait for active transactions to complete
-                let completed = self.wait_for_completion(Duration::from_secs(timeout_secs)).await;
-                
+                let completed = self
+                    .wait_for_completion(Duration::from_secs(timeout_secs))
+                    .await;
+
                 Ok(CommandResult {
                     success: true,
                     data: Some(serde_json::json!({
@@ -355,9 +354,10 @@ impl CommandProcessor {
             }
             SystemCommand::ForceFlush => {
                 // Set state to fully shutdown
-                self.state.store(ProcessorState::Shutdown as u8, Ordering::Release);
+                self.state
+                    .store(ProcessorState::Shutdown as u8, Ordering::Release);
                 info!("Force flush completed");
-                
+
                 Ok(CommandResult {
                     success: true,
                     data: None,
@@ -367,7 +367,7 @@ impl CommandProcessor {
             }
         }
     }
-    
+
     /// Ensure a graph is loaded in memory
     async fn ensure_graph_loaded(&mut self, graph_id: Uuid) -> Result<()> {
         // Check if already loaded
@@ -377,11 +377,11 @@ impl CommandProcessor {
                 return Ok(());
             }
         }
-        
+
         // Not loaded, so create and insert
         let graph_path = self.data_dir.join("graphs").join(graph_id.to_string());
         let graph_manager = GraphManager::new(&graph_path)?;
-        
+
         {
             let mut managers = self.graph_managers.write().await;
             // Double-check in case another task loaded it
@@ -389,18 +389,18 @@ impl CommandProcessor {
                 managers.insert(graph_id, Arc::new(RwLock::new(graph_manager)));
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Initiate graceful shutdown
     pub fn initiate_shutdown(&self) {
         info!("Initiating graceful shutdown of command processor");
-        self.state.store(ProcessorState::Draining as u8, Ordering::Release);
+        self.state
+            .store(ProcessorState::Draining as u8, Ordering::Release);
         self.active_count_notify.notify_one();
     }
-    
-    
+
     /// Wait for active commands to complete with timeout
     pub async fn wait_for_completion(&self, timeout: Duration) -> bool {
         tokio::time::sleep(timeout).await;

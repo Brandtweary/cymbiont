@@ -1,11 +1,11 @@
 //! Centralized error handling for Cymbiont
-//! 
+//!
 //! This module provides a hierarchical error system that replaces the fragmented
 //! error handling patterns throughout the codebase. All errors in Cymbiont should
 //! ultimately be convertible to `CymbiontError` for consistent propagation.
 //!
 //! ## Architecture
-//! 
+//!
 //! The error system follows a hierarchical design where domain-specific errors
 //! are wrapped in a root `CymbiontError` type. This allows for:
 //! - Type-safe error creation with domain context
@@ -14,10 +14,10 @@
 //! - Clear error boundaries between modules
 //!
 //! ## Usage
-//! 
+//!
 //! ```rust
 //! use crate::error::*;
-//! 
+//!
 //! // Create domain-specific errors using convenience constructors
 //! fn example() -> Result<()> {
 //!     // Using convenience constructors
@@ -32,7 +32,7 @@
 //! ```
 //!
 //! ## Error Categories
-//! 
+//!
 //! - **StorageError**: Registry, persistence, and transaction errors
 //! - **AgentError**: LLM backend and tool execution errors
 //! - **GraphError**: Graph operations and lifecycle errors
@@ -53,12 +53,11 @@
 use thiserror::Error;
 use uuid::Uuid;
 
-
 /// Global result type alias for convenience
 pub type Result<T> = std::result::Result<T, CymbiontError>;
 
 /// Top-level error type for all Cymbiont operations
-/// 
+///
 /// This error type provides a hierarchical structure where domain-specific
 /// errors are wrapped in appropriate variants. All errors should be convertible
 /// to this type through the `From` trait.
@@ -107,7 +106,6 @@ pub enum StorageError {
     /// Graph registry management errors
     #[error("Graph registry error: {message}")]
     GraphRegistry { message: String },
-
 
     /// Entity not found errors
     #[error("Not found: {entity_type} with {identifier_type} '{identifier}'")]
@@ -180,7 +178,6 @@ pub enum ServerError {
     /// Invalid request format
     #[error("Invalid request: {message}")]
     InvalidRequest { message: String },
-
 }
 
 /// Data import errors for Logseq and other formats
@@ -225,16 +222,15 @@ pub enum ProcessorError {
     /// Entity not found
     #[error("{0} not found")]
     NotFound(String),
-    
+
     /// System is shutting down
     #[error("Graceful shutdown in progress, rejecting new commands")]
     ShuttingDown,
-    
+
     /// Processor has shut down
     #[error("Processor is shut down")]
     Shutdown,
 }
-
 
 // Convenience From implementations for common error types
 
@@ -250,7 +246,6 @@ impl From<&str> for CymbiontError {
     }
 }
 
-
 impl From<serde_json::Error> for CymbiontError {
     fn from(error: serde_json::Error) -> Self {
         CymbiontError::Storage(StorageError::Serialization(error))
@@ -263,46 +258,58 @@ impl From<serde_yaml::Error> for CymbiontError {
     }
 }
 
-
 // Domain error convenience constructors
 impl StorageError {
     pub fn graph_registry(message: impl Into<String>) -> Self {
-        StorageError::GraphRegistry { message: message.into() }
+        StorageError::GraphRegistry {
+            message: message.into(),
+        }
     }
 
-
-    pub fn not_found(entity_type: impl Into<String>, identifier_type: impl Into<String>, identifier: impl Into<String>) -> Self {
+    pub fn not_found(
+        entity_type: impl Into<String>,
+        identifier_type: impl Into<String>,
+        identifier: impl Into<String>,
+    ) -> Self {
         StorageError::NotFound {
             entity_type: entity_type.into(),
             identifier_type: identifier_type.into(),
             identifier: identifier.into(),
         }
     }
-
 }
 
 impl AgentError {
     pub fn llm(message: impl Into<String>) -> Self {
-        AgentError::LLM { message: message.into() }
+        AgentError::LLM {
+            message: message.into(),
+        }
     }
 
     pub fn tool(message: impl Into<String>) -> Self {
-        AgentError::Tool { message: message.into() }
+        AgentError::Tool {
+            message: message.into(),
+        }
     }
 
     pub fn serialization(message: impl Into<String>) -> Self {
-        AgentError::Serialization { message: message.into() }
+        AgentError::Serialization {
+            message: message.into(),
+        }
     }
 }
 
 impl GraphError {
     pub fn lifecycle(message: impl Into<String>) -> Self {
-        GraphError::Lifecycle { message: message.into() }
+        GraphError::Lifecycle {
+            message: message.into(),
+        }
     }
 
-
     pub fn not_found(identifier: impl Into<String>) -> Self {
-        GraphError::NotFound { identifier: identifier.into() }
+        GraphError::NotFound {
+            identifier: identifier.into(),
+        }
     }
 
     pub fn node_not_found(node_id: impl Into<String>, graph_id: Uuid) -> Self {
@@ -313,31 +320,42 @@ impl GraphError {
     }
 
     pub fn invalid_state(message: impl Into<String>) -> Self {
-        GraphError::InvalidState { message: message.into() }
+        GraphError::InvalidState {
+            message: message.into(),
+        }
     }
 }
 
 impl ServerError {
     pub fn websocket(message: impl Into<String>) -> Self {
-        ServerError::WebSocket { message: message.into() }
+        ServerError::WebSocket {
+            message: message.into(),
+        }
     }
 
     pub fn authentication(message: impl Into<String>) -> Self {
-        ServerError::Authentication { message: message.into() }
+        ServerError::Authentication {
+            message: message.into(),
+        }
     }
 
     pub fn startup(message: impl Into<String>) -> Self {
-        ServerError::Startup { message: message.into() }
+        ServerError::Startup {
+            message: message.into(),
+        }
     }
 
     pub fn port_binding(message: impl Into<String>) -> Self {
-        ServerError::PortBinding { message: message.into() }
+        ServerError::PortBinding {
+            message: message.into(),
+        }
     }
 
     pub fn invalid_request(message: impl Into<String>) -> Self {
-        ServerError::InvalidRequest { message: message.into() }
+        ServerError::InvalidRequest {
+            message: message.into(),
+        }
     }
-
 }
 
 impl ImportError {
@@ -349,12 +367,14 @@ impl ImportError {
     }
 
     pub fn validation(message: impl Into<String>) -> Self {
-        ImportError::Validation { message: message.into() }
+        ImportError::Validation {
+            message: message.into(),
+        }
     }
-
 
     pub fn path(message: impl Into<String>) -> Self {
-        ImportError::Path { message: message.into() }
+        ImportError::Path {
+            message: message.into(),
+        }
     }
-
 }

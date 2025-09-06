@@ -131,14 +131,15 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
+use super::commands::{
+    AgentCommand, CommandResult, GraphCommand, GraphRegistryCommand, RegistryCommand,
+};
+use crate::agent::agent::Agent;
+use crate::agent::llm::{LLMConfig, Message};
 use crate::error::*;
 use crate::graph::graph_manager::GraphManager;
-use crate::graph::graph_registry::GraphRegistry;
 use crate::graph::graph_operations;
-use crate::agent::agent::Agent;
-use crate::agent::llm::{Message, LLMConfig};
-use super::commands::{CommandResult, GraphCommand, AgentCommand, RegistryCommand,
-                      GraphRegistryCommand};
+use crate::graph::graph_registry::GraphRegistry;
 
 /// Private token that proves a call came through the CQRS router.
 /// This type can ONLY be constructed within the router module,
@@ -160,15 +161,23 @@ pub async fn route_graph_command(
     command: GraphCommand,
 ) -> Result<CommandResult> {
     match command {
-        GraphCommand::CreateBlock { graph_id, block_id, content, parent_id, page_name, properties, reference_content } => {
-            
+        GraphCommand::CreateBlock {
+            graph_id,
+            block_id,
+            content,
+            parent_id,
+            page_name,
+            properties,
+            reference_content,
+        } => {
             // Get the graph manager
             let managers_guard = managers.read().await;
-            let graph_manager_arc = managers_guard.get(&graph_id)
+            let graph_manager_arc = managers_guard
+                .get(&graph_id)
                 .ok_or_else(|| ProcessorError::NotFound("Graph".to_string()))?
                 .clone();
             let mut graph_manager = graph_manager_arc.write().await;
-            
+
             // Create block using graph_operations helper
             let token = RouterToken::new();
             let block_id = graph_operations::execute_create_block(
@@ -180,26 +189,31 @@ pub async fn route_graph_command(
                 page_name,
                 properties,
                 reference_content,
-            ).await?;
-            
+            )
+            .await?;
+
             Ok(CommandResult {
                 success: true,
-                data: Some(serde_json::json!({ 
+                data: Some(serde_json::json!({
                     "block_id": block_id
                 })),
                 error: None,
                 child_commands: vec![],
             })
         }
-        
-        GraphCommand::UpdateBlock { graph_id, block_id, content } => {
-            
+
+        GraphCommand::UpdateBlock {
+            graph_id,
+            block_id,
+            content,
+        } => {
             let managers_guard = managers.read().await;
-            let graph_manager_arc = managers_guard.get(&graph_id)
+            let graph_manager_arc = managers_guard
+                .get(&graph_id)
                 .ok_or_else(|| ProcessorError::NotFound("Graph".to_string()))?
                 .clone();
             let mut graph_manager = graph_manager_arc.write().await;
-            
+
             // Update block using graph_operations helper
             let token = RouterToken::new();
             graph_operations::execute_update_block(
@@ -208,26 +222,27 @@ pub async fn route_graph_command(
                 &block_id,
                 content,
                 graph_id,
-            ).await?;
-            
+            )
+            .await?;
+
             Ok(CommandResult {
                 success: true,
-                data: Some(serde_json::json!({ 
+                data: Some(serde_json::json!({
                     "block_id": block_id
                 })),
                 error: None,
                 child_commands: vec![],
             })
         }
-        
+
         GraphCommand::DeleteBlock { graph_id, block_id } => {
-            
             let managers_guard = managers.read().await;
-            let graph_manager_arc = managers_guard.get(&graph_id)
+            let graph_manager_arc = managers_guard
+                .get(&graph_id)
                 .ok_or_else(|| ProcessorError::NotFound("Graph".to_string()))?
                 .clone();
             let mut graph_manager = graph_manager_arc.write().await;
-            
+
             // Delete block using graph_operations helper
             let token = RouterToken::new();
             graph_operations::execute_delete_block(
@@ -235,8 +250,9 @@ pub async fn route_graph_command(
                 &mut *graph_manager,
                 &block_id,
                 graph_id,
-            ).await?;
-            
+            )
+            .await?;
+
             Ok(CommandResult {
                 success: true,
                 data: Some(serde_json::json!({ "block_id": block_id })),
@@ -244,15 +260,19 @@ pub async fn route_graph_command(
                 child_commands: vec![],
             })
         }
-        
-        GraphCommand::CreatePage { graph_id, page_name, properties } => {
-            
+
+        GraphCommand::CreatePage {
+            graph_id,
+            page_name,
+            properties,
+        } => {
             let managers_guard = managers.read().await;
-            let graph_manager_arc = managers_guard.get(&graph_id)
+            let graph_manager_arc = managers_guard
+                .get(&graph_id)
                 .ok_or_else(|| ProcessorError::NotFound("Graph".to_string()))?
                 .clone();
             let mut graph_manager = graph_manager_arc.write().await;
-            
+
             // Create page using graph_operations helper
             let token = RouterToken::new();
             graph_operations::execute_create_page(
@@ -260,8 +280,9 @@ pub async fn route_graph_command(
                 &mut *graph_manager,
                 page_name.clone(),
                 properties,
-            ).await?;
-            
+            )
+            .await?;
+
             Ok(CommandResult {
                 success: true,
                 data: Some(serde_json::json!({ "page_name": page_name })),
@@ -269,15 +290,18 @@ pub async fn route_graph_command(
                 child_commands: vec![],
             })
         }
-        
-        GraphCommand::DeletePage { graph_id, page_name } => {
-            
+
+        GraphCommand::DeletePage {
+            graph_id,
+            page_name,
+        } => {
             let managers_guard = managers.read().await;
-            let graph_manager_arc = managers_guard.get(&graph_id)
+            let graph_manager_arc = managers_guard
+                .get(&graph_id)
                 .ok_or_else(|| ProcessorError::NotFound("Graph".to_string()))?
                 .clone();
             let mut graph_manager = graph_manager_arc.write().await;
-            
+
             // Delete page using graph_operations helper
             let token = RouterToken::new();
             graph_operations::execute_delete_page(
@@ -285,8 +309,9 @@ pub async fn route_graph_command(
                 &mut *graph_manager,
                 &page_name,
                 graph_id,
-            ).await?;
-            
+            )
+            .await?;
+
             Ok(CommandResult {
                 success: true,
                 data: Some(serde_json::json!({ "page_name": page_name })),
@@ -305,14 +330,15 @@ pub async fn route_agent_command(
     match command {
         AgentCommand::AddMessage { message } => {
             let mut agent_guard = agent.write().await;
-            let agent_mut = agent_guard.as_mut()
+            let agent_mut = agent_guard
+                .as_mut()
                 .ok_or_else(|| ProcessorError::NotFound("Agent".to_string()))?;
-            
+
             // Deserialize and add message
             let msg: Message = serde_json::from_value(message)?;
             let token = RouterToken::new();
             agent_mut.add_message(&token, msg).await?;
-            
+
             Ok(CommandResult {
                 success: true,
                 data: None,
@@ -320,15 +346,16 @@ pub async fn route_agent_command(
                 child_commands: vec![],
             })
         }
-        
+
         AgentCommand::ClearHistory => {
             let mut agent_guard = agent.write().await;
-            let agent_mut = agent_guard.as_mut()
+            let agent_mut = agent_guard
+                .as_mut()
                 .ok_or_else(|| ProcessorError::NotFound("Agent".to_string()))?;
-            
+
             let token = RouterToken::new();
             agent_mut.clear_history(&token).await?;
-            
+
             Ok(CommandResult {
                 success: true,
                 data: None,
@@ -336,17 +363,18 @@ pub async fn route_agent_command(
                 child_commands: vec![],
             })
         }
-        
+
         AgentCommand::SetLLMConfig { config } => {
             let mut agent_guard = agent.write().await;
-            let agent_mut = agent_guard.as_mut()
+            let agent_mut = agent_guard
+                .as_mut()
                 .ok_or_else(|| ProcessorError::NotFound("Agent".to_string()))?;
-            
+
             // Deserialize and set config
             let llm_config: LLMConfig = serde_json::from_value(config)?;
             let token = RouterToken::new();
             agent_mut.set_llm_config(&token, llm_config).await?;
-            
+
             Ok(CommandResult {
                 success: true,
                 data: None,
@@ -354,15 +382,16 @@ pub async fn route_agent_command(
                 child_commands: vec![],
             })
         }
-        
+
         AgentCommand::SetSystemPrompt { prompt } => {
             let mut agent_guard = agent.write().await;
-            let agent_mut = agent_guard.as_mut()
+            let agent_mut = agent_guard
+                .as_mut()
                 .ok_or_else(|| ProcessorError::NotFound("Agent".to_string()))?;
-            
+
             let token = RouterToken::new();
             agent_mut.set_system_prompt(&token, prompt).await?;
-            
+
             Ok(CommandResult {
                 success: true,
                 data: None,
@@ -370,7 +399,6 @@ pub async fn route_agent_command(
                 child_commands: vec![],
             })
         }
-        
     }
 }
 
@@ -383,12 +411,7 @@ pub async fn route_registry_command(
 ) -> Result<CommandResult> {
     match command {
         RegistryCommand::Graph(graph_cmd) => {
-            route_graph_registry_command(
-                graph_managers,
-                graph_registry,
-                graph_cmd,
-                data_dir,
-            ).await
+            route_graph_registry_command(graph_managers, graph_registry, graph_cmd, data_dir).await
         }
     }
 }
@@ -406,17 +429,19 @@ async fn route_graph_registry_command(
             let graph_id = Uuid::new_v4();
             let mut graph_reg = graph_registry.write().await;
             let mut managers = graph_managers.write().await;
-            
+
             let token = RouterToken::new();
-            let graph_info = graph_reg.create_graph_complete(
-                &token,
-                graph_id,
-                name,
-                description,
-                &mut *managers,
-                data_dir,
-            ).await?;
-            
+            let graph_info = graph_reg
+                .create_graph_complete(
+                    &token,
+                    graph_id,
+                    name,
+                    description,
+                    &mut *managers,
+                    data_dir,
+                )
+                .await?;
+
             Ok(CommandResult {
                 success: true,
                 data: Some(serde_json::to_value(graph_info)?),
@@ -424,18 +449,24 @@ async fn route_graph_registry_command(
                 child_commands: vec![],
             })
         }
-        
-        GraphRegistryCommand::RegisterGraph { graph_id, name, description } => {
+
+        GraphRegistryCommand::RegisterGraph {
+            graph_id,
+            name,
+            description,
+        } => {
             // Low-level registry operation
             let graph_dir = data_dir.join("graphs").join(graph_id.to_string());
             let mut registry = graph_registry.write().await;
-            registry.register_graph(Some(graph_id), name, description, &graph_dir).await?;
-            
+            registry
+                .register_graph(Some(graph_id), name, description, &graph_dir)
+                .await?;
+
             // Create the empty graph manager
             let manager = Arc::new(RwLock::new(GraphManager::new(&graph_dir)?));
             let mut managers = graph_managers.write().await;
             managers.insert(graph_id, manager);
-            
+
             Ok(CommandResult {
                 success: true,
                 data: Some(serde_json::json!({ "graph_id": graph_id })),
@@ -443,14 +474,16 @@ async fn route_graph_registry_command(
                 child_commands: vec![],
             })
         }
-        
+
         GraphRegistryCommand::RemoveGraph { graph_id } => {
             // Use registry method that handles both memory and archival
             let mut registry = graph_registry.write().await;
             let mut managers = graph_managers.write().await;
             let token = RouterToken::new();
-            registry.remove_graph(&token, &graph_id, &mut *managers).await?;
-            
+            registry
+                .remove_graph(&token, &graph_id, &mut *managers)
+                .await?;
+
             Ok(CommandResult {
                 success: true,
                 data: None,
@@ -458,23 +491,21 @@ async fn route_graph_registry_command(
                 child_commands: vec![],
             })
         }
-        
+
         GraphRegistryCommand::OpenGraph { graph_id } => {
             // Use complete workflow
             let mut registry = graph_registry.write().await;
             let mut managers = graph_managers.write().await;
             let token = RouterToken::new();
-            registry.open_graph_complete(
-                &token,
-                graph_id,
-                &mut *managers,
-                data_dir,
-            ).await?;
-            
+            registry
+                .open_graph_complete(&token, graph_id, &mut *managers, data_dir)
+                .await?;
+
             // Get the graph info to return
-            let graph_info = registry.get_graph(&graph_id)
+            let graph_info = registry
+                .get_graph(&graph_id)
                 .ok_or_else(|| StorageError::not_found("graph", "ID", graph_id.to_string()))?;
-            
+
             Ok(CommandResult {
                 success: true,
                 data: Some(serde_json::to_value(graph_info)?),
@@ -482,14 +513,16 @@ async fn route_graph_registry_command(
                 child_commands: vec![],
             })
         }
-        
+
         GraphRegistryCommand::CloseGraph { graph_id } => {
             // Use registry method that handles memory cleanup
             let mut registry = graph_registry.write().await;
             let mut managers = graph_managers.write().await;
             let token = RouterToken::new();
-            registry.close_graph(&token, &graph_id, &mut *managers).await?;
-            
+            registry
+                .close_graph(&token, &graph_id, &mut *managers)
+                .await?;
+
             Ok(CommandResult {
                 success: true,
                 data: None,

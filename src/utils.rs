@@ -52,33 +52,36 @@
 //! Process management operations fail gracefully with informative error messages
 //! when platform-specific commands are unavailable or processes cannot be terminated.
 
-use std::process::{self, Command};
-use std::fs;
-use std::net::TcpListener;
-use std::collections::HashMap;
-use std::time::Duration;
-use std::sync::Arc;
-use std::thread;
-use serde::{Serialize, Deserialize};
-use serde_json;
-use tracing::{error, trace, warn, info};
-use tokio::sync::{RwLock as AsyncRwLock, RwLockReadGuard as AsyncRwLockReadGuard, RwLockWriteGuard as AsyncRwLockWriteGuard};
-use tokio::fs as tokio_fs;
+use crate::app_state::AppState;
 use crate::config::BackendConfig;
 use crate::error::*;
-use crate::app_state::AppState;
 use crate::graph::graph_manager::GraphManager;
+use serde::{Deserialize, Serialize};
+use serde_json;
+use std::collections::HashMap;
+use std::fs;
+use std::net::TcpListener;
+use std::process::{self, Command};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
+use tokio::fs as tokio_fs;
+use tokio::sync::{
+    RwLock as AsyncRwLock, RwLockReadGuard as AsyncRwLockReadGuard,
+    RwLockWriteGuard as AsyncRwLockWriteGuard,
+};
+use tracing::{error, info, trace, warn};
 
 // ===== Async Lock Utilities =====
 
 /// Extension trait for tokio::sync::RwLock
-/// 
+///
 /// Provides consistent API with panic-on-poison semantics for sync locks.
 /// Note that async locks cannot be poisoned.
 pub trait AsyncRwLockExt<T: 'static> {
     /// Read the lock asynchronously
     async fn read_or_panic(&self, context: &str) -> AsyncRwLockReadGuard<'_, T>;
-    
+
     /// Write to the lock asynchronously with contention detection
     async fn write_or_panic(&self, context: &str) -> AsyncRwLockWriteGuard<'_, T>;
 }
@@ -88,7 +91,7 @@ impl<T: 'static> AsyncRwLockExt<T> for AsyncRwLock<T> {
         // Async locks can't be poisoned, just await
         self.read().await
     }
-    
+
     async fn write_or_panic(&self, context: &str) -> AsyncRwLockWriteGuard<'_, T> {
         // Check for lock contention in debug builds and warn (not panic)
         #[cfg(debug_assertions)]
@@ -101,7 +104,7 @@ impl<T: 'static> AsyncRwLockExt<T> for AsyncRwLock<T> {
                 );
             }
         }
-        
+
         self.write().await
     }
 }
@@ -110,7 +113,7 @@ impl<T: 'static> AsyncRwLockExt<T> for Arc<AsyncRwLock<T>> {
     async fn read_or_panic(&self, context: &str) -> AsyncRwLockReadGuard<'_, T> {
         self.as_ref().read_or_panic(context).await
     }
-    
+
     async fn write_or_panic(&self, context: &str) -> AsyncRwLockWriteGuard<'_, T> {
         self.as_ref().write_or_panic(context).await
     }
@@ -140,102 +143,103 @@ pub fn terminate_previous_instance(filename: &str) -> bool {
     if let Ok(info_str) = fs::read_to_string(filename) {
         if let Ok(info) = serde_json::from_str::<ServerInfo>(&info_str) {
             let pid = info.pid.to_string();
-        
-        trace!("🔧 Found server info file with PID: {pid}");
-        
-        // First check if the process actually exists
-        #[cfg(target_family = "unix")]
-        {
-            // Check if process exists using kill -0 (doesn't actually kill)
-            let check_result = Command::new("kill")
-                .arg("-0")
-                .arg(&pid)
-                .output();
-                
-            match check_result {
-                Ok(output) => {
-                    if !output.status.success() {
-                        trace!("🔧 Process {pid} no longer exists, cleaning up stale PID file");
+
+            trace!("🔧 Found server info file with PID: {pid}");
+
+            // First check if the process actually exists
+            #[cfg(target_family = "unix")]
+            {
+                // Check if process exists using kill -0 (doesn't actually kill)
+                let check_result = Command::new("kill").arg("-0").arg(&pid).output();
+
+                match check_result {
+                    Ok(output) => {
+                        if !output.status.success() {
+                            trace!("🔧 Process {pid} no longer exists, cleaning up stale PID file");
+                            return false;
+                        }
+                    }
+                    Err(e) => {
+                        error!("Error checking process: {e}");
                         return false;
                     }
-                },
-                Err(e) => {
-                    error!("Error checking process: {e}");
-                    return false;
                 }
-            }
-            
-            // Process exists, try to terminate it
-            trace!("🔧 Process {pid} is running, attempting to terminate");
-            let kill_result = Command::new("kill")
-                .arg("-2") // SIGINT for graceful shutdown (matches ctrlc handler)
-                .arg(&pid)
-                .output();
-                
-            match kill_result {
-                Ok(output) => {
-                    if output.status.success() {
-                        trace!("🔧 Successfully terminated previous instance");
-                        // Give the process time to shut down
-                        thread::sleep(Duration::from_millis(500));
-                        return true;
+
+                // Process exists, try to terminate it
+                trace!("🔧 Process {pid} is running, attempting to terminate");
+                let kill_result = Command::new("kill")
+                    .arg("-2") // SIGINT for graceful shutdown (matches ctrlc handler)
+                    .arg(&pid)
+                    .output();
+
+                match kill_result {
+                    Ok(output) => {
+                        if output.status.success() {
+                            trace!("🔧 Successfully terminated previous instance");
+                            // Give the process time to shut down
+                            thread::sleep(Duration::from_millis(500));
+                            return true;
+                        }
+                        error!(
+                            "Failed to terminate process: {}",
+                            String::from_utf8_lossy(&output.stderr)
+                        );
                     }
-                    error!("Failed to terminate process: {}", 
-                        String::from_utf8_lossy(&output.stderr));
-                },
-                Err(e) => {
-                    error!("Error terminating process: {e}");
+                    Err(e) => {
+                        error!("Error terminating process: {e}");
+                    }
                 }
             }
-        }
-        
-        #[cfg(target_family = "windows")]
-        {
-            // Check if process exists using tasklist
-            let check_result = Command::new("tasklist")
-                .args(&["/FI", &format!("PID eq {}", pid)])
-                .output();
-                
-            match check_result {
-                Ok(output) => {
-                    let output_str = String::from_utf8_lossy(&output.stdout);
-                    if !output_str.contains(&pid) {
-                        trace!("🔧 Process {pid} no longer exists, cleaning up stale PID file");
+
+            #[cfg(target_family = "windows")]
+            {
+                // Check if process exists using tasklist
+                let check_result = Command::new("tasklist")
+                    .args(&["/FI", &format!("PID eq {}", pid)])
+                    .output();
+
+                match check_result {
+                    Ok(output) => {
+                        let output_str = String::from_utf8_lossy(&output.stdout);
+                        if !output_str.contains(&pid) {
+                            trace!("🔧 Process {pid} no longer exists, cleaning up stale PID file");
+                            return false;
+                        }
+                    }
+                    Err(e) => {
+                        error!("Error checking process: {}", e);
                         return false;
                     }
-                },
-                Err(e) => {
-                    error!("Error checking process: {}", e);
-                    return false;
                 }
-            }
-            
-            // Process exists, try to terminate it
-            trace!("🔧 Process {pid} is running, attempting to terminate");
-            let kill_result = Command::new("taskkill")
-                .args(&["/PID", &pid, "/F"])
-                .output();
-                
-            match kill_result {
-                Ok(output) => {
-                    if output.status.success() {
-                        trace!("🔧 Successfully terminated previous instance");
-                        // Give the process time to shut down
-                        thread::sleep(Duration::from_millis(500));
-                        return true;
-                    } else {
-                        error!("Failed to terminate process: {}", 
-                            String::from_utf8_lossy(&output.stderr));
+
+                // Process exists, try to terminate it
+                trace!("🔧 Process {pid} is running, attempting to terminate");
+                let kill_result = Command::new("taskkill")
+                    .args(&["/PID", &pid, "/F"])
+                    .output();
+
+                match kill_result {
+                    Ok(output) => {
+                        if output.status.success() {
+                            trace!("🔧 Successfully terminated previous instance");
+                            // Give the process time to shut down
+                            thread::sleep(Duration::from_millis(500));
+                            return true;
+                        } else {
+                            error!(
+                                "Failed to terminate process: {}",
+                                String::from_utf8_lossy(&output.stderr)
+                            );
+                        }
                     }
-                },
-                Err(e) => {
-                    error!("Error terminating process: {}", e);
+                    Err(e) => {
+                        error!("Error terminating process: {}", e);
+                    }
                 }
             }
-        }
         }
     }
-    
+
     false
 }
 
@@ -260,7 +264,6 @@ pub fn write_pid_file() -> Result<()> {
     Ok(())
 }
 
-
 /// Remove PID file
 pub fn remove_pid_file() {
     let _ = fs::remove_file(".cymbiont.pid");
@@ -269,20 +272,20 @@ pub fn remove_pid_file() {
 // Helper function to find an available port
 pub fn find_available_port(config: &BackendConfig) -> Result<u16> {
     let port = config.port;
-    
+
     if is_port_available(port) {
         return Ok(port);
     }
-    
+
     warn!("Configured port {} is not available.", port);
-    
+
     for p in (port + 1)..=(port + config.max_port_attempts) {
         if is_port_available(p) {
             trace!("🔧 Using alternative port: {}", p);
             return Ok(p);
         }
     }
-    
+
     Err(ServerError::port_binding("Could not find an available port").into())
 }
 
@@ -291,14 +294,17 @@ pub fn find_available_port(config: &BackendConfig) -> Result<u16> {
 /// Save all system data to JSON
 pub async fn save_all_system_data(app_state: &Arc<AppState>) -> crate::error::Result<()> {
     info!("Saving all system data to JSON");
-    
+
     // Save graph registry
     {
-        let graph_registry = app_state.graph_registry.read_or_panic("save graph registry").await;
+        let graph_registry = app_state
+            .graph_registry
+            .read_or_panic("save graph registry")
+            .await;
         let path = app_state.data_dir.join("graph_registry.json");
         graph_registry.save(&path)?;
     }
-    
+
     // Save agent state
     {
         let agent_opt = app_state.agent.read_or_panic("save agent").await;
@@ -306,24 +312,27 @@ pub async fn save_all_system_data(app_state: &Arc<AppState>) -> crate::error::Re
             agent.save(&app_state.data_dir)?;
         }
     }
-    
+
     // Save all graphs (both open and closed)
     {
         // Get all registered graphs from the registry
         let all_graphs = {
-            let registry = app_state.graph_registry.read_or_panic("save - get all graphs").await;
+            let registry = app_state
+                .graph_registry
+                .read_or_panic("save - get all graphs")
+                .await;
             registry.get_all_graphs()
         };
-        
+
         for graph_info in all_graphs {
             let graph_id = graph_info.id;
-            
+
             // Check if this graph already has a manager (is open)
             let was_already_open = {
                 let managers = app_state.graph_managers.read().await;
                 managers.contains_key(&graph_id)
             };
-            
+
             // If not open, we need to temporarily load it to export
             if !was_already_open {
                 let graph_path = app_state.data_dir.join("graphs").join(graph_id.to_string());
@@ -336,12 +345,15 @@ pub async fn save_all_system_data(app_state: &Arc<AppState>) -> crate::error::Re
                         }
                     }
                     Err(e) => {
-                        error!("Failed to create graph manager {} for save: {}", graph_id, e);
+                        error!(
+                            "Failed to create graph manager {} for save: {}",
+                            graph_id, e
+                        );
                         continue;
                     }
                 }
             }
-            
+
             // Now save the graph (it definitely has a manager now)
             {
                 let managers = app_state.graph_managers.read().await;
@@ -353,7 +365,7 @@ pub async fn save_all_system_data(app_state: &Arc<AppState>) -> crate::error::Re
                     manager.save(&path)?;
                 }
             }
-            
+
             // If we opened it just for saving, close it again to free memory
             if !was_already_open {
                 let mut managers = app_state.graph_managers.write().await;
@@ -361,8 +373,7 @@ pub async fn save_all_system_data(app_state: &Arc<AppState>) -> crate::error::Re
             }
         }
     }
-    
-    
+
     info!("System data saved successfully");
     Ok(())
 }
@@ -370,7 +381,7 @@ pub async fn save_all_system_data(app_state: &Arc<AppState>) -> crate::error::Re
 /// Parse properties from a JSON value into a HashMap
 pub fn parse_properties(properties_json: &serde_json::Value) -> HashMap<String, String> {
     let mut properties = HashMap::new();
-    
+
     if let Some(obj) = properties_json.as_object() {
         for (key, value) in obj {
             if let Some(value_str) = value.as_str() {
@@ -380,11 +391,9 @@ pub fn parse_properties(properties_json: &serde_json::Value) -> HashMap<String, 
             }
         }
     }
-    
+
     properties
 }
-
-
 
 // ===== Tests =====
 
@@ -399,13 +408,13 @@ mod tests {
             host: "127.0.0.1".to_string(),
             port: 8888,
         };
-        
+
         // Test serialization
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("12345"));
         assert!(json.contains("127.0.0.1"));
         assert!(json.contains("8888"));
-        
+
         // Test deserialization
         let deserialized: ServerInfo = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.pid, 12345);
@@ -420,14 +429,14 @@ mod tests {
             "key2": 42,
             "key3": true
         });
-        
+
         let props = parse_properties(&json);
         assert_eq!(props.get("key1"), Some(&"value1".to_string()));
         assert_eq!(props.get("key2"), Some(&"42".to_string()));
         assert_eq!(props.get("key3"), Some(&"true".to_string()));
     }
 
-    #[test] 
+    #[test]
     fn test_is_port_available() {
         // This test might be flaky if port 0 allocation fails
         // Port 0 lets the OS assign any available port
@@ -438,30 +447,28 @@ mod tests {
 // ===== UUID Serialization Helpers =====
 
 /// Custom serialization modules for UUID collections
-/// 
+///
 /// These helpers allow HashMaps, HashSets, and Vecs containing UUIDs
 /// to be serialized as human-readable strings in JSON format.
 pub mod uuid_serde {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use serde::de::Error as SerdeError;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::collections::{HashMap, HashSet};
     use uuid::Uuid;
-    
+
     pub mod uuid_hashmap_serde {
         use super::*;
-        
+
         pub fn serialize<S, V>(map: &HashMap<Uuid, V>, serializer: S) -> Result<S::Ok, S::Error>
         where
             S: Serializer,
             V: Serialize,
         {
-            let string_map: HashMap<String, &V> = map
-                .iter()
-                .map(|(k, v)| (k.to_string(), v))
-                .collect();
+            let string_map: HashMap<String, &V> =
+                map.iter().map(|(k, v)| (k.to_string(), v)).collect();
             string_map.serialize(serializer)
         }
-        
+
         pub fn deserialize<'de, D, V>(deserializer: D) -> Result<HashMap<Uuid, V>, D::Error>
         where
             D: Deserializer<'de>,
@@ -478,21 +485,18 @@ pub mod uuid_serde {
                 .collect()
         }
     }
-    
+
     pub mod uuid_hashset_serde {
         use super::*;
-        
+
         pub fn serialize<S>(set: &HashSet<Uuid>, serializer: S) -> Result<S::Ok, S::Error>
         where
             S: Serializer,
         {
-            let string_vec: Vec<String> = set
-                .iter()
-                .map(|uuid| uuid.to_string())
-                .collect();
+            let string_vec: Vec<String> = set.iter().map(|uuid| uuid.to_string()).collect();
             string_vec.serialize(serializer)
         }
-        
+
         pub fn deserialize<'de, D>(deserializer: D) -> Result<HashSet<Uuid>, D::Error>
         where
             D: Deserializer<'de>,

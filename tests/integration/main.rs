@@ -8,11 +8,11 @@
 mod common;
 
 // Import all integration test modules
-mod http_logseq_import;
-mod websocket_commands;
 mod agent_commands;
 mod agent_tools;
 mod cli_commands;
+mod http_logseq_import;
+mod websocket_commands;
 
 // Re-export test functions with #[test] attribute
 #[test]
@@ -30,12 +30,10 @@ fn test_websocket_commands() {
     websocket_commands::test_websocket_commands();
 }
 
-
 #[test]
 fn test_agent_chat_commands() {
     agent_commands::test_agent_chat_commands();
 }
-
 
 #[test]
 fn test_all_cli_commands() {
@@ -62,7 +60,6 @@ fn test_agent_query_operations() {
     agent_tools::test_agent_query_operations();
 }
 
-
 #[test]
 fn test_agent_tool_validation_errors() {
     agent_tools::test_agent_tool_validation_errors();
@@ -72,4 +69,3 @@ fn test_agent_tool_validation_errors() {
 fn test_agent_tool_chaining() {
     agent_tools::test_agent_tool_chaining();
 }
-

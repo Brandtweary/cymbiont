@@ -76,8 +76,8 @@
 //! - **Descriptive**: The command name should clearly indicate what happens
 
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 use serde_json::Value;
+use uuid::Uuid;
 
 /// All possible operations in the system
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,7 +120,6 @@ pub enum GraphCommand {
     },
 }
 
-
 /// Agent-related mutations
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AgentCommand {
@@ -135,7 +134,6 @@ pub enum AgentCommand {
         prompt: String,
     },
 }
-
 
 /// Registry-related mutations
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -169,7 +167,6 @@ pub enum GraphRegistryCommand {
     },
 }
 
-
 /// System-level commands for lifecycle management
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SystemCommand {
@@ -180,7 +177,6 @@ pub enum SystemCommand {
     /// Force flush for immediate shutdown
     ForceFlush,
 }
-
 
 /// Result of command execution
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -7,7 +7,7 @@
 //!
 //! The graph registry serves as the single source of truth for all knowledge graphs
 //! in the system. Each graph is identified by a UUID and has its own isolated storage
-//! directory and GraphManager instance. Multiple graphs can be open simultaneously, 
+//! directory and GraphManager instance. Multiple graphs can be open simultaneously,
 //! with all mutations flowing through the CQRS CommandQueue for deadlock-free operation.
 //!
 //! ## Key Components
@@ -41,12 +41,12 @@
 //! ## Concurrency Safety
 //!
 //! The GraphRegistry is owned by CommandProcessor in the CQRS architecture:
-//! 
+//!
 //! - **Sequential Access**: CommandProcessor ensures sequential mutations
 //! - **RouterToken**: All mutations require RouterToken authorization
 //! - **Read Access**: External reads via Arc<RwLock> for queries
 //! - **Write Access**: Only CommandProcessor can mutate via RouterToken
-//! 
+//!
 //! The CQRS pattern eliminates deadlocks by serializing all mutations through
 //! a single-threaded command processor while allowing unlimited concurrent reads.
 //!
@@ -65,24 +65,22 @@
 //!       ...
 //! ```
 
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
-use std::fs;
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 use chrono::{DateTime, Utc};
-use tracing::{info, warn};
-use tokio::sync::RwLock;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio::sync::RwLock;
+use tracing::{info, warn};
+use uuid::Uuid;
 
-use crate::graph::graph_manager::GraphManager;
 use crate::error::*;
+use crate::graph::graph_manager::GraphManager;
 // Result type from error module
-use crate::Result;
 use crate::cqrs::router::RouterToken;
 use crate::utils::uuid_serde::{uuid_hashmap_serde, uuid_hashset_serde};
-
-
+use crate::Result;
 
 /// Information about a registered graph
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,7 +114,6 @@ pub struct GraphRegistry {
     data_dir: Option<PathBuf>,
 }
 
-
 impl GraphRegistry {
     /// Create a new empty registry
     pub fn new() -> Self {
@@ -131,7 +128,7 @@ impl GraphRegistry {
     pub fn set_data_dir(&mut self, data_dir: &Path) {
         self.data_dir = Some(data_dir.to_path_buf());
     }
-    
+
     /// Load registry from JSON file, or create empty if not found
     pub fn load(path: &Path) -> Result<Self> {
         if path.exists() {
@@ -144,13 +141,13 @@ impl GraphRegistry {
             Ok(GraphRegistry::new())
         }
     }
-    
+
     /// Open a graph (complete workflow with loading)
-    /// 
+    ///
     /// This method orchestrates the full open workflow:
     /// 1. Mark graph as open in registry
     /// 2. Load or create the GraphManager
-    /// 
+    ///
     /// Takes resources as parameters to avoid weak references.
     pub async fn open_graph_complete(
         &mut self,
@@ -161,33 +158,33 @@ impl GraphRegistry {
     ) -> Result<()> {
         // Step 1: Mark graph as open in registry
         self.open_graph(&graph_id).await?;
-        
+
         // Step 2: Create GraphManager if not in memory
         if !graph_managers.contains_key(&graph_id) {
             // Create graph manager
             let graph_dir = data_dir.join("graphs").join(graph_id.to_string());
             fs::create_dir_all(&graph_dir)?;
             let graph_manager = GraphManager::new(graph_dir)?;
-            
+
             // Insert into HashMap
             graph_managers.insert(graph_id, Arc::new(RwLock::new(graph_manager)));
         }
-        
+
         Ok(())
     }
-    
+
     /// Create a new knowledge graph (complete workflow)
-    /// 
+    ///
     /// This method orchestrates the full creation workflow:
     /// 1. Register graph metadata
     /// 2. Create GraphManager
-    /// 
+    ///
     /// Takes resources as parameters to avoid weak references.
     pub async fn create_graph_complete(
         &mut self,
         _token: &RouterToken,
-        graph_id: Uuid,  // Now passed as parameter from resolved command
-        name: Option<String>,  
+        graph_id: Uuid, // Now passed as parameter from resolved command
+        name: Option<String>,
         description: Option<String>,
         graph_managers: &mut HashMap<Uuid, Arc<RwLock<GraphManager>>>,
         data_dir: &Path,
@@ -195,36 +192,36 @@ impl GraphRegistry {
         // Create the graph directory
         let graph_dir = data_dir.join("graphs").join(graph_id.to_string());
         fs::create_dir_all(&graph_dir)?;
-        
+
         // Step 1: Register the graph
-        let graph_info = self.register_graph(Some(graph_id), name, description, &graph_dir).await?;
-        
+        let graph_info = self
+            .register_graph(Some(graph_id), name, description, &graph_dir)
+            .await?;
+
         // Step 2: Create the GraphManager
         let graph_manager = GraphManager::new(&graph_dir)?;
         graph_managers.insert(graph_id, Arc::new(RwLock::new(graph_manager)));
-        
+
         info!("✅ Created graph {}", graph_info.name);
         Ok(graph_info)
     }
 
-    
-
     /// Register a new knowledge graph
-    /// 
+    ///
     /// TODO: Add name uniqueness validation to prevent duplicate graph names.
     /// Currently, multiple graphs can have the same name, which could cause
     /// confusion when using name-based resolution. Consider rejecting duplicate
     /// names or warning the user.
     pub async fn register_graph(
-        &mut self, 
-        id: Option<Uuid>, 
+        &mut self,
+        id: Option<Uuid>,
         name: Option<String>,
         description: Option<String>,
         data_dir: &Path,
     ) -> Result<GraphInfo> {
         let graph_id = id.unwrap_or_else(|| Uuid::new_v4());
         let name = name.unwrap_or_else(|| format!("Graph {}", &graph_id.to_string()[..8]));
-        
+
         // Check if this ID already exists
         if let Some(existing) = self.graphs.get_mut(&graph_id) {
             // Update metadata and return existing
@@ -235,10 +232,10 @@ impl GraphRegistry {
             }
             return Ok(existing.clone());
         }
-        
+
         // Create new graph
         let kg_path = data_dir.join("graphs").join(graph_id.to_string());
-        
+
         let graph_info = GraphInfo {
             id: graph_id,
             name,
@@ -249,10 +246,10 @@ impl GraphRegistry {
         };
 
         self.graphs.insert(graph_id, graph_info.clone());
-        
+
         // Always open newly registered graphs
         self.open_graphs.insert(graph_id);
-        
+
         // Autosave after mutation
         if let Some(data_dir) = &self.data_dir {
             let registry_path = data_dir.join("graph_registry.json");
@@ -260,19 +257,15 @@ impl GraphRegistry {
                 warn!("Failed to save graph registry: {}", e);
             }
         }
-        
+
         Ok(graph_info)
     }
-
 
     /// Get graph info by ID
     pub fn get_graph(&self, id: &Uuid) -> Option<&GraphInfo> {
         self.graphs.get(id)
     }
 
-
-
-    
     /// Get all registered graphs
     pub fn get_all_graphs(&self) -> Vec<GraphInfo> {
         self.graphs.values().cloned().collect()
@@ -282,25 +275,27 @@ impl GraphRegistry {
     pub fn get_open_graphs(&self) -> Vec<Uuid> {
         self.open_graphs.iter().copied().collect()
     }
-    
+
     /// Open a graph (pure registry operation)
-    /// 
+    ///
     /// This method ONLY updates registry state. It does not create GraphManagers or rebuild from command log.
     /// For the complete workflow, use open_graph_complete().
     pub async fn open_graph(&mut self, graph_id: &Uuid) -> Result<GraphInfo> {
         // Validate graph exists
-        let graph_info = self.graphs.get(graph_id)
+        let graph_info = self
+            .graphs
+            .get(graph_id)
             .ok_or_else(|| StorageError::not_found("graph", "ID", graph_id.to_string()))?
             .clone();
-        
+
         // Add to open set
         self.open_graphs.insert(*graph_id);
-        
+
         // Update last accessed time
         if let Some(graph) = self.graphs.get_mut(graph_id) {
             graph.last_accessed = Utc::now();
         }
-        
+
         // Autosave after mutation
         if let Some(data_dir) = &self.data_dir {
             let registry_path = data_dir.join("graph_registry.json");
@@ -308,12 +303,12 @@ impl GraphRegistry {
                 warn!("Failed to save graph registry: {}", e);
             }
         }
-        
+
         Ok(graph_info)
     }
-    
+
     /// Close a graph (remove from open set and unload manager)
-    /// 
+    ///
     /// Takes graph_managers to properly remove the manager from memory.
     pub async fn close_graph(
         &mut self,
@@ -323,15 +318,17 @@ impl GraphRegistry {
     ) -> Result<()> {
         // Validate graph is open
         if !self.open_graphs.contains(graph_id) {
-            return Err(StorageError::graph_registry(format!("Graph '{}' was not open", graph_id)).into());
+            return Err(
+                StorageError::graph_registry(format!("Graph '{}' was not open", graph_id)).into(),
+            );
         }
-        
+
         // Remove manager from memory to prevent memory leak
         graph_managers.remove(graph_id);
-        
+
         // Remove from open set
         self.open_graphs.remove(graph_id);
-        
+
         // Autosave after mutation
         if let Some(data_dir) = &self.data_dir {
             let registry_path = data_dir.join("graph_registry.json");
@@ -339,12 +336,12 @@ impl GraphRegistry {
                 warn!("Failed to save graph registry: {}", e);
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Resolve graph target from optional UUID and name with smart defaults
-    /// 
+    ///
     /// Priority order:
     /// 1. If graph_id provided, validate it exists
     /// 2. Else if graph_name provided, resolve to UUID
@@ -365,7 +362,8 @@ impl GraphRegistry {
             }
         } else if let Some(name) = graph_name {
             // Find graph by name
-            self.graphs.values()
+            self.graphs
+                .values()
                 .find(|g| g.name == name)
                 .map(|g| g.id)
                 .ok_or_else(|| StorageError::not_found("graph", "name", name).into())
@@ -374,15 +372,18 @@ impl GraphRegistry {
             match open_graphs.len() {
                 0 => Err(StorageError::graph_registry("No graphs are open").into()),
                 1 => Ok(open_graphs[0]),
-                _ => Err(StorageError::graph_registry("Multiple graphs open, must specify target").into()),
+                _ => Err(
+                    StorageError::graph_registry("Multiple graphs open, must specify target")
+                        .into(),
+                ),
             }
         } else {
             Err(StorageError::graph_registry("Must specify graph_id or graph_name").into())
         }
     }
-    
+
     /// Remove a graph from the registry and archive its data
-    /// 
+    ///
     /// Archives the graph directory to `{data_dir}/archived_graphs/` with timestamp.
     /// Takes graph_managers to properly remove the manager from memory if the graph is open.
     pub async fn remove_graph(
@@ -392,40 +393,49 @@ impl GraphRegistry {
         graph_managers: &mut HashMap<Uuid, Arc<RwLock<GraphManager>>>,
     ) -> Result<()> {
         // Get the graph info
-        let graph_info = self.graphs.get(graph_id)
+        let graph_info = self
+            .graphs
+            .get(graph_id)
             .ok_or_else(|| StorageError::not_found("graph", "ID", graph_id.to_string()))?
             .clone();
-        
+
         // Archive the graph data if we have a data directory
         if let Some(data_dir) = &self.data_dir {
             let graph_data_dir = data_dir.join("graphs").join(graph_id.to_string());
             if graph_data_dir.exists() {
                 // Create archive directory if it doesn't exist
                 let archive_dir = data_dir.join("archived_graphs");
-                fs::create_dir_all(&archive_dir)
-                    .map_err(|e| StorageError::graph_registry(format!("Failed to create archive directory: {}", e)))?;
-                
+                fs::create_dir_all(&archive_dir).map_err(|e| {
+                    StorageError::graph_registry(format!(
+                        "Failed to create archive directory: {}",
+                        e
+                    ))
+                })?;
+
                 // Move to archive with timestamp
                 let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
                 let archive_path = archive_dir.join(format!("{}_{}", graph_id, timestamp));
-                
-                fs::rename(&graph_data_dir, &archive_path)
-                    .map_err(|e| StorageError::graph_registry(format!("Failed to archive graph data: {}", e)))?;
-                
-                info!("Archived knowledge graph: {} ({}) to {:?}", 
-                      graph_info.name, graph_id, archive_path);
+
+                fs::rename(&graph_data_dir, &archive_path).map_err(|e| {
+                    StorageError::graph_registry(format!("Failed to archive graph data: {}", e))
+                })?;
+
+                info!(
+                    "Archived knowledge graph: {} ({}) to {:?}",
+                    graph_info.name, graph_id, archive_path
+                );
             }
         }
-        
+
         // Remove from registry
         self.graphs.remove(graph_id);
-        
+
         // Also remove from open graphs if it was open
         if self.open_graphs.remove(graph_id) {
             // Remove manager from memory to prevent memory leak
             graph_managers.remove(graph_id);
         }
-        
+
         // Autosave after mutation
         if let Some(data_dir) = &self.data_dir {
             let registry_path = data_dir.join("graph_registry.json");
@@ -433,33 +443,32 @@ impl GraphRegistry {
                 warn!("Failed to save graph registry: {}", e);
             }
         }
-        
+
         Ok(())
     }
-    
+
     // ========== Recovery-Only Methods ==========
     // These methods are ONLY for command recovery and bypass logging
-    
+
     /// Export the registry to JSON for debugging/inspection
-    /// 
+    ///
     /// Save registry to JSON
     pub fn save(&self, path: &Path) -> Result<()> {
         let json = serde_json::to_string_pretty(&self)?;
-        
+
         fs::write(path, json)?;
-        
+
         Ok(())
     }
 }
-
 
 #[cfg(test)]
 mod tests {
     // Tests removed: These operations now require a transaction coordinator
     // and are better tested through integration tests that set up the full
-    // AppState and transaction system. The business logic is thoroughly 
+    // AppState and transaction system. The business logic is thoroughly
     // tested in tests/integration/
-    
+
     use super::*;
 
     #[test]

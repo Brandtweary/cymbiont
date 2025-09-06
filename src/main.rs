@@ -61,13 +61,13 @@
 
 use crate::error::*;
 use clap::Parser;
-use tracing::{info, error, warn, trace};
 use std::process;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::runtime::Runtime;
 use tokio::signal;
 use tokio::time::sleep;
+use tracing::{error, info, trace, warn};
 
 // Internal modules
 mod agent;
@@ -82,48 +82,48 @@ mod server;
 mod utils;
 
 use app_state::AppState;
-use cli::{Args, handle_cli_commands};
 use autodebugger::{init_logging, VerbosityConfig as AutodebuggerVerbosityConfig};
+use cli::{handle_cli_commands, Args};
 
 fn main() -> Result<()> {
     // Create Tokio runtime explicitly for proper shutdown control
     let runtime = Runtime::new()
         .map_err(|e| CymbiontError::Other(format!("Failed to create runtime: {}", e)))?;
-    
+
     // Run async main logic
     let result = runtime.block_on(async_main());
-    
+
     // Force runtime shutdown with timeout
     runtime.shutdown_timeout(Duration::from_secs(2));
-    
+
     result
 }
 
 async fn async_main() -> Result<()> {
     // Parse command line arguments
     let args = Args::parse();
-    
+
     // Load configuration once to get logging settings
     let config = config::load_config(args.config.clone());
-    
+
     // Initialize logging with verbosity config
     let verbosity_config = AutodebuggerVerbosityConfig {
         info_threshold: config.verbosity.info_threshold,
         debug_threshold: config.verbosity.debug_threshold,
         trace_threshold: config.verbosity.trace_threshold,
     };
-    
+
     let verbosity_layer = init_logging(None, Some(verbosity_config));
-    
+
     // Track start time for total runtime measurement
     let start_time = Instant::now();
-    
+
     // Phase 1: Create AppState based on mode (using pre-loaded config)
     let app_state = AppState::new_with_config(config, args.data_dir.clone(), args.server).await?;
-    
+
     // Phase 2: Common startup sequence (shared between modes)
     run_startup_sequence(&app_state).await?;
-    
+
     // Phase 3: Handle one-off commands (CLI mode only)
     if !args.server {
         if handle_cli_commands(&app_state, &args).await? {
@@ -131,19 +131,19 @@ async fn async_main() -> Result<()> {
             app_state.shutdown().await;
             utils::remove_pid_file();
             info!("🧹 CLI shutdown complete");
-            
+
             let total_runtime = start_time.elapsed();
             info!("💫 Total runtime: {:.2}s", total_runtime.as_secs_f64());
-            
+
             if let Some(report) = verbosity_layer.check_and_report() {
                 warn!("{}", report);
             }
-            
+
             trace!("Forcing process exit (sled workaround)");
             process::exit(0);
         }
     }
-    
+
     // Phase 4: Enter runtime loop
     if args.server {
         run_server_loop(&app_state, &args).await?;
@@ -152,16 +152,16 @@ async fn async_main() -> Result<()> {
         run_cli_loop(&app_state, &args).await?;
         info!("🧹 CLI shutdown complete");
     }
-    
+
     // Phase 5: Final cleanup
     let total_runtime = start_time.elapsed();
     info!("💫 Total runtime: {:.2}s", total_runtime.as_secs_f64());
-    
+
     // Check log verbosity and report if excessive
     if let Some(report) = verbosity_layer.check_and_report() {
         warn!("{}", report);
     }
-    
+
     // Force exit because sled/tokio threads won't terminate
     trace!("Forcing process exit (sled workaround)");
     process::exit(0)
@@ -171,32 +171,31 @@ async fn async_main() -> Result<()> {
 async fn run_startup_sequence(app_state: &Arc<AppState>) -> Result<()> {
     info!("🧠 Cymbiont initialized");
     info!("📁 Data directory: {}", app_state.data_dir.display());
-    
+
     // CommandProcessor::start() was called during AppState initialization and handles:
     // 1. Replaying all commands from WAL for recovery
     // 2. Restoring runtime state (open graphs)
     // 3. Loading agent state
-    
+
     // Future startup checks can go here:
     // - Check disk space
     // - Validate configuration
     // - Run integrity checks
     // - etc.
-    
+
     Ok(())
 }
 
-
 /// Run the server event loop
-async fn run_server_loop(
-    app_state: &Arc<AppState>,
-    args: &Args,
-) -> Result<()> {
+async fn run_server_loop(app_state: &Arc<AppState>, args: &Args) -> Result<()> {
     // Start server and get handle
     let (server_handle, server_info_file) = server::start_server(app_state.clone()).await?;
-    
+
     // Handle duration and shutdown
-    if let Some(duration) = args.duration.or(app_state.config.development.default_duration) {
+    if let Some(duration) = args
+        .duration
+        .or(app_state.config.development.default_duration)
+    {
         tokio::select! {
             result = server_handle => {
                 if let Err(e) = result {
@@ -231,45 +230,44 @@ async fn run_server_loop(
             }
         }
     }
-    
+
     // Cleanup for server mode
     server::cleanup_server_info(&server_info_file);
     app_state.shutdown().await;
-    
+
     Ok(())
 }
 
 /// Run the CLI event loop
-async fn run_cli_loop(
-    app_state: &Arc<AppState>,
-    args: &Args,
-) -> Result<()> {
+async fn run_cli_loop(app_state: &Arc<AppState>, args: &Args) -> Result<()> {
     // Handle duration for CLI mode
-    if let Some(duration) = args.duration.or(app_state.config.development.default_duration) {
+    if let Some(duration) = args
+        .duration
+        .or(app_state.config.development.default_duration)
+    {
         sleep(Duration::from_secs(duration)).await;
         info!("⏱️ Duration limit reached");
     } else {
         // Run indefinitely (for future interactive features)
-        utils::write_pid_file()
-            .map_err(|e| CymbiontError::Other(e.to_string()))?;
-        
+        utils::write_pid_file().map_err(|e| CymbiontError::Other(e.to_string()))?;
+
         info!("Running indefinitely. Press Ctrl+C to exit.");
-        
+
         // First Ctrl+C - initiate graceful shutdown
         signal::ctrl_c().await?;
         info!("🛑 Received shutdown signal");
-        
+
         if handle_graceful_shutdown(&app_state).await {
             // Force quit requested
             utils::remove_pid_file();
             process::exit(1);
         }
     }
-    
+
     // Cleanup for CLI mode
     app_state.shutdown().await;
     utils::remove_pid_file();
-    
+
     Ok(())
 }
 
@@ -278,11 +276,14 @@ async fn run_cli_loop(
 async fn handle_graceful_shutdown(app_state: &Arc<AppState>) -> bool {
     // Brief grace period for spawned tasks to reach transaction boundary
     sleep(Duration::from_millis(100)).await;
-    
+
     let active_count = app_state.initiate_graceful_shutdown().await;
     if active_count > 0 {
-        info!("⏳ Waiting for {} transactions to complete... Press Ctrl+C again to force quit", active_count);
-        
+        info!(
+            "⏳ Waiting for {} transactions to complete... Press Ctrl+C again to force quit",
+            active_count
+        );
+
         tokio::select! {
             completed = app_state.wait_for_transactions(Duration::from_secs(30)) => {
                 if completed {

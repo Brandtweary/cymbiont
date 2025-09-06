@@ -120,29 +120,30 @@
 //! - Agent state protected by async RwLock in AppState
 //! - Thread-safe message processing
 
-use std::path::Path;
-use std::fs;
-use std::sync::Arc;
-use std::fmt;
-use std::result;
 use chrono::{DateTime, Utc};
+use serde_json::Value;
+use std::fmt;
+use std::fs;
+use std::path::Path;
+use std::result;
+use std::sync::Arc;
 use tracing::info;
 use uuid::Uuid;
-use serde_json::Value;
 
-use crate::agent::llm::{LLMConfig, LLMBackend, LLMResponse, Message, AgentContext, create_llm_backend};
 use crate::agent::kg_tools;
+use crate::agent::llm::{
+    create_llm_backend, AgentContext, LLMBackend, LLMConfig, LLMResponse, Message,
+};
 use crate::app_state::AppState;
-use crate::error::*;
 use crate::cqrs::router::RouterToken;
-use crate::cqrs::{Command, AgentCommand};
+use crate::cqrs::{AgentCommand, Command};
+use crate::error::*;
 
 /// Context for LLM processing without holding agent locks
 pub struct LLMContext {
     pub conversation_history: Vec<Message>,
     pub llm_backend: Box<dyn LLMBackend>,
 }
-
 
 /// Tool argument validation result with detailed error information
 #[derive(Debug)]
@@ -166,8 +167,11 @@ impl fmt::Display for ValidationError {
                 write!(f, "Required field '{}' is missing", self.field)
             }
             ValidationIssue::WrongType { expected, got } => {
-                write!(f, "Field '{}' has wrong type: expected {}, got {}", 
-                       self.field, expected, got)
+                write!(
+                    f,
+                    "Field '{}' has wrong type: expected {}, got {}",
+                    self.field, expected, got
+                )
             }
             ValidationIssue::InvalidUuid(msg) => {
                 write!(f, "Field '{}' has invalid UUID: {}", self.field, msg)
@@ -180,7 +184,7 @@ impl fmt::Display for ValidationError {
 }
 
 /// Validate tool arguments against the tool's schema
-/// 
+///
 /// Performs comprehensive validation including:
 /// - Required field presence
 /// - Type checking
@@ -189,18 +193,20 @@ impl fmt::Display for ValidationError {
 fn validate_tool_arguments(tool_name: &str, args: &Value) -> result::Result<(), String> {
     // Get all tool schemas
     let tools = kg_tools::get_tool_schemas();
-    
+
     // Find the specific tool schema
-    let tool = tools.iter()
+    let tool = tools
+        .iter()
         .find(|t| t.name == tool_name)
         .ok_or_else(|| format!("Unknown tool: {}", tool_name))?;
-    
+
     // Arguments must be an object
-    let args_obj = args.as_object()
+    let args_obj = args
+        .as_object()
         .ok_or_else(|| "Tool arguments must be a JSON object".to_string())?;
-    
+
     let mut errors = Vec::new();
-    
+
     // Check all required fields are present and valid
     for required_field in &tool.parameters.required {
         if let Some(value) = args_obj.get(required_field) {
@@ -217,31 +223,35 @@ fn validate_tool_arguments(tool_name: &str, args: &Value) -> result::Result<(), 
             });
         }
     }
-    
+
     // Check that no unknown fields are present (helps catch typos)
     for (field_name, value) in args_obj {
         if !tool.parameters.properties.contains_key(field_name) {
             // Allow extra fields but log a warning
             tracing::warn!(
                 "Unknown field '{}' in arguments for tool '{}' with value: {:?}",
-                field_name, tool_name, value
+                field_name,
+                tool_name,
+                value
             );
         }
     }
-    
+
     // If there are validation errors, format them nicely
     if !errors.is_empty() {
-        let error_messages: Vec<String> = errors.iter()
-            .map(|e| e.to_string())
-            .collect();
+        let error_messages: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
         return Err(error_messages.join("; "));
     }
-    
+
     Ok(())
 }
 
 /// Validate a single field value against its expected type
-fn validate_field_value(field_name: &str, value: &Value, expected_type: &str) -> result::Result<(), ValidationError> {
+fn validate_field_value(
+    field_name: &str,
+    value: &Value,
+    expected_type: &str,
+) -> result::Result<(), ValidationError> {
     match expected_type {
         "string" => {
             if let Some(s) = value.as_str() {
@@ -250,7 +260,10 @@ fn validate_field_value(field_name: &str, value: &Value, expected_type: &str) ->
                     if Uuid::parse_str(s).is_err() {
                         return Err(ValidationError {
                             field: field_name.to_string(),
-                            issue: ValidationIssue::InvalidUuid(format!("'{}' is not a valid UUID", s)),
+                            issue: ValidationIssue::InvalidUuid(format!(
+                                "'{}' is not a valid UUID",
+                                s
+                            )),
                         });
                     }
                 }
@@ -283,7 +296,7 @@ fn validate_field_value(field_name: &str, value: &Value, expected_type: &str) ->
                             return Err(ValidationError {
                                 field: field_name.to_string(),
                                 issue: ValidationIssue::InvalidValue(
-                                    "Must be between 1 and 100".to_string()
+                                    "Must be between 1 and 100".to_string(),
                                 ),
                             });
                         }
@@ -358,9 +371,8 @@ fn value_type_name(value: &Value) -> String {
     }
 }
 
-
 /// Main Agent struct containing full state
-/// 
+///
 /// This struct manages the complete agent state including conversation
 /// history, LLM configuration, and context management. It provides
 /// methods for conversation management, persistence, and context control.
@@ -368,26 +380,25 @@ fn value_type_name(value: &Value) -> String {
 pub struct Agent {
     /// Unique identifier
     pub id: Uuid,
-    
+
     /// Display name
     pub name: String,
-    
+
     /// LLM backend configuration (persisted)
     pub llm_config: LLMConfig,
-    
+
     /// Full conversation history with tool results
     pub conversation_history: Vec<Message>,
-    
+
     /// Maximum number of messages to keep in context
     pub context_window_limit: usize,
-    
+
     /// Custom system prompt/instructions
     pub system_prompt: Option<String>,
-    
-    
+
     /// Creation timestamp
     pub created: DateTime<Utc>,
-    
+
     /// Last activity timestamp
     pub last_active: DateTime<Utc>,
 }
@@ -406,33 +417,32 @@ impl Agent {
             name,
             llm_config,
             conversation_history: Vec::new(),
-            context_window_limit: 100,  // Default context window
+            context_window_limit: 100, // Default context window
             system_prompt,
             created: now,
             last_active: now,
         }
     }
-    
+
     /// Get the LLM backend for this agent
     pub fn get_llm_backend(&self) -> Box<dyn LLMBackend> {
         create_llm_backend(&self.llm_config)
     }
-    
+
     /// Add a message to conversation history
     pub async fn add_message(&mut self, _token: &RouterToken, message: Message) -> Result<()> {
         // Add to conversation history
         self.conversation_history.push(message);
         self.last_active = Utc::now();
-        
+
         // Trim if we exceed the context window
         self.trim_context();
-        
+
         Ok(())
     }
-    
-    
+
     /// Trim conversation history to stay within context window (internal helper)
-    /// 
+    ///
     /// Keeps the most recent messages up to the limit. System messages
     /// and initial context are preserved if possible.
     /// This is called automatically by add_message when needed.
@@ -440,28 +450,30 @@ impl Agent {
         if self.conversation_history.len() <= self.context_window_limit {
             return;
         }
-        
+
         // Calculate how many messages to remove
         let to_remove = self.conversation_history.len() - self.context_window_limit;
-        
+
         // Remove oldest messages (could be smarter about preserving important context)
         self.conversation_history.drain(0..to_remove);
-        
-        info!("Trimmed {} messages from agent '{}' conversation history", 
-              to_remove, self.name);
+
+        info!(
+            "Trimmed {} messages from agent '{}' conversation history",
+            to_remove, self.name
+        );
     }
-    
+
     /// Explicitly trim conversation history to stay within context window
-    
+
     /// Clear conversation history
     pub async fn clear_history(&mut self, _token: &RouterToken) -> Result<()> {
         self.conversation_history.clear();
         info!("Cleared conversation history for agent '{}'", self.name);
         Ok(())
     }
-    
+
     /// Set system prompt
-    /// 
+    ///
     /// TODO: Add WebSocket/CLI command for setting system prompt.
     /// This will be useful for customizing agent behavior.
     #[allow(dead_code)]
@@ -469,9 +481,9 @@ impl Agent {
         self.system_prompt = Some(prompt);
         Ok(())
     }
-    
+
     /// Update LLM configuration
-    /// 
+    ///
     /// TODO: Add WebSocket/CLI command for updating LLM config.
     /// This will allow switching between different LLM backends.
     #[allow(dead_code)]
@@ -479,7 +491,7 @@ impl Agent {
         self.llm_config = config;
         Ok(())
     }
-    
+
     /// Get recent messages for context
     ///
     /// Returns the most recent N messages, useful for building
@@ -492,14 +504,18 @@ impl Agent {
             &self.conversation_history[len - count..]
         }
     }
-    
+
     /// Execute a tool from the registry
-    /// 
+    ///
     /// Validates arguments against the tool schema, then calls the tool with
     /// the agent's ID and provided arguments, converting the result to an
     /// AgentContext for conversation tracking.
-    pub async fn execute_tool(&mut self, app_state: &Arc<AppState>, tool_name: &str, args: Value) -> Result<AgentContext> {
-        
+    pub async fn execute_tool(
+        &mut self,
+        app_state: &Arc<AppState>,
+        tool_name: &str,
+        args: Value,
+    ) -> Result<AgentContext> {
         // First validate the arguments against the tool schema
         if let Err(validation_error) = validate_tool_arguments(tool_name, &args) {
             return Ok(AgentContext {
@@ -508,14 +524,18 @@ impl Agent {
                 data: None,
             });
         }
-        
+
         let result = kg_tools::execute_tool(app_state, tool_name, args).await?;
-        
+
         // Convert result Value to AgentContext
         let context = if let Some(obj) = result.as_object() {
             AgentContext {
-                success: obj.get("success").and_then(|v| v.as_bool()).unwrap_or(false),
-                message: obj.get("message")
+                success: obj
+                    .get("success")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                message: obj
+                    .get("message")
                     .and_then(|v| v.as_str())
                     .or_else(|| obj.get("error").and_then(|v| v.as_str()))
                     .unwrap_or("Tool executed")
@@ -529,36 +549,36 @@ impl Agent {
                 data: None,
             }
         };
-        
+
         Ok(context)
     }
-    
+
     /// Get LLM response without holding agent locks
-    /// 
+    ///
     /// Static helper method that processes LLM requests without requiring agent access.
     /// Used by process_agent_message to prevent lock contention during LLM calls.
     pub async fn get_llm_response(context: LLMContext) -> Result<LLMResponse> {
         // Use the LLM backend from context
         let llm = context.llm_backend;
-        
+
         // Get tool schemas
         let tool_schemas = kg_tools::get_tool_schemas();
-        
+
         // Call LLM with conversation history and tools
-        let response = llm.complete(&context.conversation_history, &tool_schemas)
+        let response = llm
+            .complete(&context.conversation_history, &tool_schemas)
             .await
             .map_err(|e| AgentError::llm(format!("LLM backend error: {}", e)))?;
-        
+
         Ok(response)
     }
-    
-    
+
     /// Save the agent to JSON persistence
-    /// 
+    ///
     /// Saves to data/agent.json for single-agent architecture
     pub fn save(&self, data_dir: &Path) -> Result<()> {
         let agent_path = data_dir.join("agent.json");
-        
+
         let data = serde_json::json!({
             "version": 1,
             "id": self.id,
@@ -570,56 +590,56 @@ impl Agent {
             "created": self.created,
             "last_active": self.last_active,
         });
-        
+
         let json = serde_json::to_string_pretty(&data)
             .map_err(|e| AgentError::serialization(format!("Failed to serialize agent: {}", e)))?;
-        
+
         fs::write(&agent_path, json)
             .map_err(|e| AgentError::serialization(format!("Failed to write agent JSON: {}", e)))?;
-        
+
         Ok(())
     }
-    
+
     /// Load agent from JSON persistence
-    /// 
+    ///
     /// Returns None if file doesn't exist
     pub fn load(data_dir: &Path) -> Result<Option<Agent>> {
         let agent_path = data_dir.join("agent.json");
-        
+
         if !agent_path.exists() {
             return Ok(None);
         }
-        
+
         let json = fs::read_to_string(&agent_path)
             .map_err(|e| AgentError::serialization(format!("Failed to read agent JSON: {}", e)))?;
-        
+
         let data: serde_json::Value = serde_json::from_str(&json)
             .map_err(|e| AgentError::serialization(format!("Failed to parse agent JSON: {}", e)))?;
-        
+
         let agent = Agent {
-            id: data["id"].as_str()
+            id: data["id"]
+                .as_str()
                 .and_then(|s| Uuid::parse_str(s).ok())
                 .unwrap_or_else(Uuid::new_v4),
-            name: data["name"].as_str()
-                .unwrap_or("Cymbiont")
-                .to_string(),
-            llm_config: serde_json::from_value(data["llm_config"].clone())
-                .unwrap_or(LLMConfig::Mock { default_response: "I am a mock LLM response".to_string() }),
+            name: data["name"].as_str().unwrap_or("Cymbiont").to_string(),
+            llm_config: serde_json::from_value(data["llm_config"].clone()).unwrap_or(
+                LLMConfig::Mock {
+                    default_response: "I am a mock LLM response".to_string(),
+                },
+            ),
             conversation_history: serde_json::from_value(data["conversation_history"].clone())
                 .unwrap_or_default(),
-            context_window_limit: data["context_window_limit"].as_u64()
-                .unwrap_or(10) as usize,
-            system_prompt: data["system_prompt"].as_str()
-                .map(String::from),
+            context_window_limit: data["context_window_limit"].as_u64().unwrap_or(10) as usize,
+            system_prompt: data["system_prompt"].as_str().map(String::from),
             created: serde_json::from_value(data["created"].clone())
                 .unwrap_or_else(|_| chrono::Utc::now()),
             last_active: serde_json::from_value(data["last_active"].clone())
                 .unwrap_or_else(|_| chrono::Utc::now()),
         };
-        
+
         Ok(Some(agent))
     }
-    
+
     /// Load existing agent or create new one
     pub fn load_or_create(data_dir: &Path) -> Result<Agent> {
         if let Some(agent) = Self::load(data_dir)? {
@@ -629,25 +649,26 @@ impl Agent {
             let agent = Agent::new(
                 Uuid::new_v4(),
                 "Cymbiont".to_string(),
-                LLMConfig::Mock { default_response: "I am a mock LLM response".to_string() },
-                None
+                LLMConfig::Mock {
+                    default_response: "I am a mock LLM response".to_string(),
+                },
+                None,
             );
             agent.save(data_dir)?;
             Ok(agent)
         }
     }
-    
 }
 
 /// Process a message for an agent without holding locks during LLM/tool execution
-/// 
+///
 /// This function encapsulates the full LLM pipeline including tool execution.
 /// The 4 phases naturally emerge from the async flow:
 /// 1. Add user message (via CQRS command)
 /// 2. Get LLM response (no locks held)
 /// 3. Execute tool if requested (brief agent lock only)
 /// 4. Add results to conversation (via CQRS commands)
-/// 
+///
 /// This can be called from WebSocket handlers, CLI, or any other interface.
 pub async fn process_agent_message(
     app_state: &Arc<AppState>,
@@ -655,9 +676,8 @@ pub async fn process_agent_message(
     echo: Option<String>,
     echo_tool: Option<String>,
 ) -> Result<String> {
-    
     // Phase 1: Add user message via CQRS
-    let user_msg = Message::User { 
+    let user_msg = Message::User {
         content,
         timestamp: chrono::Utc::now(),
         echo: echo.clone(),
@@ -667,29 +687,33 @@ pub async fn process_agent_message(
         message: serde_json::to_value(user_msg)?,
     });
     app_state.command_queue.execute(command).await?;
-    
+
     // Phase 2: Get LLM response (no locks held)
     let context = {
         let agent_opt = app_state.agent.read().await;
-        let agent = agent_opt.as_ref()
+        let agent = agent_opt
+            .as_ref()
             .ok_or_else(|| AgentError::tool("Agent not initialized".to_string()))?;
         LLMContext {
             conversation_history: agent.conversation_history.clone(),
             llm_backend: agent.get_llm_backend(),
         }
     };
-    
+
     let llm_response = Agent::get_llm_response(context).await?;
-    
+
     // Phase 3: Execute tool if requested (brief lock only)
     if let Some(tool_call) = &llm_response.tool_call {
         let tool_result = {
             let mut agent_opt = app_state.agent.write().await;
-            let agent = agent_opt.as_mut()
+            let agent = agent_opt
+                .as_mut()
                 .ok_or_else(|| AgentError::tool("Agent not initialized".to_string()))?;
-            agent.execute_tool(app_state, &tool_call.name, tool_call.arguments.clone()).await?
+            agent
+                .execute_tool(app_state, &tool_call.name, tool_call.arguments.clone())
+                .await?
         };
-        
+
         // Add tool result to conversation via CQRS
         let tool_msg = Message::Tool {
             name: tool_call.name.clone(),
@@ -702,7 +726,7 @@ pub async fn process_agent_message(
         });
         app_state.command_queue.execute(command).await?;
     }
-    
+
     // Phase 4: Add assistant response via CQRS
     let assistant_msg = Message::Assistant {
         content: llm_response.content.clone(),
@@ -712,11 +736,10 @@ pub async fn process_agent_message(
         message: serde_json::to_value(assistant_msg)?,
     });
     app_state.command_queue.execute(command).await?;
-    
+
     // Return the final response
     Ok(llm_response.content)
 }
-
 
 #[cfg(test)]
 mod tests {

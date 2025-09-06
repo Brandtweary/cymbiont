@@ -62,10 +62,8 @@ use uuid::Uuid;
 use crate::agent::schemas::ToolDefinition;
 use crate::error::*;
 
-
-
 /// Configuration for different LLM backends
-/// 
+///
 /// This enum is serialized as part of agent persistence, allowing
 /// each agent to maintain its own model configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,7 +75,7 @@ pub enum LLMConfig {
         #[serde(default = "default_mock_response")]
         default_response: String,
     },
-    
+
     /// Ollama backend for local inference
     Ollama {
         /// Model name (e.g., "llama3.2", "mistral")
@@ -91,7 +89,6 @@ pub enum LLMConfig {
         #[serde(default = "default_max_tokens")]
         max_tokens: usize,
     },
-    
     // Future backends can be added here:
     // OpenAI { api_key: String, model: String, ... }
     // Anthropic { api_key: String, model: String, ... }
@@ -125,9 +122,9 @@ pub enum Message {
     User {
         content: String,
         #[serde(skip_serializing_if = "Option::is_none")]
-        echo: Option<String>,  // Test-only: force MockLLM to echo this response
+        echo: Option<String>, // Test-only: force MockLLM to echo this response
         #[serde(skip_serializing_if = "Option::is_none")]
-        echo_tool: Option<String>,  // Test-only: force MockLLM to return a tool call
+        echo_tool: Option<String>, // Test-only: force MockLLM to return a tool call
         timestamp: chrono::DateTime<chrono::Utc>,
     },
     Assistant {
@@ -143,7 +140,7 @@ pub enum Message {
 }
 
 /// Context returned from tool executions
-/// 
+///
 /// This structure provides a consistent format for tool results,
 /// making it easy for the LLM to understand what happened and
 /// for the conversation history to track operations.
@@ -163,7 +160,7 @@ pub struct LLMResponse {
     /// The text response from the model
     pub content: String,
     /// Optional tool call request
-    /// 
+    ///
     /// TODO: Will be used in Phase 1 when LLMs can request tool executions.
     /// The agent will parse this and execute the requested graph operation.
     #[allow(dead_code)]
@@ -180,20 +177,17 @@ pub struct ToolCall {
 }
 
 /// Trait for LLM backend implementations
-/// 
+///
 /// All LLM providers must implement this trait to be usable by agents.
 /// The trait is async to support network calls to remote models.
 #[async_trait]
 pub trait LLMBackend: Send + Sync {
     /// Generate a completion given conversation history and available tools
-    async fn complete(
-        &self,
-        messages: &[Message],
-        tools: &[ToolDefinition],
-    ) -> Result<LLMResponse>;
-    
+    async fn complete(&self, messages: &[Message], tools: &[ToolDefinition])
+        -> Result<LLMResponse>;
+
     /// Check if the backend is available and responsive
-    /// 
+    ///
     /// TODO: Will be used to verify LLM connectivity before operations
     /// in Phase 1 when we integrate real LLM backends.
     #[allow(dead_code)]
@@ -201,16 +195,14 @@ pub trait LLMBackend: Send + Sync {
 }
 
 /// Create an LLM backend from configuration
-/// 
+///
 /// This factory function creates the appropriate backend implementation
 /// based on the provided configuration.
 pub fn create_llm_backend(config: &LLMConfig) -> Box<dyn LLMBackend> {
     match config {
-        LLMConfig::Mock { default_response } => {
-            Box::new(MockLLM {
-                default_response: default_response.clone(),
-            })
-        }
+        LLMConfig::Mock { default_response } => Box::new(MockLLM {
+            default_response: default_response.clone(),
+        }),
         LLMConfig::Ollama { .. } => {
             // For now, return mock since Ollama is deferred
             // TODO: Implement OllamaLLM when ready
@@ -222,7 +214,7 @@ pub fn create_llm_backend(config: &LLMConfig) -> Box<dyn LLMBackend> {
 }
 
 /// Mock LLM implementation for testing
-/// 
+///
 /// Provides deterministic responses for testing agent functionality
 /// without requiring a real LLM connection.
 pub struct MockLLM {
@@ -230,21 +222,21 @@ pub struct MockLLM {
 }
 
 /// Generate mock arguments for a tool based on its schema
-/// 
+///
 /// This creates valid test arguments with required fields filled in
 /// with reasonable test values. Used by MockLLM to generate realistic
 /// tool calls for integration testing.
 fn generate_mock_args(tool_name: &str, tools: &[ToolDefinition]) -> serde_json::Value {
     // Find the tool schema
     let tool = tools.iter().find(|t| t.name == tool_name);
-    
+
     let Some(tool) = tool else {
         // Tool not found, return empty args
         return serde_json::json!({});
     };
-    
+
     let mut args = serde_json::Map::new();
-    
+
     // Fill in required parameters with test values
     for required_param in &tool.parameters.required {
         if let Some(prop) = tool.parameters.properties.get(required_param) {
@@ -252,7 +244,9 @@ fn generate_mock_args(tool_name: &str, tools: &[ToolDefinition]) -> serde_json::
                 "string" => {
                     // Generate appropriate test values based on parameter name
                     match required_param.as_str() {
-                        "content" => serde_json::Value::String("Test content from MockLLM".to_string()),
+                        "content" => {
+                            serde_json::Value::String("Test content from MockLLM".to_string())
+                        }
                         // Generate fresh UUIDs for ID fields - tests should create their own blocks
                         "block_id" => serde_json::Value::String(Uuid::new_v4().to_string()),
                         "node_id" => serde_json::Value::String(Uuid::new_v4().to_string()),
@@ -260,7 +254,7 @@ fn generate_mock_args(tool_name: &str, tools: &[ToolDefinition]) -> serde_json::
                         "start_id" => serde_json::Value::String(Uuid::new_v4().to_string()),
                         _ => serde_json::Value::String(format!("test-{}", required_param)),
                     }
-                },
+                }
                 "number" => serde_json::Value::Number(serde_json::Number::from(3)),
                 "object" => serde_json::json!({}),
                 _ => serde_json::Value::Null,
@@ -268,7 +262,7 @@ fn generate_mock_args(tool_name: &str, tools: &[ToolDefinition]) -> serde_json::
             args.insert(required_param.clone(), value);
         }
     }
-    
+
     serde_json::Value::Object(args)
 }
 
@@ -282,30 +276,45 @@ impl LLMBackend for MockLLM {
         tools: &[ToolDefinition],
     ) -> Result<LLMResponse> {
         // For testing: look at the last user message
-        if let Some(Message::User { echo_tool, echo, content, .. }) = messages.last() {
+        if let Some(Message::User {
+            echo_tool,
+            echo,
+            content,
+            ..
+        }) = messages.last()
+        {
             // Priority 1: echo_tool returns a tool call
             if let Some(tool_name) = echo_tool {
                 // Generate mock arguments based on the tool schema
                 // But try to extract UUIDs from the message content for block_id/node_id parameters
                 let mut mock_args = generate_mock_args(tool_name, tools);
-                
+
                 // Extract UUID from message content if it contains one
                 // This allows tests to pass actual IDs like "Update block {uuid} with new content"
                 if let Some(args_obj) = mock_args.as_object_mut() {
                     // Simple regex to find UUID pattern in the message
-                    let uuid_regex = regex::Regex::new(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").unwrap();
+                    let uuid_regex = regex::Regex::new(
+                        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                    )
+                    .unwrap();
                     if let Some(captures) = uuid_regex.find(content) {
                         let uuid_str = captures.as_str();
                         // Update block_id or node_id if present in args
                         if args_obj.contains_key("block_id") {
-                            args_obj.insert("block_id".to_string(), serde_json::Value::String(uuid_str.to_string()));
+                            args_obj.insert(
+                                "block_id".to_string(),
+                                serde_json::Value::String(uuid_str.to_string()),
+                            );
                         }
                         if args_obj.contains_key("node_id") {
-                            args_obj.insert("node_id".to_string(), serde_json::Value::String(uuid_str.to_string()));
+                            args_obj.insert(
+                                "node_id".to_string(),
+                                serde_json::Value::String(uuid_str.to_string()),
+                            );
                         }
                     }
                 }
-                
+
                 return Ok(LLMResponse {
                     content: format!("I've executed the {} tool for you", tool_name),
                     tool_call: Some(ToolCall {
@@ -314,7 +323,7 @@ impl LLMBackend for MockLLM {
                     }),
                 });
             }
-            
+
             // Priority 2: echo returns text response
             if let Some(echo_response) = echo {
                 return Ok(LLMResponse {
@@ -323,14 +332,14 @@ impl LLMBackend for MockLLM {
                 });
             }
         }
-        
+
         // Default: return default response
         Ok(LLMResponse {
             content: self.default_response.clone(),
             tool_call: None,
         })
     }
-    
+
     async fn health_check(&self) -> Result<bool> {
         // Mock is always healthy
         Ok(true)
@@ -340,9 +349,9 @@ impl LLMBackend for MockLLM {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::schemas::ParameterSchema;
     use chrono::Utc;
     use std::collections::HashMap;
-    use crate::agent::schemas::ParameterSchema;
 
     #[tokio::test]
     async fn test_mock_llm_default_response() {
@@ -350,15 +359,13 @@ mod tests {
             default_response: "Test response".to_string(),
         };
         let llm = create_llm_backend(&config);
-        let messages = vec![
-            Message::User {
-                content: "Hello".to_string(),
-                echo: None,
-                echo_tool: None,
-                timestamp: Utc::now(),
-            }
-        ];
-        
+        let messages = vec![Message::User {
+            content: "Hello".to_string(),
+            echo: None,
+            echo_tool: None,
+            timestamp: Utc::now(),
+        }];
+
         let response = llm.complete(&messages, &[]).await.unwrap();
         assert_eq!(response.content, "Test response");
         assert!(response.tool_call.is_none());
@@ -370,27 +377,23 @@ mod tests {
             default_response: "Default".to_string(),
         };
         let llm = create_llm_backend(&config);
-        let messages = vec![
-            Message::User {
-                content: "Please create a block".to_string(),
-                echo: None,
-                echo_tool: Some("add_block".to_string()),
-                timestamp: Utc::now(),
-            }
-        ];
-        
-        let tools = vec![
-            ToolDefinition {
-                name: "add_block".to_string(),
-                description: "Add a block".to_string(),
-                parameters: ParameterSchema {
-                    schema_type: "object".to_string(),
-                    properties: HashMap::new(),
-                    required: vec![],
-                },
-            }
-        ];
-        
+        let messages = vec![Message::User {
+            content: "Please create a block".to_string(),
+            echo: None,
+            echo_tool: Some("add_block".to_string()),
+            timestamp: Utc::now(),
+        }];
+
+        let tools = vec![ToolDefinition {
+            name: "add_block".to_string(),
+            description: "Add a block".to_string(),
+            parameters: ParameterSchema {
+                schema_type: "object".to_string(),
+                properties: HashMap::new(),
+                required: vec![],
+            },
+        }];
+
         let response = llm.complete(&messages, &tools).await.unwrap();
         assert_eq!(response.content, "I've executed the add_block tool for you");
         assert!(response.tool_call.is_some());
@@ -402,10 +405,10 @@ mod tests {
         let config = LLMConfig::Mock {
             default_response: "Default".to_string(),
         };
-        
+
         let json = serde_json::to_string(&config).unwrap();
         let deserialized: LLMConfig = serde_json::from_str(&json).unwrap();
-        
+
         match deserialized {
             LLMConfig::Mock { default_response } => {
                 assert_eq!(default_response, "Default");
@@ -472,10 +475,10 @@ mod tests {
             message: "Operation completed".to_string(),
             data: Some(serde_json::json!({"result": "test"})),
         };
-        
+
         let json = serde_json::to_string(&context).unwrap();
         let deserialized: AgentContext = serde_json::from_str(&json).unwrap();
-        
+
         assert_eq!(deserialized.success, true);
         assert_eq!(deserialized.message, "Operation completed");
         assert!(deserialized.data.is_some());

@@ -101,9 +101,9 @@
 
 use tokio::sync::{mpsc, oneshot};
 
-use crate::error::*;
 use super::commands::{Command, CommandResult};
 use super::processor::CommandEnvelope;
+use crate::error::*;
 
 /// Public API for submitting commands to the processor
 #[derive(Clone)]
@@ -113,32 +113,32 @@ pub struct CommandQueue {
 
 impl CommandQueue {
     /// Create a new command queue with external channel management
-    /// 
+    ///
     /// This variant is used when the processor and channel need to be
     /// set up separately (e.g., during AppState initialization).
     pub fn new_with_sender(sender: mpsc::Sender<CommandEnvelope>) -> Self {
         CommandQueue { sender }
     }
-    
+
     /// Execute a command and wait for the result
     pub async fn execute(&self, command: Command) -> Result<CommandResult> {
-        
         // Create response channel
         let (tx, rx) = oneshot::channel();
-        
+
         // Create envelope
         let envelope = CommandEnvelope {
             command,
             response: tx,
         };
-        
+
         // Send to processor
-        self.sender.send(envelope).await
+        self.sender
+            .send(envelope)
+            .await
             .map_err(|e| CymbiontError::Other(format!("Failed to send command: {}", e)))?;
-        
+
         // Wait for response
         rx.await
             .map_err(|e| CymbiontError::Other(format!("Command processor dropped: {}", e)))?
     }
-    
 }

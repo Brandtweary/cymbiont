@@ -54,10 +54,9 @@
 //! - Page management (create, delete with properties)
 //! - Graph administration (create, delete, open, close, list)
 //! - Query operations (node retrieval, breadth-first search)
-//! 
+//!
 //! All schemas follow consistent patterns for UUID parameters, optional fields,
 //! and error response formats, enabling predictable agent behavior.
-
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -96,13 +95,21 @@ macro_rules! prop {
 }
 
 /// Helper to create a tool definition
-fn tool(name: &str, description: &str, properties: Vec<(&str, PropertySchema)>, required: Vec<&str>) -> ToolDefinition {
+fn tool(
+    name: &str,
+    description: &str,
+    properties: Vec<(&str, PropertySchema)>,
+    required: Vec<&str>,
+) -> ToolDefinition {
     ToolDefinition {
         name: name.to_string(),
         description: description.to_string(),
         parameters: ParameterSchema {
             schema_type: "object".to_string(),
-            properties: properties.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
+            properties: properties
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
             required: required.into_iter().map(|s| s.to_string()).collect(),
         },
     }
@@ -133,8 +140,20 @@ pub fn update_block_schema() -> ToolDefinition {
         vec![
             ("block_id", prop!("string", "UUID of the block to update")),
             ("content", prop!("string", "New content for the block")),
-            ("graph_id", prop!("string", "Optional UUID of the graph (uses agent's default if not specified)")),
-            ("graph_name", prop!("string", "Optional name of the graph (alternative to graph_id)")),
+            (
+                "graph_id",
+                prop!(
+                    "string",
+                    "Optional UUID of the graph (uses agent's default if not specified)"
+                ),
+            ),
+            (
+                "graph_name",
+                prop!(
+                    "string",
+                    "Optional name of the graph (alternative to graph_id)"
+                ),
+            ),
         ],
         vec!["block_id", "content"],
     )
@@ -146,8 +165,20 @@ pub fn delete_block_schema() -> ToolDefinition {
         "Delete (archive) a block from the knowledge graph",
         vec![
             ("block_id", prop!("string", "UUID of the block to delete")),
-            ("graph_id", prop!("string", "Optional UUID of the graph (uses agent's default if not specified)")),
-            ("graph_name", prop!("string", "Optional name of the graph (alternative to graph_id)")),
+            (
+                "graph_id",
+                prop!(
+                    "string",
+                    "Optional UUID of the graph (uses agent's default if not specified)"
+                ),
+            ),
+            (
+                "graph_name",
+                prop!(
+                    "string",
+                    "Optional name of the graph (alternative to graph_id)"
+                ),
+            ),
         ],
         vec!["block_id"],
     )
@@ -161,9 +192,27 @@ pub fn create_page_schema() -> ToolDefinition {
         "Create a new page in the knowledge graph with optional properties",
         vec![
             ("page_name", prop!("string", "Name of the page to create")),
-            ("graph_id", prop!("string", "Optional UUID of the graph (uses agent's default if not specified)")),
-            ("graph_name", prop!("string", "Optional name of the graph (alternative to graph_id)")),
-            ("properties", prop!("object", "Optional JSON object with additional properties for the page")),
+            (
+                "graph_id",
+                prop!(
+                    "string",
+                    "Optional UUID of the graph (uses agent's default if not specified)"
+                ),
+            ),
+            (
+                "graph_name",
+                prop!(
+                    "string",
+                    "Optional name of the graph (alternative to graph_id)"
+                ),
+            ),
+            (
+                "properties",
+                prop!(
+                    "object",
+                    "Optional JSON object with additional properties for the page"
+                ),
+            ),
         ],
         vec!["page_name"],
     )
@@ -175,8 +224,20 @@ pub fn delete_page_schema() -> ToolDefinition {
         "Delete (archive) a page from the knowledge graph",
         vec![
             ("page_name", prop!("string", "Name of the page to delete")),
-            ("graph_id", prop!("string", "Optional UUID of the graph (uses agent's default if not specified)")),
-            ("graph_name", prop!("string", "Optional name of the graph (alternative to graph_id)")),
+            (
+                "graph_id",
+                prop!(
+                    "string",
+                    "Optional UUID of the graph (uses agent's default if not specified)"
+                ),
+            ),
+            (
+                "graph_name",
+                prop!(
+                    "string",
+                    "Optional name of the graph (alternative to graph_id)"
+                ),
+            ),
         ],
         vec!["page_name"],
     )
@@ -190,8 +251,20 @@ pub fn get_node_schema() -> ToolDefinition {
         "Retrieve a node by its ID from the knowledge graph",
         vec![
             ("node_id", prop!("string", "UUID of the node to retrieve")),
-            ("graph_id", prop!("string", "Optional UUID of the graph (uses agent's default if not specified)")),
-            ("graph_name", prop!("string", "Optional name of the graph (alternative to graph_id)")),
+            (
+                "graph_id",
+                prop!(
+                    "string",
+                    "Optional UUID of the graph (uses agent's default if not specified)"
+                ),
+            ),
+            (
+                "graph_name",
+                prop!(
+                    "string",
+                    "Optional name of the graph (alternative to graph_id)"
+                ),
+            ),
         ],
         vec!["node_id"],
     )
@@ -202,10 +275,28 @@ pub fn query_graph_bfs_schema() -> ToolDefinition {
         "query_graph_bfs",
         "Perform breadth-first search traversal from a starting node",
         vec![
-            ("start_id", prop!("string", "UUID of the starting node for traversal")),
-            ("max_depth", prop!("number", "Maximum depth to traverse (default: 3)")),
-            ("graph_id", prop!("string", "Optional UUID of the graph (uses agent's default if not specified)")),
-            ("graph_name", prop!("string", "Optional name of the graph (alternative to graph_id)")),
+            (
+                "start_id",
+                prop!("string", "UUID of the starting node for traversal"),
+            ),
+            (
+                "max_depth",
+                prop!("number", "Maximum depth to traverse (default: 3)"),
+            ),
+            (
+                "graph_id",
+                prop!(
+                    "string",
+                    "Optional UUID of the graph (uses agent's default if not specified)"
+                ),
+            ),
+            (
+                "graph_name",
+                prop!(
+                    "string",
+                    "Optional name of the graph (alternative to graph_id)"
+                ),
+            ),
         ],
         vec!["start_id"],
     )
@@ -237,7 +328,13 @@ pub fn open_graph_schema() -> ToolDefinition {
         "Load a knowledge graph into memory and trigger recovery if needed",
         vec![
             ("graph_id", prop!("string", "UUID of the graph to open")),
-            ("graph_name", prop!("string", "Name of the graph to open (alternative to graph_id)")),
+            (
+                "graph_name",
+                prop!(
+                    "string",
+                    "Name of the graph to open (alternative to graph_id)"
+                ),
+            ),
         ],
         vec![],
     )
@@ -249,7 +346,13 @@ pub fn close_graph_schema() -> ToolDefinition {
         "Save a knowledge graph and unload it from memory",
         vec![
             ("graph_id", prop!("string", "UUID of the graph to close")),
-            ("graph_name", prop!("string", "Name of the graph to close (alternative to graph_id)")),
+            (
+                "graph_name",
+                prop!(
+                    "string",
+                    "Name of the graph to close (alternative to graph_id)"
+                ),
+            ),
         ],
         vec![],
     )
@@ -261,7 +364,10 @@ pub fn create_graph_schema() -> ToolDefinition {
         "Create a new knowledge graph with optional name and description",
         vec![
             ("name", prop!("string", "Optional name for the new graph")),
-            ("description", prop!("string", "Optional description of the graph's purpose")),
+            (
+                "description",
+                prop!("string", "Optional description of the graph's purpose"),
+            ),
         ],
         vec![],
     )
@@ -273,15 +379,19 @@ pub fn delete_graph_schema() -> ToolDefinition {
         "Archive a knowledge graph (can delete both open and closed graphs)",
         vec![
             ("graph_id", prop!("string", "UUID of the graph to archive")),
-            ("graph_name", prop!("string", "Name of the graph to archive (alternative to graph_id)")),
+            (
+                "graph_name",
+                prop!(
+                    "string",
+                    "Name of the graph to archive (alternative to graph_id)"
+                ),
+            ),
         ],
         vec![],
     )
 }
 
 // Agent Graph Management Operations
-
-
 
 pub fn list_my_graphs_schema() -> ToolDefinition {
     tool(

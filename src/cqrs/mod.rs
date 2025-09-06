@@ -2,7 +2,7 @@
 //!
 //! This module implements a CQRS architecture that eliminates deadlocks by routing all
 //! mutations through a single command processor while maintaining fast concurrent reads.
-//! This is the core architectural pattern that ensures Cymbiont can handle complex 
+//! This is the core architectural pattern that ensures Cymbiont can handle complex
 //! multi-agent operations without lock contention.
 //!
 //! ## Why CQRS?
@@ -46,7 +46,7 @@
 //! ### Submitting Commands
 //! ```rust
 //! use cqrs::{Command, GraphCommand};
-//! 
+//!
 //! // All mutations go through CommandQueue
 //! let response = app_state.command_queue.execute(
 //!     Command::Graph(GraphCommand::CreateBlock {
@@ -107,9 +107,8 @@ mod queue;
 pub mod router;
 
 pub use commands::{Command, SystemCommand};
-pub use queue::CommandQueue;
 pub use processor::CommandProcessor;
+pub use queue::CommandQueue;
 
 // Re-export command types for convenience
-pub use commands::{GraphCommand, AgentCommand, RegistryCommand,
-                   GraphRegistryCommand};
+pub use commands::{AgentCommand, GraphCommand, GraphRegistryCommand, RegistryCommand};

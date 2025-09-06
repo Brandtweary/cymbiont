@@ -69,8 +69,8 @@
 //! This approach prioritizes service availability over configuration perfection.
 
 use serde::Deserialize;
-use std::path::{Path, PathBuf};
 use std::fs;
+use std::path::{Path, PathBuf};
 use tracing::error;
 
 // Configuration structure
@@ -97,7 +97,6 @@ pub struct BackendConfig {
     #[serde(default = "default_server_info_file")]
     pub server_info_file: String,
 }
-
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct DevelopmentConfig {
@@ -132,7 +131,6 @@ pub struct TransactionLogConfig {
     pub integrity_check_on_startup: bool,
 }
 
-
 #[derive(Debug, Deserialize, Clone)]
 pub struct VerbosityConfig {
     #[serde(default = "default_info_threshold")]
@@ -142,7 +140,6 @@ pub struct VerbosityConfig {
     #[serde(default = "default_trace_threshold")]
     pub trace_threshold: usize,
 }
-
 
 fn default_data_dir() -> String {
     "data".to_string()
@@ -171,7 +168,6 @@ fn default_redundant_copies() -> usize {
 fn default_integrity_check_on_startup() -> bool {
     true
 }
-
 
 fn default_info_threshold() -> usize {
     50
@@ -234,7 +230,6 @@ impl Default for TransactionLogConfig {
     }
 }
 
-
 impl Default for VerbosityConfig {
     fn default() -> Self {
         VerbosityConfig {
@@ -245,7 +240,6 @@ impl Default for VerbosityConfig {
     }
 }
 
-
 // Load configuration from file
 // TODO ✅: Add validation for config values (e.g., default_duration > 0, valid data_dir path)
 // TODO 🛡️: Check for invalid config combinations and provide helpful error messages
@@ -254,14 +248,12 @@ pub fn load_config(config_path: Option<String>) -> Config {
     if let Some(path) = config_path {
         let config_file = PathBuf::from(path);
         match fs::read_to_string(&config_file) {
-            Ok(contents) => {
-                match serde_yaml::from_str(&contents) {
-                    Ok(config) => {
-                        return config;
-                    },
-                    Err(e) => {
-                        error!("Error parsing {:?}: {}", config_file, e);
-                    }
+            Ok(contents) => match serde_yaml::from_str(&contents) {
+                Ok(config) => {
+                    return config;
+                }
+                Err(e) => {
+                    error!("Error parsing {:?}: {}", config_file, e);
                 }
             },
             Err(e) => {
@@ -270,26 +262,26 @@ pub fn load_config(config_path: Option<String>) -> Config {
         }
         // Fall through to default if explicit path fails
     }
-    
+
     // Otherwise use the original logic
     // Check if we're in test mode via environment variable
     let is_test_mode = std::env::var("CYMBIONT_TEST_MODE").is_ok();
-    
+
     // Determine the executable directory
     let exe_path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
     let exe_dir = exe_path.parent().unwrap_or_else(|| Path::new("."));
-    
+
     // Try to find config file in parent directories
     let mut config_path = PathBuf::from(exe_dir);
     let mut found = false;
-    
+
     // Determine which config file to look for
     let config_filename = if is_test_mode {
         "config.test.yaml"
     } else {
         "config.yaml"
     };
-    
+
     // First check if config exists in the current directory
     if config_path.join(config_filename).exists() {
         found = true;
@@ -300,26 +292,24 @@ pub fn load_config(config_path: Option<String>) -> Config {
                 Some(parent) => parent.to_path_buf(),
                 None => break,
             };
-            
+
             if config_path.join(config_filename).exists() {
                 found = true;
                 break;
             }
         }
     }
-    
+
     // If config file was found, try to load it
     if found {
         let config_file = config_path.join(config_filename);
         match fs::read_to_string(&config_file) {
-            Ok(contents) => {
-                match serde_yaml::from_str(&contents) {
-                    Ok(config) => {
-                        return config;
-                    },
-                    Err(e) => {
-                        error!("Error parsing {}: {}", config_filename, e);
-                    }
+            Ok(contents) => match serde_yaml::from_str(&contents) {
+                Ok(config) => {
+                    return config;
+                }
+                Err(e) => {
+                    error!("Error parsing {}: {}", config_filename, e);
                 }
             },
             Err(e) => {
@@ -327,11 +317,10 @@ pub fn load_config(config_path: Option<String>) -> Config {
             }
         }
     }
-    
+
     // If we get here, use default configuration
     Config::default()
 }
-
 
 #[cfg(test)]
 mod tests {

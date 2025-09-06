@@ -1,41 +1,41 @@
 //! @module import_utils
 //! @description High-level import coordination for knowledge graphs
-//! 
+//!
 //! This module provides the main entry point for importing external knowledge graphs
 //! into Cymbiont. It coordinates the entire import process from source parsing to
 //! graph creation, registry management, and error collection.
-//! 
+//!
 //! ## Key Functions
-//! 
+//!
 //! - `import_logseq_graph()`: Complete Logseq import workflow with error handling
-//! 
+//!
 //! ## Import Process
-//! 
+//!
 //! 1. **Source Parsing**: Delegate to format-specific parsers (logseq.rs)
 //! 2. **Graph Registration**: Create or update graph in registry
 //! 3. **Data Import**: Process pages and blocks with reference resolution
 //! 4. **Error Collection**: Aggregate non-fatal errors for reporting
 //! 5. **Result Reporting**: Return comprehensive import statistics
-//! 
+//!
 //! ## Error Handling
-//! 
+//!
 //! The import process is designed to be resilient:
 //! - Parse errors for individual files are collected but don't stop the import
 //! - Reference resolution failures are reported but don't break the graph
 //! - Only fatal errors (registry issues, I/O failures) abort the import
-//! 
+//!
 //! This approach ensures maximum data recovery from potentially corrupted sources.
 
+use super::logseq;
+use crate::app_state::AppState;
+use crate::error::*;
+use crate::graph::graph_operations::GraphOps;
+use serde_json;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use std::collections::HashMap;
-use tracing::{info, error};
+use tracing::{error, info};
 use uuid::Uuid;
-use crate::app_state::AppState;
-use crate::graph::graph_operations::GraphOps;
-use super::logseq;
-use crate::error::*;
-use serde_json;
 
 /// Result of a Logseq import operation
 #[derive(Debug)]
@@ -54,39 +54,48 @@ pub async fn import_logseq_graph(
     custom_name: Option<String>,
 ) -> Result<ImportResult> {
     info!("📥 Importing Logseq graph from: {:?}", logseq_path);
-    
+
     // Parse the Logseq graph
     let (pages, blocks) = logseq::import_graph(logseq_path)?;
-    info!("✅ Successfully parsed {} pages and {} blocks", pages.len(), blocks.len());
-    
+    info!(
+        "✅ Successfully parsed {} pages and {} blocks",
+        pages.len(),
+        blocks.len()
+    );
+
     // Get or create a graph for this import
     let graph_name = custom_name.unwrap_or_else(|| {
-        logseq_path.file_name()
+        logseq_path
+            .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("imported-graph")
             .to_string()
     });
-    
+
     // Use the centralized create_graph function which handles:
     // 1. Graph registration
     // 3. Graph manager creation
-    let graph_info = app_state.create_graph(
-        Some(graph_name.clone()),
-        Some(format!("Imported from: {}", logseq_path.display()))
-    ).await?;
-    
+    let graph_info = app_state
+        .create_graph(
+            Some(graph_name.clone()),
+            Some(format!("Imported from: {}", logseq_path.display())),
+        )
+        .await?;
+
     let graph_id = Uuid::parse_str(
-        graph_info["id"].as_str()
-            .ok_or_else(|| ImportError::validation("Graph ID not found in response"))?
-    ).map_err(|e| ImportError::validation(format!("Invalid graph ID: {}", e)))?;
-    
+        graph_info["id"]
+            .as_str()
+            .ok_or_else(|| ImportError::validation("Graph ID not found in response"))?,
+    )
+    .map_err(|e| ImportError::validation(format!("Invalid graph ID: {}", e)))?;
+
     info!("📊 Using graph: {} ({})", graph_name, graph_id);
-    
+
     // Import the data using GraphOps
     let mut errors = Vec::new();
     let mut page_count = 0;
     let mut block_count = 0;
-    
+
     // Import pages first
     for page in pages {
         // Convert properties for GraphOps
@@ -95,12 +104,11 @@ pub async fn import_logseq_graph(
         } else {
             Some(page.properties.clone())
         };
-        
-        match app_state.create_page(
-            page.name.clone(),
-            properties,
-            &graph_id,
-        ).await {
+
+        match app_state
+            .create_page(page.name.clone(), properties, &graph_id)
+            .await
+        {
             Ok(_) => page_count += 1,
             Err(e) => {
                 let err_msg = format!("Failed to import page {}: {}", page.name, e);
@@ -109,33 +117,36 @@ pub async fn import_logseq_graph(
             }
         }
     }
-    
+
     // Build a mapping from original IDs to new UUIDs
     let mut id_mapping: HashMap<String, String> = HashMap::new();
-    
+
     // First pass: generate new UUIDs for all blocks
     for block in &blocks {
         let new_id = Uuid::new_v4().to_string();
         id_mapping.insert(block.id.clone(), new_id);
     }
-    
+
     // Import blocks after pages (so parent pages exist)
     for block in blocks {
         // Generate our own UUID instead of using Logseq's
         let our_block_id = id_mapping.get(&block.id).unwrap().clone();
-        
+
         // Update parent reference to use new UUID if it exists
-        let parent_id = block.parent.as_ref()
+        let parent_id = block
+            .parent
+            .as_ref()
             .and_then(|pid| id_mapping.get(pid))
             .cloned();
-        
+
         // Convert properties for GraphOps
-        let properties = if block.properties.is_null() || block.properties == serde_json::json!({}) {
+        let properties = if block.properties.is_null() || block.properties == serde_json::json!({})
+        {
             None
         } else {
             Some(block.properties.clone())
         };
-        
+
         // Update reference_content to use new IDs
         let updated_ref_content = if let Some(ref_content) = block.reference_content {
             let mut content = ref_content;
@@ -147,22 +158,26 @@ pub async fn import_logseq_graph(
         } else {
             None
         };
-        
+
         // Update block content to use new IDs in block references
         let mut updated_content = block.content.clone();
         for (old_id, new_id) in &id_mapping {
-            updated_content = updated_content.replace(&format!("(({}))", old_id), &format!("(({}))", new_id));
+            updated_content =
+                updated_content.replace(&format!("(({}))", old_id), &format!("(({}))", new_id));
         }
-        
-        match app_state.add_block(
-            Some(our_block_id.clone()),  // Use our generated UUID
-            updated_content,              // Content with updated block references
-            parent_id,                    // Use mapped parent ID
-            block.page.clone(),           // Page name (will create page if needed)
-            properties,
-            updated_ref_content,          // Reference content with updated IDs
-            &graph_id,
-        ).await {
+
+        match app_state
+            .add_block(
+                Some(our_block_id.clone()), // Use our generated UUID
+                updated_content,            // Content with updated block references
+                parent_id,                  // Use mapped parent ID
+                block.page.clone(),         // Page name (will create page if needed)
+                properties,
+                updated_ref_content, // Reference content with updated IDs
+                &graph_id,
+            )
+            .await
+        {
             Ok(_) => block_count += 1,
             Err(e) => {
                 let err_msg = format!("Failed to import block {}: {}", block.id, e);
@@ -171,9 +186,12 @@ pub async fn import_logseq_graph(
             }
         }
     }
-    
-    info!("✅ Imported {} pages and {} blocks", page_count, block_count);
-    
+
+    info!(
+        "✅ Imported {} pages and {} blocks",
+        page_count, block_count
+    );
+
     // Return the import result
     Ok(ImportResult {
         graph_id: graph_id.to_string(),

@@ -39,6 +39,25 @@
 //!
 //! For production deployments, consider using a reverse proxy with
 //! proper TLS termination and more robust authentication.
+//!
+//! ## Implementation Details
+//!
+//! ### Token Generation and Storage
+//! The `generate_and_save_token()` function creates a new UUID v4 token and writes
+//! it to the filesystem. The file permissions are set to 0600 on Unix systems to
+//! ensure only the owner can read the token. If authentication is disabled in
+//! the configuration, this function returns None.
+//!
+//! ### Middleware Flow
+//! The `auth_middleware()` function intercepts HTTP requests to protected endpoints.
+//! It extracts the token from the Authorization header (supporting both "Bearer token"
+//! and plain "token" formats), validates it against the stored token, and either
+//! allows the request to proceed or returns a 401 Unauthorized response.
+//!
+//! ### Token Validation
+//! The `validate_token()` function performs constant-time comparison to prevent
+//! timing attacks. It handles configuration-based authentication disabling and
+//! fixed token override from the configuration file.
 
 use axum::{
     extract::{Request, State},

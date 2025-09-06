@@ -25,6 +25,35 @@
 //! - Only fatal errors (registry issues, I/O failures) abort the import
 //!
 //! This approach ensures maximum data recovery from potentially corrupted sources.
+//!
+//! ## ID Mapping Strategy
+//!
+//! During import, Cymbiont generates new UUIDs for all imported entities rather than
+//! using the source system's IDs. This ensures:
+//! - **Uniqueness**: No conflicts with existing data
+//! - **Consistency**: All IDs follow the same format
+//! - **Traceability**: Original IDs preserved in properties for debugging
+//!
+//! The import process maintains an ID mapping table to correctly resolve references
+//! between blocks and pages. Block references in content (e.g., `((block-id))`) are
+//! automatically updated to use the new UUIDs.
+//!
+//! ## Import Statistics
+//!
+//! The `ImportResult` structure provides detailed metrics:
+//! - `graph_id`: The UUID of the created/updated graph
+//! - `graph_name`: Human-readable name of the graph
+//! - `pages_imported`: Count of successfully imported pages
+//! - `blocks_imported`: Count of successfully imported blocks
+//! - `errors`: Collection of non-fatal errors encountered
+//!
+//! ## Future Extensions
+//!
+//! The module is designed to be extensible for additional import sources:
+//! - Obsidian markdown vaults
+//! - Roam Research JSON exports
+//! - Notion API integration
+//! - Generic markdown directories
 
 use super::logseq;
 use crate::app_state::AppState;
@@ -130,7 +159,10 @@ pub async fn import_logseq_graph(
     // Import blocks after pages (so parent pages exist)
     for block in blocks {
         // Generate our own UUID instead of using Logseq's
-        let our_block_id = id_mapping.get(&block.id).unwrap().clone();
+        let our_block_id = id_mapping
+            .get(&block.id)
+            .expect("Block ID should exist in mapping")
+            .clone();
 
         // Update parent reference to use new UUID if it exists
         let parent_id = block

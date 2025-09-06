@@ -306,11 +306,17 @@ fn build_block_hierarchy(blocks: Vec<LogseqBlock>) -> Result<Vec<LogseqBlock>> {
     let mut stack: Vec<usize> = Vec::new();
 
     for i in 0..nodes.len() {
-        let current_indent = nodes[i].as_ref().unwrap().indent_level;
+        let current_indent = nodes[i]
+            .as_ref()
+            .expect("Node should exist in hierarchy building")
+            .indent_level;
 
         // Pop from stack until we find a potential parent
         while let Some(&parent_idx) = stack.last() {
-            let parent_indent = nodes[parent_idx].as_ref().unwrap().indent_level;
+            let parent_indent = nodes[parent_idx]
+                .as_ref()
+                .expect("Parent node should exist in hierarchy building")
+                .indent_level;
             if parent_indent < current_indent {
                 // Found a parent
                 parent_indices[i] = Some(parent_idx);

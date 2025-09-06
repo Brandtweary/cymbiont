@@ -31,42 +31,29 @@ RUST_LOG=debug cargo run         # Run cymbiont with debug logging (do not chang
 - `--delete-graph <NAME_OR_ID>`: Archive a graph by name or ID
 - `--list-graphs`: List all graphs with metadata
 
-### Agent Management
-- `--create-agent <NAME>`: Create new agent
-- `--agent-description <DESC>`: Optional description for the new agent (used with --create-agent)
-- `--delete-agent <NAME_OR_ID>`: Delete agent by name or ID
-- `--activate-agent <NAME_OR_ID>`: Activate agent by name or ID
-- `--deactivate-agent <NAME_OR_ID>`: Deactivate agent by name or ID
-- `--agent-info <NAME_OR_ID>`: Show agent info by name or ID
-- `--authorize-agent <NAME_OR_ID>`: Authorize agent for a graph
-- `--for-graph <NAME_OR_ID>`: Graph to authorize the agent for (used with --authorize-agent)
-- `--deauthorize-agent <NAME_OR_ID>`: Deauthorize agent from a graph
-- `--from-graph <NAME_OR_ID>`: Graph to deauthorize the agent from (used with --deauthorize-agent)
 
 ### Core Directories
 - **src/**: Cymbiont server - graph management, API endpoints
 - **logseq_databases/**: Test graphs
   - **dummy_graph/**: Test data for development
-- **data/**: Knowledge graph and agent persistence (configurable via data_dir in config.yaml)
+- **data/**: Knowledge graph persistence (configurable via data_dir in config.yaml)
   - **IMPORTANT**: The data/ directory is git-tracked (has .gitkeep) - never rm -rf it
-  - **command_log/**: CQRS command database (sled) - single source of truth
-  - **graph_registry.json**: JSON export for debugging (rebuilt from command log)
-  - **agent_registry.json**: JSON export for debugging (rebuilt from command log)
+  - **graph_registry.json**: Graph metadata persistence
+  - **agent.json**: Agent state persistence
   - **auth_token**: Auto-generated authentication token (rotates on restart)
-  - **graphs/{graph-id}/**: Per-graph exports for debugging
-  - **agents/{agent-id}/**: Per-agent exports for debugging
+  - **graphs/{graph-id}/**: Per-graph data
+    - **knowledge_graph.json**: Graph content persistence
   - **archived_graphs/**: Deleted graphs are moved here with timestamp
-  - **archived_agents/**: Deleted agents are moved here with timestamp
 
 ### Project Structure
 - **src/**
   - **main.rs**: Application entry point with 5-phase startup sequence
   - **cli.rs**: CLI argument parsing and command execution
   - **config.rs**: YAML configuration loading and validation
-  - **utils.rs**: Process management, datetime parsing, lock utilities
+  - **utils.rs**: Process management, datetime parsing, async lock utilities
   - **error.rs**: Hierarchical error system with domain-specific types
-  - **app_state.rs**: Centralized application state management with agent integration
-  - **cqrs/**: Command Query Responsibility Segregation - centralized state management
+  - **app_state.rs**: Pure resource container with CQRS integration
+  - **cqrs/**: Command Query Responsibility Segregation for deadlock-free mutations
   - **graph/**: Graph management subsystem - see `src/graph/CLAUDE.md` for module details
   - **agent/**: Agent abstraction layer - see `src/agent/CLAUDE.md` for module details
   - **import/**: Data import functionality - see `src/import/CLAUDE.md` for module details
@@ -84,7 +71,7 @@ RUST_LOG=debug cargo run         # Run cymbiont with debug logging (do not chang
 ## Codebase Guidelines
 - Logging: use `tracing` macros - `error!()`, `warn!()`, `info!()`, `debug!()`, `trace!()` (enforced by build.rs)
 - Error handling: use the centralized `error.rs` system with domain-specific types (StorageError, ServerError, etc.) and the global `Result<T>` type alias
-- Lock handling: use `read_or_panic()` and `write_or_panic()` from the `utils.rs` module for all RwLock operations
+- Lock handling: use `AsyncRwLockExt` trait from `utils.rs` for async lock operations
 - Whenever you update `config.example.yaml` ensure that you also update `config.yaml`
 - Don't ever delete TODO comments unless the user gives permission first
 - Don't inline imports ever (except for temp debugging like `tracing::debug!()`)

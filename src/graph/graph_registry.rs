@@ -28,7 +28,7 @@
 //! - Handles graph lifecycle: register, open, close, remove
 //! - Provides centralized graph resolution by UUID or name
 //! - Maintains registry state in memory
-//! - Offers complete workflow methods that coordinate with AgentRegistry for prime agent authorization
+//! - Offers complete workflow methods
 //!
 //! ## Graph State Management
 //!
@@ -71,16 +71,16 @@ use std::fs;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
-use tracing::info;
+use tracing::{info, warn};
 use tokio::sync::RwLock;
 use std::sync::Arc;
 
 use crate::graph::graph_manager::GraphManager;
-use crate::agent::agent_registry::AgentRegistry;
 use crate::error::*;
 // Result type from error module
 use crate::Result;
 use crate::cqrs::router::RouterToken;
+use crate::utils::uuid_serde::{uuid_hashmap_serde, uuid_hashset_serde};
 
 
 
@@ -100,17 +100,12 @@ pub struct GraphInfo {
     /// Optional description
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    
-    /// Agents authorized to access this graph (bidirectional tracking)
-    /// Managed by AgentRegistry, not GraphRegistry
-    #[serde(default, with = "uuid_vec_serde")]
-    pub authorized_agents: Vec<Uuid>,
 }
 
 /// Registry of all known graphs
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GraphRegistry {
-    /// Map of graph ID to graph info (public for AgentRegistry bidirectional tracking)
+    /// Map of graph ID to graph info (public for graph lifecycle management)
     #[serde(with = "uuid_hashmap_serde")]
     graphs: HashMap<Uuid, GraphInfo>,
     /// Currently open graph IDs (replaces active_graph_id)
@@ -135,6 +130,19 @@ impl GraphRegistry {
     /// Set the data directory for graph persistence
     pub fn set_data_dir(&mut self, data_dir: &Path) {
         self.data_dir = Some(data_dir.to_path_buf());
+    }
+    
+    /// Load registry from JSON file, or create empty if not found
+    pub fn load(path: &Path) -> Result<Self> {
+        if path.exists() {
+            let json = fs::read_to_string(path)?;
+            let mut registry: GraphRegistry = serde_json::from_str(&json)?;
+            // Clear open_graphs since nothing is actually open on startup
+            registry.open_graphs.clear();
+            Ok(registry)
+        } else {
+            Ok(GraphRegistry::new())
+        }
     }
     
     /// Open a graph (complete workflow with loading)
@@ -173,7 +181,6 @@ impl GraphRegistry {
     /// This method orchestrates the full creation workflow:
     /// 1. Register graph metadata
     /// 2. Create GraphManager
-    /// 3. Authorize prime agent
     /// 
     /// Takes resources as parameters to avoid weak references.
     pub async fn create_graph_complete(
@@ -183,7 +190,6 @@ impl GraphRegistry {
         name: Option<String>,  
         description: Option<String>,
         graph_managers: &mut HashMap<Uuid, Arc<RwLock<GraphManager>>>,
-        agent_registry: &mut AgentRegistry,
         data_dir: &Path,
     ) -> Result<GraphInfo> {
         // Create the graph directory
@@ -197,12 +203,7 @@ impl GraphRegistry {
         let graph_manager = GraphManager::new(&graph_dir)?;
         graph_managers.insert(graph_id, Arc::new(RwLock::new(graph_manager)));
         
-        // Step 3: Authorize prime agent if it exists
-        if let Some(prime_id) = agent_registry.get_prime_agent_id() {
-            agent_registry.authorize_agent_for_graph(_token, &prime_id, &graph_info.id, self).await?;
-        }
-        
-        info!("✅ Created graph {} with prime agent authorization", graph_info.name);
+        info!("✅ Created graph {}", graph_info.name);
         Ok(graph_info)
     }
 
@@ -245,13 +246,20 @@ impl GraphRegistry {
             created: Utc::now(),
             last_accessed: Utc::now(),
             description,
-            authorized_agents: Vec::new(),  // AgentRegistry will manage this
         };
 
         self.graphs.insert(graph_id, graph_info.clone());
         
         // Always open newly registered graphs
         self.open_graphs.insert(graph_id);
+        
+        // Autosave after mutation
+        if let Some(data_dir) = &self.data_dir {
+            let registry_path = data_dir.join("graph_registry.json");
+            if let Err(e) = self.save(&registry_path) {
+                warn!("Failed to save graph registry: {}", e);
+            }
+        }
         
         Ok(graph_info)
     }
@@ -275,11 +283,6 @@ impl GraphRegistry {
         self.open_graphs.iter().copied().collect()
     }
     
-    /// Check if a graph is open
-    pub fn is_graph_open(&self, graph_id: &Uuid) -> bool {
-        self.open_graphs.contains(graph_id)
-    }
-    
     /// Open a graph (pure registry operation)
     /// 
     /// This method ONLY updates registry state. It does not create GraphManagers or rebuild from command log.
@@ -296,6 +299,14 @@ impl GraphRegistry {
         // Update last accessed time
         if let Some(graph) = self.graphs.get_mut(graph_id) {
             graph.last_accessed = Utc::now();
+        }
+        
+        // Autosave after mutation
+        if let Some(data_dir) = &self.data_dir {
+            let registry_path = data_dir.join("graph_registry.json");
+            if let Err(e) = self.save(&registry_path) {
+                warn!("Failed to save graph registry: {}", e);
+            }
         }
         
         Ok(graph_info)
@@ -320,6 +331,14 @@ impl GraphRegistry {
         
         // Remove from open set
         self.open_graphs.remove(graph_id);
+        
+        // Autosave after mutation
+        if let Some(data_dir) = &self.data_dir {
+            let registry_path = data_dir.join("graph_registry.json");
+            if let Err(e) = self.save(&registry_path) {
+                warn!("Failed to save graph registry: {}", e);
+            }
+        }
         
         Ok(())
     }
@@ -371,7 +390,6 @@ impl GraphRegistry {
         _token: &RouterToken,
         graph_id: &Uuid,
         graph_managers: &mut HashMap<Uuid, Arc<RwLock<GraphManager>>>,
-        agent_registry: &mut AgentRegistry,
     ) -> Result<()> {
         // Get the graph info
         let graph_info = self.graphs.get(graph_id)
@@ -408,8 +426,13 @@ impl GraphRegistry {
             graph_managers.remove(graph_id);
         }
         
-        // Clean up this graph from all agents' authorized_graphs lists
-        agent_registry.remove_graph_from_all_agents(graph_id);
+        // Autosave after mutation
+        if let Some(data_dir) = &self.data_dir {
+            let registry_path = data_dir.join("graph_registry.json");
+            if let Err(e) = self.save(&registry_path) {
+                warn!("Failed to save graph registry: {}", e);
+            }
+        }
         
         Ok(())
     }
@@ -417,38 +440,10 @@ impl GraphRegistry {
     // ========== Recovery-Only Methods ==========
     // These methods are ONLY for command recovery and bypass logging
     
-    
-    /// Add an agent to a graph's authorized list (called by AgentRegistry)
-    pub fn add_authorized_agent(&mut self, graph_id: &Uuid, agent_id: &Uuid) -> Result<()> {
-        if let Some(graph) = self.graphs.get_mut(graph_id) {
-            if !graph.authorized_agents.contains(agent_id) {
-                graph.authorized_agents.push(*agent_id);
-            }
-            Ok(())
-        } else {
-            Err(StorageError::not_found("graph", "id", graph_id.to_string()).into())
-        }
-    }
-    
-    /// Remove an agent from a graph's authorized list (called by AgentRegistry)
-    pub fn remove_authorized_agent(&mut self, graph_id: &Uuid, agent_id: &Uuid) {
-        if let Some(graph) = self.graphs.get_mut(graph_id) {
-            graph.authorized_agents.retain(|id| id != agent_id);
-        }
-    }
-    
-    /// Remove an agent from ALL graphs' authorized lists (used when deleting an agent)
-    pub fn remove_agent_from_all_graphs(&mut self, agent_id: &Uuid) {
-        for graph in self.graphs.values_mut() {
-            graph.authorized_agents.retain(|id| id != agent_id);
-        }
-    }
-    
     /// Export the registry to JSON for debugging/inspection
     /// 
-    /// Note: This is NOT for persistence - command log is the source of truth
-    /// The test harness (tests/common/wal_validation.rs) reads the command log for validation
-    pub fn export_json(&self, path: &Path) -> Result<()> {
+    /// Save registry to JSON
+    pub fn save(&self, path: &Path) -> Result<()> {
         let json = serde_json::to_string_pretty(&self)?;
         
         fs::write(path, json)?;
@@ -457,98 +452,6 @@ impl GraphRegistry {
     }
 }
 
-/// Custom serialization modules for UUID collections
-mod uuid_serde {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use std::collections::{HashMap, HashSet};
-    use uuid::Uuid;
-    
-    pub mod uuid_hashmap_serde {
-        use super::*;
-        
-        pub fn serialize<S, V>(map: &HashMap<Uuid, V>, serializer: S) -> Result<S::Ok, S::Error>
-        where
-            S: Serializer,
-            V: Serialize,
-        {
-            let string_map: HashMap<String, &V> = map
-                .iter()
-                .map(|(k, v)| (k.to_string(), v))
-                .collect();
-            string_map.serialize(serializer)
-        }
-        
-        pub fn deserialize<'de, D, V>(deserializer: D) -> Result<HashMap<Uuid, V>, D::Error>
-        where
-            D: Deserializer<'de>,
-            V: Deserialize<'de>,
-        {
-            let string_map = HashMap::<String, V>::deserialize(deserializer)?;
-            string_map
-                .into_iter()
-                .map(|(k, v)| {
-                    Uuid::parse_str(&k)
-                        .map(|uuid| (uuid, v))
-                        .map_err(serde::de::Error::custom)
-                })
-                .collect()
-        }
-    }
-    
-    pub mod uuid_hashset_serde {
-        use super::*;
-        
-        pub fn serialize<S>(set: &HashSet<Uuid>, serializer: S) -> Result<S::Ok, S::Error>
-        where
-            S: Serializer,
-        {
-            let string_vec: Vec<String> = set
-                .iter()
-                .map(|uuid| uuid.to_string())
-                .collect();
-            string_vec.serialize(serializer)
-        }
-        
-        pub fn deserialize<'de, D>(deserializer: D) -> Result<HashSet<Uuid>, D::Error>
-        where
-            D: Deserializer<'de>,
-        {
-            let string_vec = Vec::<String>::deserialize(deserializer)?;
-            string_vec
-                .into_iter()
-                .map(|s| Uuid::parse_str(&s).map_err(serde::de::Error::custom))
-                .collect()
-        }
-    }
-    
-    pub mod uuid_vec_serde {
-        use super::*;
-        
-        pub fn serialize<S>(vec: &Vec<Uuid>, serializer: S) -> Result<S::Ok, S::Error>
-        where
-            S: Serializer,
-        {
-            let string_vec: Vec<String> = vec
-                .iter()
-                .map(|uuid| uuid.to_string())
-                .collect();
-            string_vec.serialize(serializer)
-        }
-        
-        pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<Uuid>, D::Error>
-        where
-            D: Deserializer<'de>,
-        {
-            let string_vec = Vec::<String>::deserialize(deserializer)?;
-            string_vec
-                .into_iter()
-                .map(|s| Uuid::parse_str(&s).map_err(serde::de::Error::custom))
-                .collect()
-        }
-    }
-}
-
-use uuid_serde::{uuid_hashmap_serde, uuid_hashset_serde, uuid_vec_serde};
 
 #[cfg(test)]
 mod tests {

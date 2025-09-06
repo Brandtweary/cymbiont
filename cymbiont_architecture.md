@@ -6,28 +6,26 @@ cymbiont/
 ├── src/                           # Core knowledge graph engine
 │   ├── main.rs                    # Entry point with 5-phase startup sequence
 │   ├── cli.rs                     # CLI argument parsing and command execution
-│   ├── app_state.rs               # Centralized application state with agent management
+│   ├── app_state.rs               # Pure resource container with CQRS integration
 │   ├── config.rs                  # YAML configuration management
-│   ├── utils.rs                   # Process management and utilities
+│   ├── utils.rs                   # Process management, utilities, and async lock handling
 │   ├── error.rs                   # Hierarchical error system with domain-specific types
-│   ├── lock.rs                    # Lock handling utilities with panic-on-poison strategy
 │   ├── graph/                     # Graph management subsystem
 │   │   ├── mod.rs                 # Graph module exports
 │   │   ├── graph_manager.rs       # Petgraph-based knowledge graph engine
-│   │   ├── graph_operations.rs    # Multi-agent graph operations with runtime authorization
-│   │   └── graph_registry.rs      # Multi-graph UUID management with agent tracking
+│   │   ├── graph_operations.rs    # Graph operations via CQRS commands
+│   │   └── graph_registry.rs      # Multi-graph UUID management with open/closed state
 │   ├── agent/                     # Agent abstraction layer
 │   │   ├── mod.rs                 # Agent module exports
-│   │   ├── agent.rs               # Core Agent struct with conversation management and tool execution
-│   │   ├── agent_registry.rs      # Agent lifecycle and authorization management
+│   │   ├── agent.rs               # Knowledge graph agent with conversation management and tool execution
 │   │   ├── llm.rs                 # LLM backend abstraction with MockLLM tool support
-│   │   ├── kg_tools.rs            # Static knowledge graph tool registry with 15 functional tools
+│   │   ├── kg_tools.rs            # Static knowledge graph tool registry with 14 functional tools
 │   │   └── schemas.rs             # Ollama-compatible tool schemas for function calling
 │   ├── import/                    # Data import functionality
 │   │   ├── mod.rs                 # Import module exports and errors
 │   │   ├── pkm_data.rs            # PKM data structures and helper functions
 │   │   ├── logseq.rs              # Logseq-specific parsing
-│   │   └── import_utils.rs        # Import coordination with agent authorization
+│   │   └── import_utils.rs        # Import coordination and graph creation
 │   ├── server/                    # Server-specific functionality - see src/server/CLAUDE.md
 │   │   ├── mod.rs                 # Server module exports
 │   │   ├── server.rs              # Server lifecycle and port management
@@ -36,33 +34,28 @@ cymbiont/
 │   │   ├── websocket_utils.rs     # Shared helpers (auth, response, graph resolution)
 │   │   ├── websocket_commands/    # Command handlers by domain
 │   │   │   ├── mod.rs             # Command module exports
-│   │   │   ├── agent_commands.rs  # Agent chat and administration
+│   │   │   ├── agent_commands.rs  # Agent chat and information
 │   │   │   ├── graph_commands.rs  # Graph CRUD operations
-│   │   │   └── misc_commands.rs   # Auth, test, freeze commands
+│   │   │   └── misc_commands.rs   # Auth and system commands
 │   │   └── auth.rs                # Token generation and validation
 │   └── cqrs/                      # Command Query Responsibility Segregation
 │       ├── mod.rs                 # CQRS module exports
-│       ├── commands.rs            # All mutation commands with deterministic replay
+│       ├── commands.rs            # All mutation commands
 │       ├── queue.rs               # Public API for command submission
 │       ├── processor.rs           # Single-threaded state owner
-│       ├── router.rs              # Command routing with RouterToken authorization
-│       └── wal.rs                 # Command persistence with sled
+│       └── router.rs              # Command routing with RouterToken authorization
 ├── data/                          # Graph and agent persistence (configurable path)
-│   ├── command_log/               # CQRS command WAL database (sled)
-│   ├── graph_registry.json        # JSON export for debugging
-│   ├── agent_registry.json        # JSON export for debugging
+│   ├── graph_registry.json        # Graph metadata persistence
+│   ├── agent.json                 # Agent state persistence
 │   ├── auth_token                 # Authentication token (auto-generated)
-│   ├── graphs/{graph-id}/         # Per-graph exports
-│   │   └── knowledge_graph.json   # JSON export for debugging
-│   ├── agents/{agent-id}/         # Per-agent exports
-│   │   └── agent.json             # JSON export for debugging
-│   ├── archived_graphs/           # Deleted graphs archive
-│   └── archived_agents/           # Deleted agents archive
+│   ├── graphs/{graph-id}/         # Per-graph data
+│   │   └── knowledge_graph.json   # Graph content persistence
+│   └── archived_graphs/           # Deleted graphs archive
 ├── tests/                         # Integration tests - see tests/CLAUDE.md
 │   ├── common/                    # Shared test utilities
 │   │   ├── mod.rs                 # Test environment setup
 │   │   ├── test_harness.rs        # TestServer lifecycle management with CQRS
-│   │   └── wal_validation.rs      # CQRS command WAL-based state validation
+│   │   └── test_validator.rs      # JSON-based state validation
 │   └── integration/               # Integration test suite (single binary - multiple test modules)
 ├── autodebugger/                  # Git submodule: LLM developer utilities toolbag
 └── build.rs                       # Build script: enforces tracing macro usage
@@ -81,11 +74,10 @@ cymbiont/
 **Phases**: Initialization → Common startup → Command handling → Runtime loop → Cleanup
 **Key functions**:
 - `run_startup_sequence()` - Common initialization for both modes
-- `check_orphaned_graphs()` - Warn about graphs with no authorized agents
 - `run_server_loop()` / `run_cli_loop()` - Mode-specific event loops
 - `handle_graceful_shutdown()` - Command completion during shutdown
-**Startup**: CommandProcessor::start() handles WAL recovery and prime agent creation
-**Features**: Duration limits, signal handling, orphan detection
+**Startup**: CommandProcessor::start() initializes CQRS system and loads agent
+**Features**: Duration limits, signal handling, graceful shutdown
 
 ### cli.rs
 **Purpose**: CLI argument parsing and CQRS command execution
@@ -93,10 +85,10 @@ cymbiont/
 **Generated**: `Args` struct with clap annotations, `from_json_with_args()` for WebSocket bridge
 **Functions**:
 - `handle_cli_commands()` - Process CLI commands via CommandQueue, returns true for early exit
-- `show_cli_status()` - Display graph and agent status (read-only)
+- `show_cli_status()` - Display graph status (read-only)
 - `dispatch_cli_command()` - WebSocket bridge for CLI execution
-**Architecture**: All create/delete/activate operations use `app_state.command_queue.execute()`
-**Commands**: Agent management, graph operations, system status
+**Architecture**: All mutations use `app_state.command_queue.execute()`
+**Commands**: Graph operations, import, system status
 **Contract**: Build script extracts commands for test verification
 
 ### config.rs
@@ -115,19 +107,18 @@ cymbiont/
 
 ### cqrs/mod.rs
 **Purpose**: CQRS architecture implementation for deadlock-free mutations
-**Architecture**: Command-Query Responsibility Segregation with unified WAL
+**Architecture**: Command-Query Responsibility Segregation
 **Pattern**: Single-threaded CommandProcessor owns all mutable state, eliminating deadlocks
-**Components**: Commands, CommandQueue, CommandProcessor, RouterToken, CommandLog
+**Components**: Commands, CommandQueue, CommandProcessor, RouterToken
 
 ### cqrs/commands.rs
-**Purpose**: All mutation commands with deterministic replay support
+**Purpose**: All mutation commands
 **Command types**:
-- `RegistryCommand`: Graph/agent registry operations (CreateGraph, CreateAgent, etc.)
+- `RegistryCommand`: Graph registry operations (CreateGraph, RemoveGraph, etc.)
 - `GraphCommand`: Graph content operations (CreateBlock, UpdateBlock, DeleteBlock, etc.)
-- `AgentCommand`: Agent operations (AuthorizeAgent, DeauthorizeAgent, etc.)
-- `SystemCommand`: System operations (FreezeOperations, UnfreezeOperations)
-**Features**: Deterministic replay via `resolve()` method, resolved_id fields for UUID generation
-**WAL**: All commands logged before execution for crash recovery
+- `AgentCommand`: Agent state operations (AddMessage, ClearHistory, etc.)
+- `SystemCommand`: System operations (Shutdown)
+**Features**: Type-safe command definitions, response types
 
 ### cqrs/queue.rs
 **Purpose**: Public API for command submission with async futures
@@ -139,9 +130,9 @@ cymbiont/
 ### cqrs/processor.rs
 **Purpose**: Single-threaded owner of all mutable state
 **Type**: `CommandProcessor` - executes commands sequentially in background task
-**Responsibilities**: Command execution, WAL logging, state mutation, entity lazy loading
-**Features**: Startup recovery, entity rebuild from WAL, RouterToken authorization
-**Architecture**: Owns AppState resources, provides RouterTokens for authorized operations
+**Responsibilities**: Command execution, state mutation, entity lazy loading, JSON persistence
+**Features**: Lazy graph loading, RouterToken authorization, autosave management
+**Architecture**: Owns AppState resources, provides RouterTokens for operations
 
 ### cqrs/router.rs
 **Purpose**: Authorization system for command execution
@@ -150,18 +141,12 @@ cymbiont/
 **Usage**: CommandProcessor creates tokens, domain modules require them for mutations
 **Security**: Prevents direct state mutation, ensures all changes go through CQRS
 
-### cqrs/wal.rs
-**Purpose**: Command Write-Ahead Log for crash recovery
-**Type**: `CommandLog` - sled-based persistent command storage
-**Features**: Command serialization, startup recovery, entity-specific filtering
-**Storage**: Commands stored with timestamps, entity IDs, and serialized data
-**Recovery**: Replay commands in chronological order for state reconstruction
 
 ### utils.rs
-**Purpose**: Process management, utilities, and lock handling (moved from lock.rs)
-**Features**: Process utilities, datetime parsing, general helpers
-**Lock handling**: `read_or_panic()`, `write_or_panic()` for RwLock operations
-**Pattern**: Panic-on-poison strategy for lock errors
+**Purpose**: Process management, utilities, and async lock handling
+**Features**: Process utilities, datetime parsing, UUID serialization helpers
+**Lock handling**: `AsyncRwLockExt` trait for async locks (cannot be poisoned)
+**Functions**: `cleanup_and_save_all()` for graceful shutdown persistence
 
 ### app_state.rs
 **Purpose**: Pure resource container with CQRS command queue integration
@@ -169,14 +154,12 @@ cymbiont/
 **Resources**:
 - `command_queue`: Primary interface for all mutations
 - `graph_managers`: HashMap of graph managers (read-only from external access)
-- `agents`: HashMap of active agents (read-only from external access)
-- `graph_registry`, `agent_registry`: Metadata registries
+- `agent`: Knowledge graph agent (read-only from external access)
+- `graph_registry`: Graph metadata registry
 - `ws_connections`: WebSocket connection tracking (server mode)
 - `auth_token`: Authentication token
-- `operation_freeze`: Test infrastructure
 **Key methods** (minimal - just lifecycle):
 - `new_with_config()` - Initialize with configuration and CommandQueue
-- `cleanup_and_save()` - Shutdown persistence
 - `initiate_graceful_shutdown()` - Start shutdown sequence
 **Pattern**: CommandQueue for mutations, direct access for reads
 **Architecture**: CQRS separates command/query responsibilities
@@ -192,14 +175,16 @@ cymbiont/
 **Details**: See `src/graph/CLAUDE.md` for module guide
 
 ### graph/graph_manager.rs
-**Purpose**: Generic petgraph-based storage engine
-**Features**: Domain-agnostic, StableGraph for index stability
+**Purpose**: Generic petgraph-based storage engine with JSON persistence
+**Features**: Domain-agnostic, StableGraph for index stability, autosave mechanism
 **Operations**: `create_node()`, `create_or_update_node()`, `find_node()`, `add_edge()`, `delete_nodes()`
+**Autosave**: Triggers on 5-minute timer or 10 operations threshold
+**Persistence**: `save()` exports to `graphs/{id}/knowledge_graph.json`
 **Types**: Defined by domain (PKM: Page/Block nodes, PageRef/BlockRef edges)
 
 ### graph/graph_operations.rs
-**Purpose**: Multi-agent graph operations via CQRS commands
-**Trait**: `GraphOps` - all operations require `agent_id: Uuid` and `graph_id: &Uuid`
+**Purpose**: Graph operations via CQRS commands
+**Trait**: `GraphOps` - all operations require `graph_id: &Uuid`
 **Operations**:
 - Blocks: `add_block()`, `update_block()`, `delete_block()`
 - Pages: `create_page()`, `delete_page()`
@@ -213,39 +198,27 @@ cymbiont/
 **Operations**:
 - `register_graph()`, `remove_graph()` - lifecycle
 - `open_graph()`, `close_graph()` - state management
-- `resolve_graph_target()` - UUID/name resolution
-- `create_new_graph_complete()`, `delete_graph_complete()` - full workflows
-**Data**: `open_graphs: HashSet<Uuid>`, `authorized_agents` per graph
-**Persistence**: Open state survives restarts
-**Concurrency**: `Arc<RwLock<GraphRegistry>>` with panic-on-poison
+- `resolve_graph_target()` - UUID/name resolution with smart defaults
+- `save()`, `load()` - JSON persistence
+**Data**: `graphs: HashMap<Uuid, GraphInfo>`, `open_graphs: HashSet<Uuid>`
+**Smart defaults**: When only one graph is open, operations default to it
+**Persistence**: Metadata saved to `graph_registry.json`
 
 ### agent/mod.rs
 **Purpose**: Agent module exports
 **Details**: See `src/agent/CLAUDE.md` for module guide
 
-### agent/agent_registry.rs
-**Purpose**: Agent lifecycle via CQRS commands
-**Operations**: All mutations route through CommandQueue
-- `register_agent()`, `remove_agent()` - lifecycle via CQRS
-- `activate_agent()`, `deactivate_agent()` - memory management via CQRS
-- `authorize_agent_for_graph()`, `deauthorize_agent_from_graph()` - bidirectional auth via CQRS
-- `resolve_agent_target()` - UUID/name resolution (read-only)
-- `ensure_default_agent()` - create prime agent on first run via CQRS
-- `find_orphaned_graphs()` - detect graphs without agents (read-only)
-**Prime agent**: Auto-created, full graph access, cannot be deleted
-**Architecture**: CommandProcessor owns registry, RouterToken required for mutations
-**Persistence**: `agent_registry.json` with active/inactive states
 
 ### agent/agent.rs
-**Purpose**: Core Agent with CQRS-based conversation management
+**Purpose**: Knowledge graph agent with conversation management
 **Types**: `Agent`, `Message` (User/Assistant/Tool with AgentContext)
-**Features**: Conversation history, LLM backend, default graph, CQRS tool execution
+**Features**: Conversation history, LLM backend, CQRS tool execution
 **Key function**: `process_agent_message()` - 4-phase LLM pipeline via CQRS commands
 **Methods**:
 - `chat()`, `process_message()` - LLM interaction
 - `execute_tool()` - Tool execution via CommandQueue
-- `get/set_default_graph_id()` - Default graph (read-only access)
-- `reset_conversation()`, `get_history()`, `save()`, `load()` - persistence
+- `reset_conversation()`, `get_history()` - conversation management
+- `save()`, `load()`, `load_or_create()` - JSON persistence
 **Architecture**: Tool calls route through CommandQueue for mutations
 
 ### agent/llm.rs
@@ -255,19 +228,19 @@ cymbiont/
 **Interface**: `complete()` with tool schemas, `health_check()`
 
 ### agent/kg_tools.rs
-**Purpose**: Static tool registry (15 knowledge graph tools)
+**Purpose**: Static tool registry (14 knowledge graph tools)
 **Architecture**: Static `TOOLS` HashMap with function pointers
 **Tools**:
 - Blocks: `add_block`, `update_block`, `delete_block`
 - Pages: `create_page`, `delete_page`
 - Queries: `get_node`, `query_graph_bfs` (stub)
 - Lifecycle: `open_graph`, `close_graph`, `create_graph`, `delete_graph`
-- Lists: `list_graphs`, `list_open_graphs`, `list_my_graphs`
-- Agent: `set_default_graph`, `get_default_graph`
-**Features**: Graph resolution, authorization, JSON responses
+- Lists: `list_graphs`, `list_open_graphs`
+- Utilities: `set_default_graph`, `get_default_graph`
+**Features**: Graph resolution with smart defaults, JSON responses
 
 ### agent/schemas.rs
-**Purpose**: Ollama-compatible tool schemas (15 operations)
+**Purpose**: Ollama-compatible tool schemas (14 operations)
 **Types**: `ToolDefinition`, `ParameterSchema`, `PropertySchema`
 **Features**: Graph targeting (UUID/name), required/optional params, type info
 **Function**: `all_tool_definitions()` - generate all schemas
@@ -282,7 +255,7 @@ cymbiont/
 **Architecture**: Core in websocket.rs, handlers in websocket_commands/
 **Features**: Async task spawning, auth verification, command dispatch via CommandQueue
 **CQRS Integration**: All mutations route through CommandQueue for execution
-**Commands**: Agent chat/admin, graph CRUD, auth/testing utilities
+**Commands**: Agent chat, graph CRUD, auth utilities
 **Details**: See `src/server/CLAUDE.md` for full API
 
 ### import/mod.rs
@@ -311,10 +284,10 @@ cymbiont/
 **Features**: Recursive .md reading, frontmatter, nested blocks, `((block-id))` detection
 
 ### import/import_utils.rs
-**Purpose**: Import coordination with agent authorization
+**Purpose**: Import coordination and graph creation
 **Function**: `import_logseq_graph()` - Full workflow
-**Steps**: Create graph → Import data → Authorize prime agent → Return UUID
-**Integration**: Uses `create_graph()` for consistent authorization
+**Steps**: Create graph → Import data → Return UUID
+**Integration**: Uses `create_graph()` for consistent graph creation
 
 
 ### server/auth.rs
@@ -329,15 +302,15 @@ cymbiont/
 **Features**: Parallel execution, isolated environments, phase-based testing
 **Details**: See `tests/CLAUDE.md`
 
-### tests/common/wal_validation.rs
-**Purpose**: Unified WAL-based test validation
-**Type**: `WALValidationFixture` - validate all state through transaction log
+### tests/common/test_validator.rs
+**Purpose**: JSON-based test validation
+**Type**: `TestValidator` - validate state through JSON files
 **Methods**:
-- `expect_operation()` - Track expected WAL operations
-- `validate_wal()` - Verify operations exist in transaction log
-- `validate_graph_state()` - Check graph state from WAL
-- `validate_agent_state()` - Check agent state from WAL
-**Features**: Direct sled database access, operation categorization, comprehensive state validation
+- `expect_*()` - Track expected operations
+- `validate_all()` - Verify state in JSON files
+- `validate_graph_state()` - Check graph state from JSON
+- `validate_agent_state()` - Check agent state from JSON
+**Features**: Operation consolidation, timestamp validation, message order checking
 
 
 ## Data Structures
@@ -353,11 +326,7 @@ cymbiont/
 | **Auth** | `Auth` | `token` |
 | **Graph Ops** | `OpenGraph`, `CloseGraph`, `CreateBlock`, `UpdateBlock`, `DeleteBlock` | `graph_id?/graph_name?` + op-specific |
 | | `CreatePage`, `DeletePage`, `CreateGraph`, `DeleteGraph`, `ListGraphs` | |
-| **Agent Chat** | `AgentChat`, `AgentSelect`, `AgentList` | `agent_id?/agent_name?` + op-specific |
-| | `AgentHistory`, `AgentReset`, `AgentInfo` | |
-| **Agent Admin** | `CreateAgent`, `DeleteAgent`, `ActivateAgent` | Agent identification params |
-| | `DeactivateAgent`, `AuthorizeAgent`, `DeauthorizeAgent` | |
-| **Testing** | `FreezeOperations`, `UnfreezeOperations`, `GetFreezeState` | None |
+| **Agent** | `AgentChat`, `AgentHistory`, `AgentReset`, `AgentInfo` | Message content for chat |
 | **System** | `Heartbeat` | None |
 
 **Responses**: `Success {data?}`, `Error {message}`, `Heartbeat`
@@ -365,7 +334,7 @@ cymbiont/
 
 ### Registry Formats
 - **Graph**: `{graphs: [{id, name, path, created_at, last_accessed}]}`
-- **Agent**: `{agents: [{id, name, active, authorized_graphs[]}]}`
+- **Agent**: `{id, name, created_at, updated_at, conversation_history[], llm_config}`
 
 ## Configuration (config.yaml)
 ```yaml
@@ -379,12 +348,6 @@ development:
 auth:
   token: null                     # Fixed token (null=auto-generate)
   disabled: false                 # Disable auth
-transaction_log:
-  fsync_interval_ms: 100
-  compaction_threshold_mb: 100
-  retention_days: 7
-  redundant_copies: 10
-  integrity_check_on_startup: true
 ```
 
 ## CLI Commands
@@ -394,35 +357,28 @@ transaction_log:
 | **Graph** | `--import-logseq <PATH>` | Import Logseq directory |
 | | `--delete-graph <NAME/ID>` | Archive graph |
 | | `--list-graphs` | List all graphs |
-| **Agent** | `--create-agent <NAME>` | Create agent (with `--agent-description`) |
-| | `--delete-agent <NAME/ID>` | Delete agent |
-| | `--activate-agent <NAME/ID>` | Load agent to memory |
-| | `--deactivate-agent <NAME/ID>` | Unload from memory |
-| | `--agent-info <NAME/ID>` | Show agent details |
-| **Auth** | `--authorize-agent <NAME/ID>` | Grant graph access (with `--for-graph`) |
-| | `--deauthorize-agent <NAME/ID>` | Revoke access (with `--from-graph`) |
 | **Runtime** | `--data-dir <PATH>` | Override data directory |
 | | `--config <PATH>` | Use specific config |
 | | `--duration <SECONDS>` | Run duration limit |
 
 ## Graceful Shutdown
-- **First Ctrl+C**: Graceful shutdown, waits 30s for transactions
-- **Second Ctrl+C**: Force termination with WAL flush
-- **Cleanup**: `cleanup_and_save()` persists graphs, closes connections
-- **Exit**: `std::process::exit(0)` due to sled background threads
+- **First Ctrl+C**: Graceful shutdown, saves all state to JSON
+- **Second Ctrl+C**: Force termination
+- **Cleanup**: `cleanup_and_save_all()` persists graphs and agent state
+- **Exit**: `std::process::exit(0)` for clean termination
 
 ## Key Flows
 
 | Flow | Steps |
 |------|-------|
-| **Import** | CLI/HTTP → Parse .md → Extract blocks → CQRS CreateGraph → Authorize prime agent |
-| **CQRS Command** | Submit to CommandQueue → WAL write → Execute via RouterToken → Return response |
-| **WebSocket** | Auth → Agent select → Spawn task → Check auth → CQRS command → Response |
-| **Agent Chat** | Resolve agent → LLM complete → Execute tools via CommandQueue → Save conversation → Return |
-| **Agent Lifecycle** | CQRS RegisterAgent → CQRS ActivateAgent → Chat → CQRS DeactivateAgent → Archive |
-| **Recovery** | CommandProcessor startup → CommandLog replay → Entity lazy loading → Bootstrap |
+| **Import** | CLI/HTTP → Parse .md → Extract blocks → CQRS CreateGraph → Return UUID |
+| **CQRS Command** | Submit to CommandQueue → Execute via RouterToken → Return response |
+| **WebSocket** | Auth → Spawn task → Check auth → CQRS command → Response |
+| **Agent Chat** | LLM complete → Execute tools via CommandQueue → Save conversation → Return |
+| **Graph Lifecycle** | Create → Open → Operations → Close → Archive |
+| **Startup** | Load registries → Initialize agent → Start CommandProcessor |
 | **Auth** | Generate token → Save to `auth_token` → HTTP: Bearer header, WS: Auth command |
-| **Prime Agent** | Auto-create → Authorize for all graphs → Cannot delete → Default agent |
+| **Persistence** | JSON autosave (5 min/10 ops) → Shutdown save → Load on startup |
 
 ### autodebugger/
 **Purpose**: Git submodule - LLM developer utilities

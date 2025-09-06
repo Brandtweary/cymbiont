@@ -30,14 +30,14 @@
 //!
 //! The program follows a 5-phase startup sequence:
 //! 1. **Initialization**: Create AppState with CommandProcessor for CQRS
-//! 2. **Common Startup**: CommandProcessor recovers from WAL, creates prime agent
+//! 2. **Common Startup**: CommandProcessor initializes CQRS system and loads agent
 //! 3. **Command Handling**: Process CLI-specific commands via CommandQueue
 //! 4. **Runtime Loop**: Enter mode-specific event loop (server or CLI)
 //! 5. **Cleanup**: Graceful shutdown with command completion
 //!
 //! Key functions organize the flow:
 //! - `AppState::new_with_config()`: Initialize CQRS and start CommandProcessor
-//! - `run_startup_sequence()`: Check for orphaned graphs
+//! - `run_startup_sequence()`: Common startup tasks
 //! - `cli::handle_cli_commands()`: Execute CLI commands through CommandQueue
 //! - `run_server_loop()` / `run_cli_loop()`: Mode-specific runtime handling
 //!
@@ -60,7 +60,6 @@
 //! After graceful cleanup, the process uses std::process::exit(0) due to sled database background threads.
 
 use crate::error::*;
-use crate::utils::AsyncRwLockExt;
 use clap::Parser;
 use tracing::{info, error, warn, trace};
 
@@ -169,11 +168,8 @@ async fn run_startup_sequence(app_state: &std::sync::Arc<AppState>) -> Result<()
     
     // CommandProcessor::start() was called during AppState initialization and handles:
     // 1. Replaying all commands from WAL for recovery
-    // 2. Restoring runtime state (active agents, open graphs)
-    // 3. Ensuring prime agent exists (creates on first run)
-    
-    // Check for orphaned graphs (graphs with no authorized agents)
-    check_orphaned_graphs(app_state).await;
+    // 2. Restoring runtime state (open graphs)
+    // 3. Loading agent state
     
     // Future startup checks can go here:
     // - Check disk space
@@ -182,25 +178,6 @@ async fn run_startup_sequence(app_state: &std::sync::Arc<AppState>) -> Result<()
     // - etc.
     
     Ok(())
-}
-
-/// Check for graphs with no authorized agents and warn
-async fn check_orphaned_graphs(app_state: &std::sync::Arc<AppState>) {
-    let agent_registry = app_state.agent_registry.read_or_panic("check orphaned graphs - agent registry").await;
-    let graph_registry = app_state.graph_registry.read_or_panic("check orphaned graphs - graph registry").await;
-    let orphaned_graphs = agent_registry.find_orphaned_graphs(&graph_registry);
-    
-    if !orphaned_graphs.is_empty() {
-        warn!("⚠️  Found {} orphaned graph(s) with no authorized agents:", orphaned_graphs.len());
-        for graph_id in &orphaned_graphs {
-            if let Some(graph_info) = graph_registry.get_graph(graph_id) {
-                warn!("  - {} ({})", graph_info.name, graph_id);
-            } else {
-                warn!("  - {}", graph_id);
-            }
-        }
-        warn!("  Consider authorizing an agent using: cymbiont --authorize-agent <AGENT> --for-graph <GRAPH>");
-    }
 }
 
 

@@ -11,19 +11,18 @@ Command Query Responsibility Segregation for sequential state management.
 - **queue.rs**: Public command submission API
 - **processor.rs**: Command executor owning all state
 - **router.rs**: Command routing with RouterToken
-- **wal.rs**: Command persistence with sled
 
 ### Command Types
 - **GraphCommand**: CreateBlock, UpdateBlock, DeleteBlock, CreatePage, DeletePage
 - **AgentCommand**: AddMessage, ClearHistory, SetLLMConfig, SetSystemPrompt, SetDefaultGraph
-- **RegistryCommand**: RegisterGraph, RemoveGraph, OpenGraph, CloseGraph, RegisterAgent, RemoveAgent, ActivateAgent, DeactivateAgent, AuthorizeAgent, DeauthorizeAgent
-- **SystemCommand**: FreezeOperations, UnfreezeOperations, Shutdown
+- **RegistryCommand**: RegisterGraph, RemoveGraph, OpenGraph, CloseGraph
+- **SystemCommand**: Shutdown
 
 ### Key Types
 - **Command**: All possible mutations
 - **CommandQueue**: Async command submission
 - **CommandProcessor**: Sequential executor
-- **RouterToken**: Zero-sized type created only in router.rs, passed to business logic as proof of CQRS authorization
+- **RouterToken**: Zero-sized type created only in router.rs, enforcing CQRS routing
 - **CommandLog**: Sled-based persistence
 
 ## API Methods
@@ -33,7 +32,7 @@ Command Query Responsibility Segregation for sequential state management.
 - `shutdown()` - Graceful shutdown
 
 ### CommandProcessor
-- `start()` - Initialize and run recovery
+- `start()` - Initialize command processing
 - `ensure_graph_loaded(id)` - Lazy load graph
 - `ensure_agent_loaded(id)` - Lazy load agent
 

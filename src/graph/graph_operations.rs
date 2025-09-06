@@ -1,26 +1,26 @@
-//! Graph Operations Module - Agent-Aware PKM Operations
+//! Graph Operations Module - PKM Operations
 //! 
-//! Provides PKM-specific graph operations with runtime agent authorization.
-//! All operations require an agent ID and verify authorization before execution.
+//! Provides PKM-specific graph operations.
+//! Operations are routed through the CQRS command system.
 //! 
 //! ## Design Pattern: Single Trait API
 //! 
-//! The `GraphOps` trait provides all graph operations with agent awareness:
+//! The `GraphOps` trait provides all graph operations:
 //! ```rust
 //! use graph_operations::GraphOps;
 //! 
 //! // All mutations go through CommandQueue
 //! let response = app_state.command_queue.execute(
 //!     Command::Graph(GraphCommand::CreateBlock { 
-//!         agent_id, graph_id, content, parent_id 
+//!         graph_id, content, parent_id, page_name, properties 
 //!     })
 //! ).await?;
 //! ```
 //! 
 //! This pattern provides several benefits:
-//! - Runtime authorization checks for security
+//! - Centralized command handling through CQRS
 //! - Single source of truth for all graph operations
-//! - Clear agent accountability for all changes
+//! - Consistent command routing and validation
 //! - Clean integration with transaction system
 //! 
 //! PKM-specific logic (block reference resolution, page normalization) is delegated to
@@ -64,7 +64,6 @@
 //! ```rust
 //! Operation::Graph(GraphOperation::CreateBlock {
 //!     graph_id: Uuid,
-//!     agent_id: Uuid,
 //!     content: String,
 //!     parent_id: Option<String>,
 //!     page_name: Option<String>,
@@ -91,18 +90,17 @@
 //! When adding new operations, follow these steps:
 //! 
 //! 1. **Define the Command variant** in `cqrs/commands.rs`:
-//!    - Add new variant to `GraphCommand` enum with agent_id and all parameters
+//!    - Add new variant to `GraphCommand` enum with all necessary parameters
 //!    - Include all data needed to replay the command during recovery
 //! 
 //! 2. **Add the trait method** to `GraphOps` trait in this file:
-//!    - Include agent_id: Uuid as first parameter  
 //!    - Add graph_id: &Uuid parameter for graph targeting
 //!    - Return appropriate Result<T> type
 //!    - Route to `command_queue.execute()` internally
 //! 
 //! 3. **Implement command handling** in `cqrs/router.rs`:
 //!    - Add match arm in `apply_graph_command()` method
-//!    - Call helper function with RouterToken for authorization
+//!    - Call helper function with RouterToken for validation
 //!    - All mutations automatically logged to WAL
 //! 
 //! 4. **Create helper function** in this file:
@@ -113,11 +111,11 @@
 //! 5. **Register in tool registry** (optional) in `agent/kg_tools.rs`:
 //!    - Add tool registration in appropriate category
 //!    - Parse parameters from JSON args
-//!    - Call GraphOps method with agent_id and parsed params
+//!    - Call GraphOps method with parsed params
 //! 
 //! 6. **Add WebSocket command** (optional) in `server/websocket.rs`:
 //!    - Define command variant in Command enum
-//!    - Add handler that extracts current_agent_id
+//!    - Add handler that processes the command
 //!    - Call GraphOps method and return success/error response
 //! 
 //! ## Error Handling
@@ -128,99 +126,67 @@
 
 use crate::{
     AppState,
-    agent::agent_registry::AgentRegistry,
     cqrs::{Command, GraphCommand, RegistryCommand, GraphRegistryCommand},
 };
 use std::sync::Arc;
 use tracing::info;
 use uuid::Uuid;
 use crate::error::*;
-use crate::utils::AsyncRwLockExt;
 
 
-/// Helper to verify agent authorization for a graph operation.
-/// Returns an error if the agent is not authorized.
-fn verify_authorization(
-    agent_registry: &AgentRegistry,
-    agent_id: &Uuid,
-    graph_id: &Uuid,
-) -> Result<()> {
-    if !agent_registry.is_agent_authorized(agent_id, graph_id) {
-        Err(GraphError::invalid_state(format!(
-            "Agent {} is not authorized for graph {} - authorization required for all graph operations",
-            agent_id, graph_id
-        )).into())
-    } else {
-        Ok(())
-    }
-}
 
-/// Helper to check authorization for a graph operation.
-/// Encapsulates the full registry read/verify/drop pattern.
-async fn check_authorization(
-    agent_registry: &Arc<tokio::sync::RwLock<AgentRegistry>>,
-    agent_id: &Uuid,
-    graph_id: &Uuid,
-) -> Result<()> {
-    let registry = agent_registry.read_or_panic("check authorization").await;
-    verify_authorization(&registry, agent_id, graph_id)?;
-    Ok(())
-}
 
-/// Agent-aware graph operations that automatically handle authorization.
-/// These methods verify agent authorization at runtime before performing operations.
+/// Graph operations that route through the CQRS command system.
+/// These methods provide the main API for graph operations.
 /// This is the single source of truth for all graph operations.
 pub trait GraphOps {
-    /// Add a new block with agent authorization
+    /// Add a new block
     async fn add_block(
         &self,
-        agent_id: Uuid,
+        block_id: Option<String>,
         content: String,
         parent_id: Option<String>,
         page_name: Option<String>,
         properties: Option<serde_json::Value>,
+        reference_content: Option<String>,
         graph_id: &Uuid,
     ) -> Result<String>;
 
-    /// Update block with agent authorization
+    /// Update block
     async fn update_block(
         &self,
-        agent_id: Uuid,
         block_id: String,
         content: String,
         graph_id: &Uuid,
     ) -> Result<()>;
 
-    /// Delete block with agent authorization
+    /// Delete block
     async fn delete_block(
         &self,
-        agent_id: Uuid,
         block_id: String,
         graph_id: &Uuid,
     ) -> Result<()>;
 
-    /// Create page with agent authorization
+    /// Create page
     async fn create_page(
         &self,
-        agent_id: Uuid,
         page_name: String,
         properties: Option<serde_json::Value>,
         graph_id: &Uuid,
     ) -> Result<()>;
 
-    /// Delete page with agent authorization
+    /// Delete page
     async fn delete_page(
         &self,
-        agent_id: Uuid,
         page_name: String,
         graph_id: &Uuid,
     ) -> Result<()>;
     
-    /// Get a node by ID with agent authorization
-    async fn get_node(&self, agent_id: Uuid, node_id: &str, graph_id: &Uuid) -> Result<serde_json::Value>;
+    /// Get a node by ID
+    async fn get_node(&self, node_id: &str, graph_id: &Uuid) -> Result<serde_json::Value>;
     
-    /// Query graph with BFS traversal with agent authorization
-    async fn query_graph_bfs(&self, agent_id: Uuid, start_id: &str, max_depth: usize, graph_id: &Uuid) -> Result<Vec<serde_json::Value>>;
+    /// Query graph with BFS traversal
+    async fn query_graph_bfs(&self, start_id: &str, max_depth: usize, graph_id: &Uuid) -> Result<Vec<serde_json::Value>>;
     
     /// Open a graph (load into RAM and trigger recovery)
     async fn open_graph(&self, graph_id: Uuid) -> Result<serde_json::Value>;
@@ -241,27 +207,27 @@ pub trait GraphOps {
     async fn delete_graph(&self, graph_id: &Uuid) -> Result<()>;
 }
 
-// Agent-aware graph operations implementation with runtime authorization
+// Graph operations implementation that routes through CQRS
 impl GraphOps for Arc<AppState> {
     async fn add_block(
         &self,
-        agent_id: Uuid,
+        block_id: Option<String>,
         content: String,
         parent_id: Option<String>,
         page_name: Option<String>,
         properties: Option<serde_json::Value>,
+        reference_content: Option<String>,
         graph_id: &Uuid,
     ) -> Result<String> {
-        check_authorization(&self.agent_registry, &agent_id, graph_id).await?;
-        
         // Submit command to CQRS system
         let command = Command::Graph(GraphCommand::CreateBlock {
             graph_id: *graph_id,
-            agent_id,
+            block_id,
             content,
             parent_id,
             page_name,
             properties,
+            reference_content,
         });
         
         let result = self.command_queue.execute(command).await?;
@@ -279,17 +245,13 @@ impl GraphOps for Arc<AppState> {
     
     async fn update_block(
         &self,
-        agent_id: Uuid,
         block_id: String,
         content: String,
         graph_id: &Uuid,
     ) -> Result<()> {
-        check_authorization(&self.agent_registry, &agent_id, graph_id).await?;
-        
         // Submit command to CQRS system
         let command = Command::Graph(GraphCommand::UpdateBlock {
             graph_id: *graph_id,
-            agent_id,
             block_id,
             content,
         });
@@ -298,13 +260,10 @@ impl GraphOps for Arc<AppState> {
         Ok(())
     }
     
-    async fn delete_block(&self, agent_id: Uuid, block_id: String, graph_id: &Uuid) -> Result<()> {
-        check_authorization(&self.agent_registry, &agent_id, graph_id).await?;
-        
+    async fn delete_block(&self, block_id: String, graph_id: &Uuid) -> Result<()> {
         // Submit command to CQRS system
         let command = Command::Graph(GraphCommand::DeleteBlock {
             graph_id: *graph_id,
-            agent_id,
             block_id,
         });
         
@@ -314,17 +273,13 @@ impl GraphOps for Arc<AppState> {
     
     async fn create_page(
         &self,
-        agent_id: Uuid,
         page_name: String,
         properties: Option<serde_json::Value>,
         graph_id: &Uuid,
     ) -> Result<()> {
-        check_authorization(&self.agent_registry, &agent_id, graph_id).await?;
-        
         // Submit command to CQRS system
         let command = Command::Graph(GraphCommand::CreatePage {
             graph_id: *graph_id,
-            agent_id,
             page_name,
             properties,
         });
@@ -333,13 +288,10 @@ impl GraphOps for Arc<AppState> {
         Ok(())
     }
     
-    async fn delete_page(&self, agent_id: Uuid, page_name: String, graph_id: &Uuid) -> Result<()> {
-        check_authorization(&self.agent_registry, &agent_id, graph_id).await?;
-        
+    async fn delete_page(&self, page_name: String, graph_id: &Uuid) -> Result<()> {
         // Submit command to CQRS system
         let command = Command::Graph(GraphCommand::DeletePage {
             graph_id: *graph_id,
-            agent_id,
             page_name,
         });
         
@@ -347,8 +299,7 @@ impl GraphOps for Arc<AppState> {
         Ok(())
     }
     
-    async fn get_node(&self, agent_id: Uuid, node_id: &str, graph_id: &Uuid) -> Result<serde_json::Value> {
-        check_authorization(&self.agent_registry, &agent_id, graph_id).await?;
+    async fn get_node(&self, node_id: &str, graph_id: &Uuid) -> Result<serde_json::Value> {
         
         // Direct read from graph manager
         let managers = self.graph_managers.read().await;
@@ -369,12 +320,10 @@ impl GraphOps for Arc<AppState> {
     #[allow(unused_variables)]
     async fn query_graph_bfs(
         &self,
-        agent_id: Uuid,
         start_id: &str,
         max_depth: usize,
         graph_id: &Uuid,
     ) -> Result<Vec<serde_json::Value>> {
-        check_authorization(&self.agent_registry, &agent_id, graph_id).await?;
         
         // TODO: Implement BFS traversal in graph_manager
         // For now, return empty result
@@ -428,7 +377,7 @@ impl GraphOps for Arc<AppState> {
         Ok(graphs)
     }
     
-    /// Create a new knowledge graph with automatic prime agent authorization
+    /// Create a new knowledge graph
     async fn create_graph(
         &self, 
         name: Option<String>, 
@@ -436,7 +385,7 @@ impl GraphOps for Arc<AppState> {
     ) -> Result<serde_json::Value> {
         // Submit command to CQRS system
         let command = Command::Registry(RegistryCommand::Graph(
-            GraphRegistryCommand::CreateGraph { name, description, resolved_id: None }
+            GraphRegistryCommand::CreateGraph { name, description }
         ));
         
         let result = self.command_queue.execute(command).await?;
@@ -479,17 +428,45 @@ use crate::import::pkm_data;
 pub async fn execute_create_block(
     _token: &RouterToken,
     graph_manager: &mut GraphManager,
+    block_id: Option<String>,
     content: String,
     parent_id: Option<String>,
     page_name: Option<String>,
     properties: Option<serde_json::Value>,
+    reference_content: Option<String>,
 ) -> Result<String> {
-    // Create block with reference resolution
-    let (block_id, _reference_content) = pkm_data::create_block_with_resolution(
-        graph_manager,
-        content,
-        properties.as_ref(),
-    )?;
+    // Use provided block_id if available, otherwise generate new one
+    let final_block_id = block_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    
+    // Use provided reference_content if available, otherwise resolve on-the-fly
+    let (block_id, _reference_content) = if let Some(ref_content) = reference_content {
+        // Use pre-resolved content from import
+        let now = chrono::Utc::now();
+        let props = properties
+            .as_ref()
+            .map(|p| crate::utils::parse_properties(p))
+            .unwrap_or_default();
+        
+        graph_manager.create_or_update_node(
+            final_block_id.clone(),
+            crate::graph::graph_manager::NodeType::Block,
+            content.clone(),
+            Some(ref_content.clone()),
+            props,
+            now,
+            now,
+        ).map_err(|e| GraphError::lifecycle(e.to_string()))?;
+        
+        (final_block_id, Some(ref_content))
+    } else {
+        // Resolve on-the-fly as before
+        pkm_data::create_block_with_resolution_and_id(
+            graph_manager,
+            Some(final_block_id),
+            content,
+            properties.as_ref(),
+        )?
+    };
     
     // Setup relationships
     pkm_data::setup_block_relationships(
@@ -606,22 +583,21 @@ mod tests {
     #[test]
     fn test_command_variants() {
         // Test that all GraphCommand variants can be created through Command enum
-        let agent_id = uuid::Uuid::new_v4();
         let graph_id = uuid::Uuid::new_v4();
         
         let create_block = Command::Graph(GraphCommand::CreateBlock {
             graph_id,
-            agent_id,
+            block_id: None,
             content: "Test content".to_string(),
             parent_id: Some("parent-123".to_string()),
             page_name: Some("TestPage".to_string()),
             properties: Some(json!({"key": "value"})),
+            reference_content: None,
         });
         assert!(matches!(create_block, Command::Graph(GraphCommand::CreateBlock { .. })));
         
         let update_block = Command::Graph(GraphCommand::UpdateBlock {
             graph_id,
-            agent_id,
             block_id: "block-123".to_string(),
             content: "Updated content".to_string(),
         });
@@ -629,14 +605,12 @@ mod tests {
         
         let delete_block = Command::Graph(GraphCommand::DeleteBlock {
             graph_id,
-            agent_id,
             block_id: "block-123".to_string(),
         });
         assert!(matches!(delete_block, Command::Graph(GraphCommand::DeleteBlock { .. })));
         
         let create_page = Command::Graph(GraphCommand::CreatePage {
             graph_id,
-            agent_id,
             page_name: "NewPage".to_string(),
             properties: Some(json!({"type": "journal"})),
         });
@@ -644,7 +618,6 @@ mod tests {
         
         let delete_page = Command::Graph(GraphCommand::DeletePage {
             graph_id,
-            agent_id,
             page_name: "OldPage".to_string(),
         });
         assert!(matches!(delete_page, Command::Graph(GraphCommand::DeletePage { .. })));
@@ -679,21 +652,4 @@ mod tests {
         }
     }
     
-    #[test]
-    fn test_authorization_error_formatting() {
-        // Test that authorization error messages contain expected information
-        let agent_id = uuid::Uuid::new_v4();
-        let graph_id = uuid::Uuid::new_v4();
-        
-        let error = GraphError::invalid_state(format!(
-            "Agent {} is not authorized for graph {} - authorization required for all graph operations", 
-            agent_id, graph_id
-        ));
-        
-        let error_message = error.to_string();
-        assert!(error_message.contains("not authorized"));
-        assert!(error_message.contains(&agent_id.to_string()));
-        assert!(error_message.contains(&graph_id.to_string()));
-        assert!(error_message.contains("authorization required"));
-    }
 }

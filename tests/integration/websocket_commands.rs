@@ -1,6 +1,7 @@
 use std::fs;
 use serde_json::{json, Value};
-use crate::common::{setup_test_env, cleanup_test_env, WalValidator};
+use uuid::Uuid;
+use crate::common::{setup_test_env, cleanup_test_env, TestValidator};
 use crate::common::test_harness::{
     PreShutdown, PostShutdown, assert_phase,
     WsConnection, connect_websocket, send_command, expect_success, 
@@ -103,7 +104,7 @@ fn test_delete_page(ws: &mut WsConnection, page_name: &str) {
 }
 
 /// Test multiple updates on the same block to ensure edges are preserved
-fn test_multiple_block_updates(ws: &mut WsConnection, validator: &mut WalValidator) -> String {
+fn test_multiple_block_updates(ws: &mut WsConnection, validator: &mut TestValidator, graph_id: &str) -> String {
     // Create a parent block first
     let parent_cmd = json!({
         "type": "create_block",
@@ -116,8 +117,8 @@ fn test_multiple_block_updates(ws: &mut WsConnection, validator: &mut WalValidat
     let parent_id = data["block_id"].as_str().expect("No block_id in response").to_string();
     
     // Record parent block expectation - the page will be auto-created
-    validator.expect_create_page("test-update-page", None);
-    validator.expect_create_block(&parent_id, "Parent block for update test", Some("test-update-page"));
+    validator.expect_create_page("test-update-page", None, Some(graph_id));
+    validator.expect_create_block(&parent_id, "Parent block for update test", Some("test-update-page"), Some(graph_id));
     
     // Create a child block
     let child_cmd = json!({
@@ -131,8 +132,8 @@ fn test_multiple_block_updates(ws: &mut WsConnection, validator: &mut WalValidat
     let data = expect_success(response).expect("No data in create_block response");
     let child_id = data["block_id"].as_str().expect("No block_id in response").to_string();
     
-    // Record child block expectation with parent-child edge
-    validator.expect_create_block(&child_id, "Child block that will be updated multiple times", Some("test-update-page"));
+    // Don't validate create expectation since we're updating it multiple times
+    // validator.expect_create_block(&child_id, "Child block that will be updated multiple times", Some("test-update-page"), Some(graph_id));
     
     // Note: Parent-child edge is implicit in the parent_id parameter
     
@@ -145,7 +146,8 @@ fn test_multiple_block_updates(ws: &mut WsConnection, validator: &mut WalValidat
     
     let response = send_command(ws, update1_cmd);
     expect_success(response);
-    validator.expect_update_block(&child_id, "First update - content changed");
+    // Don't validate intermediate states
+    // validator.expect_update_block(&child_id, "First update - content changed", Some(graph_id));
     
     // Update 2: Change content again
     let update2_cmd = json!({
@@ -156,7 +158,8 @@ fn test_multiple_block_updates(ws: &mut WsConnection, validator: &mut WalValidat
     
     let response = send_command(ws, update2_cmd);
     expect_success(response);
-    validator.expect_update_block(&child_id, "Second update - content changed again");
+    // Don't validate intermediate states
+    // validator.expect_update_block(&child_id, "Second update - content changed again", Some(graph_id));
     
     // Update 3: Final content change
     let update3_cmd = json!({
@@ -167,13 +170,14 @@ fn test_multiple_block_updates(ws: &mut WsConnection, validator: &mut WalValidat
     
     let response = send_command(ws, update3_cmd);
     expect_success(response);
-    validator.expect_update_block(&child_id, "Final update - this should be the final content");
+    // Validate the final update
+    validator.expect_update_block(&child_id, "Final update - this should be the final content", Some(graph_id));
     
     child_id
 }
 
 /// Test graph operations (create, list, and delete)
-fn test_graph_operations(ws: &mut WsConnection, data_dir: &std::path::Path) -> String {
+fn test_graph_operations(ws: &mut WsConnection, data_dir: &std::path::Path, validator: &mut TestValidator) -> String {
     // Get the current open graph ID (should be the imported one)
     let original_graph_id = get_single_open_graph_id(data_dir);
     
@@ -202,6 +206,11 @@ fn test_graph_operations(ws: &mut WsConnection, data_dir: &std::path::Path) -> S
     let new_graph_id = data["id"].as_str()
         .expect("No graph ID in response")
         .to_string();
+    
+    // Validate the graph was created and opened
+    let new_graph_uuid = Uuid::parse_str(&new_graph_id).expect("Invalid UUID");
+    validator.expect_graph_created(new_graph_uuid, "test-websocket-graph");
+    validator.expect_graph_open(new_graph_uuid);
     
     // Test list_graphs with two graphs
     let response = send_command(ws, list_cmd.clone());
@@ -237,6 +246,9 @@ fn test_graph_operations(ws: &mut WsConnection, data_dir: &std::path::Path) -> S
         Some(new_graph_id.as_str()),
         "Deleted graph ID mismatch"
     );
+    
+    // Validate the graph was deleted from registry
+    validator.expect_graph_deleted(new_graph_uuid);
     
     // Test list_graphs after deletion - should be back to one graph
     let response = send_command(ws, list_cmd);
@@ -341,8 +353,8 @@ pub fn test_websocket_commands() {
         assert_phase(PreShutdown);
         
         // Initialize the validator and expect the dummy graph
-        let mut validator = WalValidator::new(&data_dir);
-        validator.expect_dummy_graph();
+        let mut validator = TestValidator::new(&data_dir);
+        validator.expect_dummy_graph(Some(&original_graph_id));
         
         // Connect WebSocket client
         let mut ws = connect_websocket(port);
@@ -353,41 +365,61 @@ pub fn test_websocket_commands() {
         
         // Test Create Block  
         let new_block_id = test_create_block(&mut ws);
-        // Record expectation in validator
-        validator.expect_create_block(&new_block_id, "WebSocket test block with **bold** and *italic* text", Some("test-websocket-page"));
+        // Record expectation in validator (explicitly for original graph)
+        validator.expect_create_block(&new_block_id, "WebSocket test block with **bold** and *italic* text", Some("test-websocket-page"), Some(&original_graph_id));
         
-        // Test Update Block (use a different existing block)
-        test_update_block(&mut ws, "67f9a190-985b-4dbf-90e4-c2abffb2ab51");
-        // Record expectation in validator
-        validator.expect_update_block("67f9a190-985b-4dbf-90e4-c2abffb2ab51", "## Types of Knowledge Graphs (Updated via WebSocket)");
+        // Test Update Block (create a fresh block to update)
+        let update_test_cmd = json!({
+            "type": "create_block",
+            "content": "Original content for update test",
+            "page_name": "test-websocket-page"
+        });
+        let response = send_command(&mut ws, update_test_cmd);
+        let data = expect_success(response).expect("No data in create_block response");
+        let block_to_update = data["block_id"].as_str().expect("No block_id in response").to_string();
+        // Don't validate create expectation since we're updating it immediately
+        // validator.expect_create_block(&block_to_update, "Original content for update test", Some("test-websocket-page"), Some(&original_graph_id));
+        
+        test_update_block(&mut ws, &block_to_update);
+        // Only validate the final state after update
+        validator.expect_create_block(&block_to_update, "## Types of Knowledge Graphs (Updated via WebSocket)", Some("test-websocket-page"), Some(&original_graph_id));
         
         // Test Multiple Updates on Same Block (with parent-child and page-to-block edges)
-        let _updated_child_id = test_multiple_block_updates(&mut ws, &mut validator);
+        let _updated_child_id = test_multiple_block_updates(&mut ws, &mut validator, &original_graph_id);
         
-        // Test Delete Block (use another existing block)
-        test_delete_block(&mut ws, "67fbd626-8e4a-485f-ad03-fd1ce5539ebb");
-        // Record expectation in validator
-        validator.expect_delete_block("67fbd626-8e4a-485f-ad03-fd1ce5539ebb");
+        // Test Delete Block (create a fresh block to delete)
+        let delete_test_cmd = json!({
+            "type": "create_block",
+            "content": "Block to be deleted",
+            "page_name": "test-websocket-page"
+        });
+        let response = send_command(&mut ws, delete_test_cmd);
+        let data = expect_success(response).expect("No data in create_block response");
+        let block_to_delete = data["block_id"].as_str().expect("No block_id in response").to_string();
+        validator.expect_create_block(&block_to_delete, "Block to be deleted", Some("test-websocket-page"), Some(&original_graph_id));
+        
+        test_delete_block(&mut ws, &block_to_delete);
+        validator.expect_delete_block(&block_to_delete, Some(&original_graph_id));
         
         // Test Create Page
         test_create_page(&mut ws, "test-websocket-page");
-        // Record expectation in validator
+        // Record expectation in validator (explicitly for original graph)
         validator.expect_create_page("test-websocket-page", Some(json!({
             "test-property": "test-value",
             "created-by": "websocket-test"
-        })));
+        })), Some(&original_graph_id));
         
         // Test Delete Page (create a new page to delete)
         test_create_page(&mut ws, "page-to-delete");
         validator.expect_create_page("page-to-delete", Some(json!({
             "test-property": "test-value",
             "created-by": "websocket-test"
-        })));
+        })), Some(&original_graph_id));
         test_delete_page(&mut ws, "page-to-delete");
-        validator.expect_delete_page("page-to-delete");
+        validator.expect_delete_page("page-to-delete", Some(&original_graph_id));
         
         // Test Graph Operations
-        let final_graph_id = test_graph_operations(&mut ws, &data_dir);
+        let final_graph_id = test_graph_operations(&mut ws, &data_dir, &mut validator);
         assert_eq!(final_graph_id, original_graph_id, "Graph ID changed unexpectedly");
         
         // Test Error Cases

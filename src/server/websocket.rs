@@ -16,8 +16,7 @@
 //! 
 //! 1. **Upgrade**: HTTP connection upgraded to WebSocket at `/ws` endpoint
 //! 2. **Authentication**: Client sends `Auth { token }` command to authenticate
-//! 3. **Agent Selection**: Prime agent automatically set as current on auth success
-//! 4. **Command Processing**: Commands routed to appropriate handlers
+//! //! 4. **Command Processing**: Commands routed to appropriate handlers
 //! 5. **Cleanup**: Graceful disconnection with task cancellation
 //! 
 //! ## Protocol Design
@@ -40,7 +39,7 @@
 //! - WebSocket upgrade is public (no auth required at upgrade time)
 //! - Authentication happens post-connection via Auth command
 //! - All commands except Auth/Test/Heartbeat require authentication
-//! - Agent authorization enforced at GraphOps layer for all graph operations
+//! - Graph access validated at GraphOps layer
 //! 
 //! ## Key Types
 //! 
@@ -58,7 +57,7 @@
 //! ## Integration Points
 //! 
 //! - **AppState**: Central state coordination
-//! - **GraphOps**: Agent authorization for graph operations
+//! - **GraphOps**: Graph operation validation
 //! - **Command Handlers**: Domain-specific implementations in websocket_commands/
 
 use axum::{
@@ -93,7 +92,6 @@ pub struct WsConnection {
     pub sender: tokio::sync::mpsc::UnboundedSender<Message>,
     pub authenticated: bool,
     pub shutdown_tx: tokio::sync::watch::Sender<bool>,
-    pub current_agent_id: Option<uuid::Uuid>,  // Current agent for this connection (defaults to prime agent)
 }
 
 /// Command protocol definitions
@@ -165,9 +163,6 @@ pub enum Command {
         graph_name: Option<String>,
     },
     ListGraphs,
-    FreezeOperations,
-    UnfreezeOperations,
-    GetFreezeState,
     
     // Agent commands
     AgentChat {
@@ -176,57 +171,11 @@ pub enum Command {
         echo: Option<String>,     // Test-only: force MockLLM to echo this response
         echo_tool: Option<String>, // Test-only: force MockLLM to call this tool
     },
-    AgentSelect {
-        agent_id: Option<String>,    // Optional UUID
-        agent_name: Option<String>,  // Optional name
-        // If neither provided, defaults to prime agent
-    },
-    AgentList,
     AgentHistory {
-        agent_id: Option<String>,    // Optional UUID
-        agent_name: Option<String>,  // Optional name
         limit: Option<usize>,        // Optional, last N messages
-        // If neither agent_id nor agent_name provided, uses current connection's agent or prime
     },
-    AgentReset {
-        agent_id: Option<String>,    // Optional UUID
-        agent_name: Option<String>,  // Optional name
-        // If neither provided, uses current connection's agent or prime
-    },
-    
-    // Agent admin commands
-    CreateAgent {
-        name: String,
-        description: Option<String>,
-    },
-    DeleteAgent {
-        agent_id: Option<String>,
-        agent_name: Option<String>,
-    },
-    ActivateAgent {
-        agent_id: Option<String>,
-        agent_name: Option<String>,
-    },
-    DeactivateAgent {
-        agent_id: Option<String>,
-        agent_name: Option<String>,
-    },
-    AuthorizeAgent {
-        agent_id: Option<String>,
-        agent_name: Option<String>,
-        graph_id: Option<String>,
-        graph_name: Option<String>,
-    },
-    DeauthorizeAgent {
-        agent_id: Option<String>,
-        agent_name: Option<String>,
-        graph_id: Option<String>,
-        graph_name: Option<String>,
-    },
-    AgentInfo {
-        agent_id: Option<String>,
-        agent_name: Option<String>,
-    },
+    AgentReset,
+    AgentInfo,
     
     // Command for CLI integration testing (only available in debug builds)
     #[cfg(debug_assertions)]
@@ -284,7 +233,6 @@ pub async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
         sender: tx.clone(),
         authenticated: false,
         shutdown_tx: shutdown_tx.clone(),
-        current_agent_id: None,  // Will be set to prime agent after authentication
     };
 
     // Add connection to state
@@ -371,15 +319,7 @@ async fn handle_message(
         Message::Text(text) => {
             match serde_json::from_str::<Command>(&text) {
                 Ok(command) => {
-                    // Get current agent for authorization checks
-                    let current_agent_id = if let Some(ref connections) = state.ws_connections {
-                        let conns = connections.read_or_panic("heartbeat - read connections").await;
-                        conns.get(connection_id).and_then(|conn| conn.current_agent_id)
-                    } else {
-                        None
-                    };
-                    
-                    route_command(command, connection_id, state, current_agent_id).await?;
+                    route_command(command, connection_id, state).await?;
                 }
                 Err(e) => {
                     return Err(e.into());
@@ -402,7 +342,6 @@ async fn route_command(
     command: Command,
     connection_id: &str,
     state: &Arc<AppState>,
-    current_agent_id: Option<Uuid>,
 ) -> Result<()> {
     
     // Check authentication for non-auth commands
@@ -428,7 +367,7 @@ async fn route_command(
     if is_agent_command(&command) {
         agent_commands::handle(command, connection_id, state).await
     } else if is_graph_command(&command) {
-        graph_commands::handle(command, connection_id, state, current_agent_id).await
+        graph_commands::handle(command, connection_id, state).await
     } else {
         misc_commands::handle(command, connection_id, state).await
     }
@@ -438,16 +377,8 @@ async fn route_command(
 fn is_agent_command(command: &Command) -> bool {
     matches!(command,
         Command::AgentChat { .. } |
-        Command::AgentSelect { .. } |
-        Command::AgentList |
         Command::AgentHistory { .. } |
         Command::AgentReset { .. } |
-        Command::CreateAgent { .. } |
-        Command::DeleteAgent { .. } |
-        Command::ActivateAgent { .. } |
-        Command::DeactivateAgent { .. } |
-        Command::AuthorizeAgent { .. } |
-        Command::DeauthorizeAgent { .. } |
         Command::AgentInfo { .. }
     )
 }

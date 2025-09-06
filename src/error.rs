@@ -105,13 +105,6 @@ pub enum StorageError {
     #[error("Graph registry error: {message}")]
     GraphRegistry { message: String },
 
-    /// Agent registry management errors  
-    #[error("Agent registry error: {message}")]
-    AgentRegistry { message: String },
-
-    /// Transaction log errors (WAL operations)
-    #[error("Transaction log error: {message}")]
-    Wal { message: String },
 
     /// Entity not found errors
     #[error("Not found: {entity_type} with {identifier_type} '{identifier}'")]
@@ -120,11 +113,6 @@ pub enum StorageError {
         identifier_type: String,
         identifier: String,
     },
-
-
-    /// Sled database errors
-    #[error("Database error: {0}")]
-    Database(#[from] sled::Error),
 
     /// JSON serialization/deserialization errors
     #[error("Serialization error: {0}")]
@@ -256,11 +244,6 @@ impl From<serde_yaml::Error> for CymbiontError {
     }
 }
 
-impl From<sled::Error> for CymbiontError {
-    fn from(error: sled::Error) -> Self {
-        CymbiontError::Storage(StorageError::Database(error))
-    }
-}
 
 // Domain error convenience constructors
 impl StorageError {
@@ -268,13 +251,6 @@ impl StorageError {
         StorageError::GraphRegistry { message: message.into() }
     }
 
-    pub fn agent_registry(message: impl Into<String>) -> Self {
-        StorageError::AgentRegistry { message: message.into() }
-    }
-
-    pub fn wal(message: impl Into<String>) -> Self {
-        StorageError::Wal { message: message.into() }
-    }
 
     pub fn not_found(entity_type: impl Into<String>, identifier_type: impl Into<String>, identifier: impl Into<String>) -> Self {
         StorageError::NotFound {

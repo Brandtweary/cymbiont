@@ -33,7 +33,6 @@ use crate::app_state::AppState;
 use crate::graph::graph_operations::GraphOps;
 use super::logseq;
 use crate::error::*;
-use crate::utils::AsyncRwLockExt;
 use serde_json;
 
 /// Result of a Logseq import operation
@@ -68,7 +67,6 @@ pub async fn import_logseq_graph(
     
     // Use the centralized create_graph function which handles:
     // 1. Graph registration
-    // 2. Prime agent authorization
     // 3. Graph manager creation
     let graph_info = app_state.create_graph(
         Some(graph_name.clone()),
@@ -82,16 +80,7 @@ pub async fn import_logseq_graph(
     
     info!("📊 Using graph: {} ({})", graph_name, graph_id);
     
-    // Get the prime agent ID for import authorization
-    let prime_agent_id = {
-        let agent_registry = app_state.agent_registry.read_or_panic("get prime agent for import").await;
-        agent_registry.get_prime_agent_id()
-            .ok_or_else(|| ImportError::validation("Prime agent not found".to_string()))?
-    };
-    
-    info!("🔑 Using Prime Agent {} for import authorization", prime_agent_id);
-    
-    // Import the data using GraphOps (which logs to WAL)
+    // Import the data using GraphOps
     let mut errors = Vec::new();
     let mut page_count = 0;
     let mut block_count = 0;
@@ -106,7 +95,6 @@ pub async fn import_logseq_graph(
         };
         
         match app_state.create_page(
-            prime_agent_id,
             page.name.clone(),
             properties,
             &graph_id,
@@ -120,8 +108,25 @@ pub async fn import_logseq_graph(
         }
     }
     
+    // Build a mapping from original IDs to new UUIDs
+    let mut id_mapping: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    
+    // First pass: generate new UUIDs for all blocks
+    for block in &blocks {
+        let new_id = uuid::Uuid::new_v4().to_string();
+        id_mapping.insert(block.id.clone(), new_id);
+    }
+    
     // Import blocks after pages (so parent pages exist)
     for block in blocks {
+        // Generate our own UUID instead of using Logseq's
+        let our_block_id = id_mapping.get(&block.id).unwrap().clone();
+        
+        // Update parent reference to use new UUID if it exists
+        let parent_id = block.parent.as_ref()
+            .and_then(|pid| id_mapping.get(pid))
+            .cloned();
+        
         // Convert properties for GraphOps
         let properties = if block.properties.is_null() || block.properties == serde_json::json!({}) {
             None
@@ -129,12 +134,31 @@ pub async fn import_logseq_graph(
             Some(block.properties.clone())
         };
         
+        // Update reference_content to use new IDs
+        let updated_ref_content = if let Some(ref_content) = block.reference_content {
+            let mut content = ref_content;
+            // Replace all old block IDs with new ones in reference content
+            for (old_id, new_id) in &id_mapping {
+                content = content.replace(&format!("(({}))", old_id), &format!("(({}))", new_id));
+            }
+            Some(content)
+        } else {
+            None
+        };
+        
+        // Update block content to use new IDs in block references
+        let mut updated_content = block.content.clone();
+        for (old_id, new_id) in &id_mapping {
+            updated_content = updated_content.replace(&format!("(({}))", old_id), &format!("(({}))", new_id));
+        }
+        
         match app_state.add_block(
-            prime_agent_id,
-            block.content.clone(),
-            block.parent.clone(),     // Parent block ID
-            block.page.clone(),       // Page name (will create page if needed)
+            Some(our_block_id.clone()),  // Use our generated UUID
+            updated_content,              // Content with updated block references
+            parent_id,                    // Use mapped parent ID
+            block.page.clone(),           // Page name (will create page if needed)
             properties,
+            updated_ref_content,          // Reference content with updated IDs
             &graph_id,
         ).await {
             Ok(_) => block_count += 1,

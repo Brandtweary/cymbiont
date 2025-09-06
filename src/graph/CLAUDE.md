@@ -1,7 +1,7 @@
 # Graph Module Guide 🗂️
 
 ## Module Overview
-Petgraph-based knowledge graph engine with multi-graph support and agent authorization.
+Petgraph-based knowledge graph engine with multi-graph support.
 
 ## Core Components
 
@@ -13,11 +13,11 @@ Petgraph-based knowledge graph engine with multi-graph support and agent authori
 ### Data Types
 - **NodeData**: UUID + PKM ID, type (Page/Block), content, properties, timestamps
 - **EdgeData**: Type (PageRef/BlockRef/Tag/Property/ParentChild/PageToBlock), weight
-- **GraphInfo**: UUID, name, path, timestamps, authorized agents list
+- **GraphInfo**: UUID, name, path, timestamps
 
 ## GraphOps API (Public Interface)
 
-All operations automatically check agent authorization - no manual auth needed.
+All operations automatically validate graph access - no manual validation needed.
 
 ### Block Operations
 - `add_block(agent_id, content, parent_id?, page_name?, properties?, graph_id)` - Create new block
@@ -33,7 +33,7 @@ All operations automatically check agent authorization - no manual auth needed.
 - `query_graph_bfs(agent_id, start_id, max_depth, graph_id)` - BFS traversal (TODO)
 
 ### Graph Management
-- `create_graph(name?, description?)` - Create new graph with prime agent auth
+- `create_graph(name?, description?)` - Create new graph
 - `delete_graph(graph_id)` - Archive graph to timestamped directory
 - `open_graph(graph_id)` - Load graph and replay command log
 - `close_graph(graph_id)` - Save and unload from memory

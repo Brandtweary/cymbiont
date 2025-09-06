@@ -6,7 +6,7 @@
 
 use serde_json::json;
 use uuid::Uuid;
-use crate::common::{setup_test_env, cleanup_test_env, WalValidator, MessagePattern};
+use crate::common::{setup_test_env, cleanup_test_env, TestValidator, MessagePattern};
 use crate::common::test_harness::{
     PreShutdown, PostShutdown, assert_phase,
     connect_websocket, send_command, expect_success, 
@@ -29,24 +29,13 @@ pub fn test_agent_graph_management_tools() {
         
         assert_phase(PreShutdown);
         
-        let mut validator = WalValidator::new(&data_dir);
+        let mut validator = TestValidator::new(&data_dir);
         
         // Connect and authenticate
         let mut ws = connect_websocket(port);
         let auth_token = read_auth_token(&data_dir);
         assert!(authenticate_websocket(&mut ws, &auth_token));
         
-        // Get prime agent ID
-        let prime_agent_id = {
-            let cmd = json!({ "type": "agent_info" });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
-            Uuid::parse_str(data["agent_id"].as_str().unwrap()).unwrap()
-        };
-        
-        validator.expect_prime_agent(prime_agent_id);
-        let initial_graph_uuid = Uuid::parse_str(&initial_graph_id).unwrap();
-        validator.expect_authorization(&prime_agent_id, &initial_graph_uuid);
         
         // Test list_graphs tool
         {
@@ -58,38 +47,32 @@ pub fn test_agent_graph_management_tools() {
             
             // Track conversation
             validator.expect_user_message(
-                &prime_agent_id,
                 MessagePattern::Exact("List all graphs".to_string())
             );
             validator.expect_tool_message(
-                &prime_agent_id,
                 "list_graphs",
                 MessagePattern::Contains("✓ Tool 'list_graphs' executed successfully".to_string())
             );
             validator.expect_assistant_message(
-                &prime_agent_id,
                 MessagePattern::Exact("I've executed the list_graphs tool for you".to_string())
             );
         }
         
         // Test create_graph tool
-        let new_graph_id = {
+        let _new_graph_uuid = {
             let data = agent_chat_sync(&mut ws, "Create a new graph", None, Some("create_graph"));
             
             // MockLLM returns the tool invocation message
             assert!(data["response"].as_str().unwrap().contains("I've executed the create_graph tool"));
             
             validator.expect_user_message(
-                &prime_agent_id,
                 MessagePattern::Exact("Create a new graph".to_string())
             );
             validator.expect_tool_message(
-                &prime_agent_id,
                 "create_graph",
                 MessagePattern::Contains("✓ Tool 'create_graph' executed successfully".to_string())
             );
             validator.expect_assistant_message(
-                &prime_agent_id,
                 MessagePattern::Exact("I've executed the create_graph tool for you".to_string())
             );
             
@@ -103,18 +86,24 @@ pub fn test_agent_graph_management_tools() {
             let mut new_graph_id = None;
             for graph in graphs {
                 let id_str = graph["id"].as_str().unwrap();
-                let id = Uuid::parse_str(id_str).unwrap();
-                if id != initial_graph_uuid {
-                    new_graph_id = Some(id);
+                if id_str != initial_graph_id {
+                    new_graph_id = Some(Uuid::parse_str(id_str).unwrap());
                     break;
                 }
             }
             
-            new_graph_id.expect("Should have found the new graph")
+            let uuid = new_graph_id.expect("Should have found the new graph");
+            
+            // Validate the graph was created and opened in the registry
+            // MockLLM doesn't provide a name, so it gets auto-generated as "Graph {id}"
+            let expected_name = format!("Graph {}", &uuid.to_string()[..8]);
+            validator.expect_graph_created(uuid, &expected_name);
+            validator.expect_graph_open(uuid);
+            
+            uuid
         };
         
         // Track the new graph creation
-        validator.expect_authorization(&prime_agent_id, &new_graph_id);
         
         // Test list_open_graphs tool
         {
@@ -123,81 +112,80 @@ pub fn test_agent_graph_management_tools() {
             assert!(data["response"].as_str().unwrap().contains("I've executed the list_open_graphs tool"));
             
             validator.expect_user_message(
-                &prime_agent_id,
                 MessagePattern::Exact("List open graphs".to_string())
             );
             validator.expect_tool_message(
-                &prime_agent_id,
                 "list_open_graphs",
                 MessagePattern::Contains("✓ Tool 'list_open_graphs' executed successfully".to_string())
             );
             validator.expect_assistant_message(
-                &prime_agent_id,
                 MessagePattern::Exact("I've executed the list_open_graphs tool for you".to_string())
             );
         }
         
-        // Test close_graph tool
+        // Test close_graph and open_graph tools
         {
-            let data = agent_chat_sync(&mut ws, "Close the initial graph", None, Some("close_graph"));
+            // Close the new graph first to make initial the only open graph
+            let close_cmd = json!({ 
+                "type": "close_graph",
+                "graph_id": _new_graph_uuid.to_string()
+            });
+            let close_response = send_command(&mut ws, close_cmd);
+            expect_success(close_response);
+            validator.expect_graph_closed(_new_graph_uuid);
+            
+            // Now test agent close_graph with smart default (only one graph open)
+            let data = agent_chat_sync(&mut ws, "Close the open graph", None, Some("close_graph"));
             
             assert!(data["response"].as_str().unwrap().contains("I've executed the close_graph tool"));
             
             validator.expect_user_message(
-                &prime_agent_id,
-                MessagePattern::Exact("Close the initial graph".to_string())
+                MessagePattern::Exact("Close the open graph".to_string())
             );
             validator.expect_tool_message(
-                &prime_agent_id,
                 "close_graph",
                 MessagePattern::Contains("✓ Tool 'close_graph' executed successfully".to_string())
             );
             validator.expect_assistant_message(
-                &prime_agent_id,
                 MessagePattern::Exact("I've executed the close_graph tool for you".to_string())
             );
+            
+            // Validate the initial graph was closed
+            let initial_uuid = Uuid::parse_str(&initial_graph_id).unwrap();
+            validator.expect_graph_closed(initial_uuid);
+            
+            // Now both are closed. Open the initial graph directly
+            let open_cmd = json!({ 
+                "type": "open_graph",
+                "graph_id": initial_graph_id
+            });
+            let open_response = send_command(&mut ws, open_cmd);
+            expect_success(open_response);
+            validator.expect_graph_open(initial_uuid);
         }
         
-        // Test open_graph tool
+        // Test delete_graph tool - delete the initial graph (it's open)
         {
-            let data = agent_chat_sync(&mut ws, "Open the graph again", None, Some("open_graph"));
-            
-            assert!(data["response"].as_str().unwrap().contains("I've executed the open_graph tool"));
-            
-            validator.expect_user_message(
-                &prime_agent_id,
-                MessagePattern::Exact("Open the graph again".to_string())
-            );
-            validator.expect_tool_message(
-                &prime_agent_id,
-                "open_graph",
-                MessagePattern::Contains("✓ Tool 'open_graph' executed successfully".to_string())
-            );
-            validator.expect_assistant_message(
-                &prime_agent_id,
-                MessagePattern::Exact("I've executed the open_graph tool for you".to_string())
-            );
-        }
-        
-        // Test delete_graph tool (on the new graph)
-        {
-            let data = agent_chat_sync(&mut ws, "Delete the new graph", None, Some("delete_graph"));
+            // Delete the initial graph which is the only open graph
+            // This should work with smart default
+            let data = agent_chat_sync(&mut ws, "Delete the open graph", None, Some("delete_graph"));
             
             assert!(data["response"].as_str().unwrap().contains("I've executed the delete_graph tool"));
             
             validator.expect_user_message(
-                &prime_agent_id,
-                MessagePattern::Exact("Delete the new graph".to_string())
+                MessagePattern::Exact("Delete the open graph".to_string())
             );
             validator.expect_tool_message(
-                &prime_agent_id,
                 "delete_graph",
                 MessagePattern::Contains("✓ Tool 'delete_graph' executed successfully".to_string())
             );
             validator.expect_assistant_message(
-                &prime_agent_id,
                 MessagePattern::Exact("I've executed the delete_graph tool for you".to_string())
             );
+            
+            // The initial graph should be deleted
+            let initial_uuid = Uuid::parse_str(&initial_graph_id).unwrap();
+            validator.expect_graph_deleted(initial_uuid);
         }
         
         let _ = ws.close(None);
@@ -233,27 +221,16 @@ pub fn test_agent_block_operations() {
         
         assert_phase(PreShutdown);
         
-        let mut validator = WalValidator::new(&data_dir);
+        let mut validator = TestValidator::new(&data_dir);
         
         // Set up expectations for dummy graph
-        validator.expect_dummy_graph();
+        validator.expect_dummy_graph(Some(&graph_id));
         
         // Connect and authenticate
         let mut ws = connect_websocket(port);
         let auth_token = read_auth_token(&data_dir);
         assert!(authenticate_websocket(&mut ws, &auth_token));
         
-        // Get prime agent ID
-        let prime_agent_id = {
-            let cmd = json!({ "type": "agent_info" });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
-            Uuid::parse_str(data["agent_id"].as_str().unwrap()).unwrap()
-        };
-        
-        validator.expect_prime_agent(prime_agent_id);
-        let graph_uuid = Uuid::parse_str(&graph_id).unwrap();
-        validator.expect_authorization(&prime_agent_id, &graph_uuid);
         
         // Add debug logging to see conversation history
         use tracing::debug;
@@ -267,16 +244,13 @@ pub fn test_agent_block_operations() {
             
             // Track conversation for this tool call (user → tool → assistant order)
             validator.expect_user_message(
-                &prime_agent_id,
                 MessagePattern::Exact("Add a new block with content".to_string())
             );
             validator.expect_tool_message(
-                &prime_agent_id,
                 "add_block",
                 MessagePattern::Contains("✓ Tool 'add_block' executed successfully".to_string())
             );
             validator.expect_assistant_message(
-                &prime_agent_id,
                 MessagePattern::Exact("I've executed the add_block tool for you".to_string())
             );
             
@@ -284,29 +258,40 @@ pub fn test_agent_block_operations() {
         }
         
         // Test update_block tool
+        // First create a block to update
         {
-            let data = agent_chat_sync(&mut ws, "Update the block content", None, Some("update_block"));
+            let create_cmd = json!({
+                "type": "create_block",
+                "content": "Block to be updated by agent",
+                "page_name": "agent-test-page"
+            });
+            let response = send_command(&mut ws, create_cmd);
+            let data = expect_success(response).expect("No data in create_block response");
+            let block_id = data["block_id"].as_str().expect("No block_id").to_string();
+            // Don't track the create since we're testing update - the final state matters
+            
+            // Now test update - include the block_id in the message
+            // MockLLM extracts the UUID from the message content
+            let message = format!("Update block {} with new content", block_id);
+            let data = agent_chat_sync(&mut ws, &message, None, Some("update_block"));
             
             // MockLLM returns the tool invocation message
             assert!(data["response"].as_str().unwrap().contains("I've executed the update_block tool"));
             
             // Track conversation for this tool call
             validator.expect_user_message(
-                &prime_agent_id,
-                MessagePattern::Exact("Update the block content".to_string())
+                MessagePattern::Exact(message.clone())
             );
             validator.expect_tool_message(
-                &prime_agent_id,
                 "update_block",
                 MessagePattern::Contains("✓ Tool 'update_block' executed successfully".to_string())
             );
             validator.expect_assistant_message(
-                &prime_agent_id,
                 MessagePattern::Exact("I've executed the update_block tool for you".to_string())
             );
             
-            // Track update in graph fixture with the UUID that MockLLM generates (existing block from dummy graph)
-            validator.expect_update_block("67f9a190-985b-4dbf-90e4-c2abffb2ab51", "Test content from MockLLM");
+            // Validate the block was actually updated (this overrides the initial content expectation)
+            validator.expect_update_block(&block_id, "Test content from MockLLM", Some(&graph_id));
         }
         
         // Test add_block with parent_id
@@ -318,16 +303,13 @@ pub fn test_agent_block_operations() {
             
             // Track conversation for this tool call
             validator.expect_user_message(
-                &prime_agent_id,
                 MessagePattern::Exact("Add a child block".to_string())
             );
             validator.expect_tool_message(
-                &prime_agent_id,
                 "add_block",
                 MessagePattern::Contains("✓ Tool 'add_block' executed successfully".to_string())
             );
             validator.expect_assistant_message(
-                &prime_agent_id,
                 MessagePattern::Exact("I've executed the add_block tool for you".to_string())
             );
         }
@@ -341,43 +323,51 @@ pub fn test_agent_block_operations() {
             
             // Track conversation for this tool call
             validator.expect_user_message(
-                &prime_agent_id,
                 MessagePattern::Exact("Add a block to a page".to_string())
             );
             validator.expect_tool_message(
-                &prime_agent_id,
                 "add_block",
                 MessagePattern::Contains("✓ Tool 'add_block' executed successfully".to_string())
             );
             validator.expect_assistant_message(
-                &prime_agent_id,
                 MessagePattern::Exact("I've executed the add_block tool for you".to_string())
             );
         }
         
         // Test delete_block tool
+        // First create a block to delete
         {
-            let data = agent_chat_sync(&mut ws, "Delete a block", None, Some("delete_block"));
+            let create_cmd = json!({
+                "type": "create_block",
+                "content": "Block to be deleted by agent",
+                "page_name": "agent-test-page"
+            });
+            let response = send_command(&mut ws, create_cmd);
+            let data = expect_success(response).expect("No data in create_block response");
+            let block_id = data["block_id"].as_str().expect("No block_id").to_string();
+            // Don't track the create since we're testing delete
+            
+            // Now test delete - include the block_id in the message
+            // MockLLM extracts the UUID from the message content
+            let message = format!("Delete block {}", block_id);
+            let data = agent_chat_sync(&mut ws, &message, None, Some("delete_block"));
             
             assert!(data["response"].as_str().unwrap().contains("I've executed the delete_block tool"));
             
             // Track conversation for this tool call
             validator.expect_user_message(
-                &prime_agent_id,
-                MessagePattern::Exact("Delete a block".to_string())
+                MessagePattern::Exact(message.clone())
             );
             validator.expect_tool_message(
-                &prime_agent_id,
                 "delete_block",
                 MessagePattern::Contains("✓ Tool 'delete_block' executed successfully".to_string())
             );
             validator.expect_assistant_message(
-                &prime_agent_id,
                 MessagePattern::Exact("I've executed the delete_block tool for you".to_string())
             );
             
-            // Track deletion with the UUID that MockLLM generates (same as update_block)
-            validator.expect_delete_block("67f9a190-985b-4dbf-90e4-c2abffb2ab51");
+            // Validate the block was actually deleted
+            validator.expect_delete_block(&block_id, Some(&graph_id));
         }
         
         // Debug: print conversation history before validation
@@ -429,23 +419,13 @@ pub fn test_agent_page_operations() {
         
         assert_phase(PreShutdown);
         
-        let mut validator = WalValidator::new(&data_dir);
-        validator.expect_dummy_graph();
+        let mut validator = TestValidator::new(&data_dir);
+        validator.expect_dummy_graph(Some(&graph_id));
         
         let mut ws = connect_websocket(port);
         let auth_token = read_auth_token(&data_dir);
         assert!(authenticate_websocket(&mut ws, &auth_token));
         
-        let prime_agent_id = {
-            let cmd = json!({ "type": "agent_info" });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
-            Uuid::parse_str(data["agent_id"].as_str().unwrap()).unwrap()
-        };
-        
-        validator.expect_prime_agent(prime_agent_id);
-        let graph_uuid = Uuid::parse_str(&graph_id).unwrap();
-        validator.expect_authorization(&prime_agent_id, &graph_uuid);
         
         // Test create_page tool
         {
@@ -453,8 +433,8 @@ pub fn test_agent_page_operations() {
             
             assert!(data["response"].as_str().unwrap().contains("I've executed the create_page tool"));
             
-            // Track page creation
-            validator.expect_create_page("Test Page", None);
+            // Track page creation in the original graph
+            validator.expect_create_page("Test Page", None, Some(&graph_id));
         }
         
         // Test delete_page tool
@@ -463,8 +443,8 @@ pub fn test_agent_page_operations() {
             
             assert!(data["response"].as_str().unwrap().contains("I've executed the delete_page tool"));
             
-            // Track page deletion
-            validator.expect_delete_page("Test Page");
+            // Track page deletion in the original graph  
+            validator.expect_delete_page("Test Page", Some(&graph_id));
         }
         
         let _ = ws.close(None);
@@ -498,22 +478,15 @@ pub fn test_agent_query_operations() {
         
         assert_phase(PreShutdown);
         
-        let mut validator = WalValidator::new(&data_dir);
+        let mut validator = TestValidator::new(&data_dir);
+        
+        // Expect the dummy graph that was imported
+        validator.expect_dummy_graph(Some(&graph_id));
         
         let mut ws = connect_websocket(port);
         let auth_token = read_auth_token(&data_dir);
         assert!(authenticate_websocket(&mut ws, &auth_token));
         
-        let prime_agent_id = {
-            let cmd = json!({ "type": "agent_info" });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
-            Uuid::parse_str(data["agent_id"].as_str().unwrap()).unwrap()
-        };
-        
-        validator.expect_prime_agent(prime_agent_id);
-        let graph_uuid = Uuid::parse_str(&graph_id).unwrap();
-        validator.expect_authorization(&prime_agent_id, &graph_uuid);
         
         // Test get_node tool
         {
@@ -544,139 +517,6 @@ pub fn test_agent_query_operations() {
     }
 }
 
-/// Test authorization failures when agent lacks graph access
-pub fn test_agent_authorization_failures() {
-    let test_env = setup_test_env();
-    let cleanup_env = test_env.clone();
-    
-    let result = std::panic::catch_unwind(move || {
-        let (server, graph_id) = setup_with_graph(test_env);
-        let port = server.port();
-        let data_dir = server.test_env().data_dir.clone();
-        
-        assert_phase(PreShutdown);
-        
-        let mut validator = WalValidator::new(&data_dir);
-        
-        let mut ws = connect_websocket(port);
-        let auth_token = read_auth_token(&data_dir);
-        assert!(authenticate_websocket(&mut ws, &auth_token));
-        
-        // Get prime agent ID
-        let prime_agent_id = {
-            let cmd = json!({ "type": "agent_info" });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
-            Uuid::parse_str(data["agent_id"].as_str().unwrap()).unwrap()
-        };
-        
-        validator.expect_prime_agent(prime_agent_id);
-        let graph_uuid = Uuid::parse_str(&graph_id).unwrap();
-        validator.expect_authorization(&prime_agent_id, &graph_uuid);
-        
-        // Create a secondary agent without authorization
-        let secondary_agent_id = {
-            let cmd = json!({
-                "type": "create_agent",
-                "name": "Unauthorized Agent"
-            });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
-            let id_str = data["agent_id"].as_str().unwrap();
-            let id = Uuid::parse_str(id_str).unwrap();
-            
-            validator.expect_agent_created(id, "Unauthorized Agent");
-            id
-        };
-        
-        // Select the unauthorized agent
-        {
-            let cmd = json!({
-                "type": "agent_select",
-                "agent_name": "Unauthorized Agent"
-            });
-            let response = send_command(&mut ws, cmd);
-            expect_success(response);
-        }
-        
-        // Temporarily authorize the agent to set a default graph, then deauthorize
-        // This ensures the agent has a graph (avoiding "no graph" error) but lacks authorization
-        {
-            // Authorize
-            let cmd = json!({
-                "type": "authorize_agent",
-                "agent_id": secondary_agent_id.to_string(),
-                "graph_id": graph_id
-            });
-            let response = send_command(&mut ws, cmd);
-            expect_success(response);
-            
-            // Set default using the tool
-            agent_chat_sync(&mut ws, "Set my default graph", None, Some("set_default_graph"));
-            
-            // Deauthorize
-            let cmd = json!({
-                "type": "deauthorize_agent",
-                "agent_id": secondary_agent_id.to_string(),
-                "graph_id": graph_id
-            });
-            let response = send_command(&mut ws, cmd);
-            expect_success(response);
-        }
-        
-        // Now try to use add_block tool - should fail due to no authorization
-        {
-            let data = agent_chat_sync(&mut ws, "Add a block", None, Some("add_block"));
-            
-            // The tool should have been called but returned an error
-            // MockLLM returns the tool invocation message
-            assert!(data["response"].as_str().unwrap().contains("I've executed the add_block tool"));
-            
-            // TODO: Verify the tool result contains authorization error
-        }
-        
-        // Skip query_graph_bfs test - it's still a stub
-        
-        // Authorize the agent
-        {
-            let cmd = json!({
-                "type": "authorize_agent",
-                "agent_id": secondary_agent_id.to_string(),
-                "graph_id": graph_id
-            });
-            let response = send_command(&mut ws, cmd);
-            expect_success(response);
-            
-            validator.expect_authorization(&secondary_agent_id, &graph_uuid);
-        }
-        
-        // Now the same tool should succeed
-        {
-            let data = agent_chat_sync(&mut ws, "Add a block now", None, Some("add_block"));
-            
-            // MockLLM returns the tool invocation message
-            assert!(data["response"].as_str().unwrap().contains("I've executed the add_block tool"));
-            // Tool should succeed this time
-        }
-        
-        let _ = ws.close(None);
-        let test_env = server.shutdown();
-        
-        assert_phase(PostShutdown);
-        
-        validator.validate_all().expect("Validation failed");
-        
-        test_env
-    });
-    
-    match result {
-        Ok(test_env) => cleanup_test_env(test_env),
-        Err(panic) => {
-            cleanup_test_env(cleanup_env);
-            std::panic::resume_unwind(panic);
-        }
-    }
-}
 
 /// Test tool argument validation errors
 pub fn test_agent_tool_validation_errors() {
@@ -690,22 +530,15 @@ pub fn test_agent_tool_validation_errors() {
         
         assert_phase(PreShutdown);
         
-        let mut validator = WalValidator::new(&data_dir);
+        let mut validator = TestValidator::new(&data_dir);
+        
+        // Expect the dummy graph that was imported
+        validator.expect_dummy_graph(Some(&graph_id));
         
         let mut ws = connect_websocket(port);
         let auth_token = read_auth_token(&data_dir);
         assert!(authenticate_websocket(&mut ws, &auth_token));
         
-        let prime_agent_id = {
-            let cmd = json!({ "type": "agent_info" });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
-            Uuid::parse_str(data["agent_id"].as_str().unwrap()).unwrap()
-        };
-        
-        validator.expect_prime_agent(prime_agent_id);
-        let graph_uuid = Uuid::parse_str(&graph_id).unwrap();
-        validator.expect_authorization(&prime_agent_id, &graph_uuid);
         
         // Test with invalid tool name (validation happens before execution)
         // MockLLM will generate args, but validation should catch issues
@@ -740,220 +573,6 @@ pub fn test_agent_tool_validation_errors() {
     }
 }
 
-/// Test agent graph management tools (set_default_graph, get_default_graph, list_my_graphs)
-pub fn test_agent_graph_management_tools_direct() {
-    let test_env = setup_test_env();
-    let cleanup_env = test_env.clone();
-    
-    let result = std::panic::catch_unwind(move || {
-        // Import dummy graph and start server
-        let (server, initial_graph_id) = setup_with_graph(test_env);
-        let port = server.port();
-        let data_dir = server.test_env().data_dir.clone();
-        
-        assert_phase(PreShutdown);
-        
-        let mut validator = WalValidator::new(&data_dir);
-        
-        // Connect and authenticate
-        let mut ws = connect_websocket(port);
-        let auth_token = read_auth_token(&data_dir);
-        assert!(authenticate_websocket(&mut ws, &auth_token));
-        
-        // Get prime agent ID
-        let prime_agent_id = {
-            let cmd = json!({ "type": "agent_info" });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
-            Uuid::parse_str(data["agent_id"].as_str().unwrap()).unwrap()
-        };
-        
-        validator.expect_prime_agent(prime_agent_id);
-        let initial_graph_uuid = Uuid::parse_str(&initial_graph_id).unwrap();
-        validator.expect_authorization(&prime_agent_id, &initial_graph_uuid);
-        
-        // Test get_default_graph - should be the initial graph (first authorized)
-        {
-            let data = agent_chat_sync(&mut ws, "Get my default graph", None, Some("get_default_graph"));
-            
-            assert!(data["response"].as_str().unwrap().contains("I've executed the get_default_graph tool"));
-            
-            // Track conversation
-            validator.expect_user_message(
-                &prime_agent_id,
-                MessagePattern::Exact("Get my default graph".to_string())
-            );
-            validator.expect_tool_message(
-                &prime_agent_id,
-                "get_default_graph",
-                MessagePattern::Contains("✓ Tool 'get_default_graph' executed successfully".to_string())
-            );
-            validator.expect_assistant_message(
-                &prime_agent_id,
-                MessagePattern::Exact("I've executed the get_default_graph tool for you".to_string())
-            );
-        }
-        
-        // Test list_my_graphs - should show the initial graph
-        {
-            let data = agent_chat_sync(&mut ws, "List my authorized graphs", None, Some("list_my_graphs"));
-            
-            assert!(data["response"].as_str().unwrap().contains("I've executed the list_my_graphs tool"));
-            
-            validator.expect_user_message(
-                &prime_agent_id,
-                MessagePattern::Exact("List my authorized graphs".to_string())
-            );
-            validator.expect_tool_message(
-                &prime_agent_id,
-                "list_my_graphs",
-                MessagePattern::Contains("✓ Tool 'list_my_graphs' executed successfully".to_string())
-            );
-            validator.expect_assistant_message(
-                &prime_agent_id,
-                MessagePattern::Exact("I've executed the list_my_graphs tool for you".to_string())
-            );
-        }
-        
-        // Create a second graph
-        let second_graph_id = {
-            let data = agent_chat_sync(&mut ws, "Create another graph", None, Some("create_graph"));
-            
-            assert!(data["response"].as_str().unwrap().contains("I've executed the create_graph tool"));
-            
-            validator.expect_user_message(
-                &prime_agent_id,
-                MessagePattern::Exact("Create another graph".to_string())
-            );
-            validator.expect_tool_message(
-                &prime_agent_id,
-                "create_graph",
-                MessagePattern::Contains("✓ Tool 'create_graph' executed successfully".to_string())
-            );
-            validator.expect_assistant_message(
-                &prime_agent_id,
-                MessagePattern::Exact("I've executed the create_graph tool for you".to_string())
-            );
-            
-            // Get the new graph ID by listing all graphs
-            let list_cmd = json!({ "type": "list_graphs" });
-            let list_response = send_command(&mut ws, list_cmd);
-            let list_data = expect_success(list_response).unwrap();
-            let graphs = list_data["graphs"].as_array().unwrap();
-            
-            // Find the graph that isn't the initial one
-            let mut new_graph_id = None;
-            for graph in graphs {
-                let id_str = graph["id"].as_str().unwrap();
-                let id = Uuid::parse_str(id_str).unwrap();
-                if id != initial_graph_uuid {
-                    new_graph_id = Some(id);
-                    break;
-                }
-            }
-            
-            new_graph_id.expect("Should have found the new graph")
-        };
-        
-        // Prime agent should be authorized for the new graph
-        validator.expect_authorization(&prime_agent_id, &second_graph_id);
-        
-        // Close the initial graph to leave only the new graph open (for smart default)
-        {
-            let cmd = json!({
-                "type": "close_graph", 
-                "graph_id": initial_graph_id
-            });
-            let response = send_command(&mut ws, cmd);
-            expect_success(response).unwrap();
-        }
-        
-        // Test set_default_graph with smart default (only 1 graph open now)
-        {
-            let data = agent_chat_sync(&mut ws, "Set my default to the new graph", None, Some("set_default_graph"));
-            
-            assert!(data["response"].as_str().unwrap().contains("I've executed the set_default_graph tool"));
-            
-            validator.expect_user_message(
-                &prime_agent_id,
-                MessagePattern::Exact("Set my default to the new graph".to_string())
-            );
-            validator.expect_tool_message(
-                &prime_agent_id,
-                "set_default_graph",
-                MessagePattern::Contains("Tool 'set_default_graph'".to_string())
-            );
-            validator.expect_assistant_message(
-                &prime_agent_id,
-                MessagePattern::Exact("I've executed the set_default_graph tool for you".to_string())
-            );
-        }
-        
-        // Verify default changed with get_default_graph
-        {
-            let data = agent_chat_sync(&mut ws, "Check my default graph again", None, Some("get_default_graph"));
-            
-            assert!(data["response"].as_str().unwrap().contains("I've executed the get_default_graph tool"));
-            
-            validator.expect_user_message(
-                &prime_agent_id,
-                MessagePattern::Exact("Check my default graph again".to_string())
-            );
-            validator.expect_tool_message(
-                &prime_agent_id,
-                "get_default_graph",
-                MessagePattern::Contains("✓ Tool 'get_default_graph' executed successfully".to_string())
-            );
-            validator.expect_assistant_message(
-                &prime_agent_id,
-                MessagePattern::Exact("I've executed the get_default_graph tool for you".to_string())
-            );
-        }
-        
-        // Test list_my_graphs again - should now show 2 graphs
-        {
-            let data = agent_chat_sync(&mut ws, "List all my graphs again", None, Some("list_my_graphs"));
-            
-            assert!(data["response"].as_str().unwrap().contains("I've executed the list_my_graphs tool"));
-            
-            validator.expect_user_message(
-                &prime_agent_id,
-                MessagePattern::Exact("List all my graphs again".to_string())
-            );
-            validator.expect_tool_message(
-                &prime_agent_id,
-                "list_my_graphs",
-                MessagePattern::Contains("✓ Tool 'list_my_graphs' executed successfully".to_string())
-            );
-            validator.expect_assistant_message(
-                &prime_agent_id,
-                MessagePattern::Exact("I've executed the list_my_graphs tool for you".to_string())
-            );
-        }
-        
-        let _ = ws.close(None);
-        let test_env = server.shutdown();
-        
-        assert_phase(PostShutdown);
-        
-        // Debug logging removed as WAL validator checks transactions directly
-        // rather than loading JSON files
-        
-        // Validate final state
-        validator.validate_all().expect("Validation failed");
-        
-        test_env
-    });
-    
-    match result {
-        Ok(test_env) => cleanup_test_env(test_env),
-        Err(panic) => {
-            cleanup_test_env(cleanup_env);
-            std::panic::resume_unwind(panic);
-        }
-    }
-}
-
 /// Test multiple tool calls in sequence (tool chaining)
 #[allow(deprecated)] // Using deprecated agent_chat_sync until CQRS refactor
 pub fn test_agent_tool_chaining() {
@@ -968,44 +587,65 @@ pub fn test_agent_tool_chaining() {
         
         assert_phase(PreShutdown);
         
-        let mut validator = WalValidator::new(&data_dir);
+        let mut validator = TestValidator::new(&data_dir);
         
         let mut ws = connect_websocket(port);
         let auth_token = read_auth_token(&data_dir);
         assert!(authenticate_websocket(&mut ws, &auth_token));
         
-        let prime_agent_id = {
-            let cmd = json!({ "type": "agent_info" });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
-            Uuid::parse_str(data["agent_id"].as_str().unwrap()).unwrap()
-        };
-        
-        validator.expect_prime_agent(prime_agent_id);
         
         // Chain: create_graph -> create_page -> add_block -> list_graphs
         
-        // Step 1: Create a graph
-        {
+        // Step 1: Create a graph and capture its ID
+        let new_graph_id = {
             let data = agent_chat_sync(&mut ws, "Create a test graph", None, Some("create_graph"));
             
             // MockLLM returns the tool invocation message
             assert!(data["response"].as_str().unwrap().contains("I've executed the create_graph tool"));
-        }
+            
+            // Get the new graph ID by listing graphs
+            let list_cmd = json!({ "type": "list_graphs" });
+            let list_response = send_command(&mut ws, list_cmd);
+            let list_data = expect_success(list_response).unwrap();
+            let graphs = list_data["graphs"].as_array().unwrap();
+            
+            // Should have exactly one graph (the new one we just created)
+            assert_eq!(graphs.len(), 1, "Should have exactly one graph");
+            let graph_id = graphs[0]["id"].as_str().unwrap().to_string();
+            
+            // Track that we expect this graph to exist
+            // MockLLM doesn't provide a name, so it gets a default name like "Graph {id}"
+            let expected_name = format!("Graph {}", &graph_id[..8]);
+            validator.expect_graph_created(
+                uuid::Uuid::parse_str(&graph_id).unwrap(),
+                &expected_name
+            );
+            
+            graph_id
+        };
         
-        // Step 2: Create a page in the new graph
+        // Step 2: Create a page in the new graph and validate it
+        // The created graph is automatically opened, so smart default should work
         {
             let data = agent_chat_sync(&mut ws, "Create a page in the graph", None, Some("create_page"));
             
             assert!(data["response"].as_str().unwrap().contains("I've executed the create_page tool"));
+            
+            // MockLLM creates a page called "Test Page" - validate it's in the RIGHT graph
+            validator.expect_create_page("Test Page", None, Some(&new_graph_id));
         }
         
-        // Step 3: Add blocks to the page
+        // Step 3: Add blocks to the page and validate them
         {
             let data = agent_chat_sync(&mut ws, "Add content to the page", None, Some("add_block"));
             
             // MockLLM returns the tool invocation message
             assert!(data["response"].as_str().unwrap().contains("I've executed the add_block tool"));
+            
+            // MockLLM creates a block with a random UUID and content "Test content from MockLLM"
+            // We can't validate the specific block ID since it's random, but we can validate
+            // that a block with the expected content was created
+            // TODO: The validator needs a way to check for blocks by content, not just ID
         }
         
         // Step 4: List the graphs to verify creation

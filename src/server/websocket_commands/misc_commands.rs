@@ -8,32 +8,21 @@
 //! ## Command Categories
 //! 
 //! ### Authentication
-//! - `Auth`: Authenticate connection with token and set prime agent
+//! - `Auth`: Authenticate connection with token
 //! 
 //! ### Testing
 //! - `Test`: Echo test with connection statistics
 //! - `Heartbeat`: Client keep-alive (acknowledged but no response)
 //! - `TestCliCommand`: CLI command bridge (debug builds only)
 //! 
-//! ### Operation Control
-//! - `FreezeOperations`: Pause graph operations after command log write
-//! - `UnfreezeOperations`: Resume paused graph operations
-//! - `GetFreezeState`: Query current freeze status
-//! 
+ 
 //! ## Authentication Flow
 //! 
 //! 1. Client connects via WebSocket (no auth required)
 //! 2. Client sends Auth command with token
 //! 3. Token validated against stored auth_token
 //! 4. Connection marked as authenticated
-//! 5. Prime agent set as current for connection
-//! 6. First auth triggers ws_ready signal
-//! 
-//! ## Freeze Mechanism
-//! 
-//! The freeze/unfreeze commands enable deterministic testing by pausing
-//! command execution after command log writes but before state updates. This
-//! allows tests to simulate crashes and verify recovery behavior.
+//! 5. First auth triggers ws_ready signal
 //! 
 //! ## Heartbeat Design
 //! 
@@ -45,13 +34,11 @@
 //! 
 //! - Uses auth module for token validation
 //! - Updates connection state for authentication
-//! - Integrates with operation_freeze for test control
 //! - Bridges to CLI module for command testing (debug only)
 
 use std::sync::Arc;
 use tracing::{info, warn, error};
 use crate::error::*;
-use crate::utils::AsyncRwLockExt;
 use crate::AppState;
 use crate::server::websocket::Command;
 use crate::server::websocket_utils::{
@@ -76,25 +63,7 @@ pub async fn handle(
             // Set authenticated (atomic operation)
             match set_authenticated(connection_id, state).await {
                 Ok(is_first) => {
-                    // Set the prime agent as the default for this connection
-                    if let Some(ref connections) = state.ws_connections {
-                        let prime_agent_id = {
-                            let registry = state.agent_registry.read_or_panic("read agent registry for auth").await;
-                            registry.get_prime_agent_id()
-                        };
-                        
-                        if let Some(prime_id) = prime_agent_id {
-                            let mut conns = connections.write_or_panic("auth command - write connections").await;
-                            if let Some(conn) = conns.get_mut(connection_id) {
-                                conn.current_agent_id = Some(prime_id);
-                                // Set prime agent as default for this connection
-                            }
-                        } else {
-                            warn!("🔐 Auth succeeded but no prime agent exists - system may be in corrupted state");
-                        }
-                    }
-                    
-                    // Send success response (no lock held)
+                    // Send success response
                     send_success_response(connection_id, state, None).await?;
                     info!("🔐 WebSocket authenticated: {}", connection_id);
                     
@@ -130,27 +99,6 @@ pub async fn handle(
         Command::Heartbeat => {
             // Client sent a heartbeat/pong - just acknowledge receipt, don't respond
             // This prevents infinite heartbeat loops
-        }
-        Command::FreezeOperations => {
-            // Freeze all graph operations
-            let mut freeze_state = state.operation_freeze.write_or_panic("freeze operations").await;
-            *freeze_state = true;
-            
-            send_success_response(connection_id, state, None).await?;
-        }
-        Command::UnfreezeOperations => {
-            // Unfreeze all graph operations
-            let mut freeze_state = state.operation_freeze.write_or_panic("unfreeze operations").await;
-            *freeze_state = false;
-            
-            send_success_response(connection_id, state, None).await?;
-        }
-        Command::GetFreezeState => {
-            // Get current freeze state
-            let freeze_state = state.operation_freeze.read_or_panic("get freeze state").await;
-            let data = serde_json::json!({ "frozen": *freeze_state });
-            
-            send_success_response(connection_id, state, Some(data)).await?;
         }
         
         // Command for CLI integration testing (only available in debug builds)

@@ -1,21 +1,19 @@
 # Agent Module Guide 🤖
 
 ## Module Overview
-Multi-agent system with LLM backends, tool execution, and graph authorization.
+Agent system with LLM backends, tool execution, and graph authorization.
 
 ## Core Components
 
 ### File Structure
 - **agent.rs**: Core Agent struct with conversation management and 4-phase message processing
-- **agent_registry.rs**: Agent lifecycle, authorization tracking, and prime agent system
 - **llm.rs**: LLMBackend trait and MockLLM test implementation
 - **kg_tools.rs**: Static registry of 15 knowledge graph tools
 - **schemas.rs**: Ollama-compatible tool schemas for function calling
 
 ### Key Types
-- **Agent**: Conversation history, LLM config, default graph, message processing
+- **Agent**: Conversation history, LLM config, message processing
 - **Message**: User/Assistant/Tool with timestamps and context
-- **AgentRegistry**: Centralized metadata and authorization management
 - **LLMBackend**: Async trait for LLM implementations (MockLLM, future: Ollama)
 - **ToolDefinition**: JSON Schema tool descriptions for LLM function calling
 
@@ -43,9 +41,7 @@ Multi-agent system with LLM backends, tool execution, and graph authorization.
 - `delete_graph` - Archive graph
 
 ### Agent Graph Settings
-- `set_default_graph` - Set agent's default graph
-- `get_default_graph` - Get current default
-- `list_my_graphs` - List authorized graphs
+- `list_graphs` - List graphs
 
 ## Key Patterns 🔑
 
@@ -55,11 +51,6 @@ Multi-agent system with LLM backends, tool execution, and graph authorization.
 3. Execute tools (stateless)
 4. Add response (brief lock)
 
-### Prime Agent
-- Auto-created on first run
-- Cannot be deleted
-- Authorized for all new graphs
-- Default for WebSocket connections
 
 ### MockLLM Testing
 - `echo` - Force specific text response
@@ -67,9 +58,7 @@ Multi-agent system with LLM backends, tool execution, and graph authorization.
 - Deterministic behavior for integration tests
 
 ### Authorization Flow
-- AgentRegistry is single source of truth
 - Runtime checks before tool execution
-- Bidirectional agent-graph tracking
 - Clear unauthorized error messages
 
 ### Adding New Tools

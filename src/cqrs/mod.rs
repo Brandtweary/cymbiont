@@ -12,7 +12,6 @@
 //! - Serializing all mutations through a single processor (no lock contention)
 //! - Allowing unlimited concurrent reads (no read locks needed)
 //! - Providing a clear audit trail of all changes (command log)
-//! - Enabling deterministic replay for crash recovery
 //!
 //! ## Architecture Overview
 //!
@@ -40,7 +39,7 @@
 //! - **CommandProcessor**: Single-threaded owner of all mutable state
 //! - **Command**: Enum representing all possible mutations
 //! - **RouterToken**: Compile-time enforcement of CQRS routing
-//! - **CommandLog**: WAL for persistence and recovery (will be simplified)
+//! - **CommandLog**: Command persistence
 //!
 //! ## Usage Examples
 //!
@@ -88,8 +87,7 @@
 //!
 //! ### Command Resolution
 //! Some commands need to capture non-deterministic values (UUIDs, timestamps) before
-//! being written to the log. The `resolve()` method handles this, ensuring replay
-//! produces identical results.
+//! being written to the log. The `resolve()` method handles this for consistency.
 //!
 //! ## Migration Path
 //!
@@ -102,15 +100,11 @@
 //!
 //! ## Future Simplifications
 //!
-//! The current implementation includes WAL for crash recovery, but this will be
-//! simplified to JSON persistence in the next iteration. The CQRS pattern itself
-//! will remain as the core architectural principle.
 
 mod commands;
 mod processor;
 mod queue;
 pub mod router;
-mod wal;
 
 pub use commands::{Command, SystemCommand};
 pub use queue::CommandQueue;
@@ -118,7 +112,4 @@ pub use processor::CommandProcessor;
 
 // Re-export command types for convenience
 pub use commands::{GraphCommand, AgentCommand, RegistryCommand,
-                   GraphRegistryCommand, AgentRegistryCommand};
-
-// WAL types that might be needed
-pub use wal::CommandLog;
+                   GraphRegistryCommand};

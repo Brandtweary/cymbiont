@@ -281,31 +281,12 @@ pub fn delete_graph_schema() -> ToolDefinition {
 
 // Agent Graph Management Operations
 
-pub fn set_default_graph_schema() -> ToolDefinition {
-    tool(
-        "set_default_graph",
-        "Set the agent's default knowledge graph for operations",
-        vec![
-            ("graph_id", prop!("string", "UUID of the graph to set as default")),
-            ("graph_name", prop!("string", "Name of the graph to set as default (alternative to graph_id)")),
-        ],
-        vec![],
-    )
-}
 
-pub fn get_default_graph_schema() -> ToolDefinition {
-    tool(
-        "get_default_graph",
-        "Get the agent's current default knowledge graph",
-        vec![],
-        vec![],
-    )
-}
 
 pub fn list_my_graphs_schema() -> ToolDefinition {
     tool(
         "list_my_graphs",
-        "List all knowledge graphs the agent is authorized to access",
+        "List all knowledge graphs",
         vec![],
         vec![],
     )
@@ -327,8 +308,6 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         close_graph_schema(),
         create_graph_schema(),
         delete_graph_schema(),
-        set_default_graph_schema(),
-        get_default_graph_schema(),
         list_my_graphs_schema(),
     ]
 }

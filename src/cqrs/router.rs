@@ -27,7 +27,6 @@
 //!
 //! Without RouterToken, developers might accidentally:
 //! - Call business logic directly, bypassing the command queue
-//! - Forget to log operations to WAL
 //! - Create race conditions by modifying state concurrently
 //!
 //! RouterToken makes these mistakes impossible at compile time. If you don't
@@ -60,12 +59,6 @@
 //! ### Graph Commands
 //! Graph operations that modify content:
 //! ```rust
-//! GraphCommand::CreateBlock { graph_id, agent_id, content, ... } => {
-//!     // 1. Check agent authorization
-//!     // 2. Get graph manager
-//!     // 3. Call helper with RouterToken
-//!     // 4. Return result
-//! }
 //! ```
 //!
 //! ### Registry Commands
@@ -82,22 +75,12 @@
 //! ### Agent Commands
 //! Modifications to agent state:
 //! ```rust
-//! AgentCommand::AddMessage { agent_id, message } => {
-//!     // 1. Get agent from HashMap
-//!     // 2. Deserialize message
-//!     // 3. Add to conversation with RouterToken
-//!     // 4. Save agent state
-//! }
 //! ```
 //!
 //! ## Authorization Checking
 //!
 //! Most commands require authorization checks:
 //! ```rust
-//! // Check if agent can modify graph
-//! if !agent_registry.is_agent_authorized(&agent_id, &graph_id) {
-//!     return Err(GraphError::Unauthorized(...));
-//! }
 //! ```
 //!
 //! The router centralizes these checks, ensuring consistent security enforcement.
@@ -128,7 +111,7 @@
 //! ### Separation of Concerns
 //! - Router: Command dispatch and resource coordination
 //! - Business logic: Domain operations (with RouterToken)
-//! - Processor: State ownership and WAL management
+//! - Processor: State ownership and command execution
 //!
 //! ### Type Safety
 //! RouterToken ensures all mutations go through CQRS at compile time,
@@ -153,10 +136,9 @@ use crate::graph::graph_manager::GraphManager;
 use crate::graph::graph_registry::GraphRegistry;
 use crate::graph::graph_operations;
 use crate::agent::agent::Agent;
-use crate::agent::agent_registry::AgentRegistry;
 use crate::agent::llm::{Message, LLMConfig};
 use super::commands::{CommandResult, GraphCommand, AgentCommand, RegistryCommand,
-                      GraphRegistryCommand, AgentRegistryCommand};
+                      GraphRegistryCommand};
 use super::processor::ProcessorError;
 
 /// Private token that proves a call came through the CQRS router.
@@ -171,23 +153,15 @@ impl RouterToken {
     fn new() -> Self {
         RouterToken(())
     }
-    
-    /// Internal constructor for CQRS system use (processor recovery)
-    pub(super) fn new_internal() -> Self {
-        RouterToken(())
-    }
 }
 
 /// Route a graph command to its handler
 pub async fn route_graph_command(
     managers: &Arc<RwLock<HashMap<Uuid, Arc<RwLock<GraphManager>>>>>,
-    agent_registry: &Arc<RwLock<AgentRegistry>>,
     command: GraphCommand,
 ) -> Result<CommandResult> {
     match command {
-        GraphCommand::CreateBlock { graph_id, agent_id, content, parent_id, page_name, properties } => {
-            // Check agent authorization
-            check_agent_authorization(agent_registry, agent_id, graph_id).await?;
+        GraphCommand::CreateBlock { graph_id, block_id, content, parent_id, page_name, properties, reference_content } => {
             
             // Get the graph manager
             let managers_guard = managers.read().await;
@@ -201,10 +175,12 @@ pub async fn route_graph_command(
             let block_id = graph_operations::execute_create_block(
                 &token,
                 &mut *graph_manager,
+                block_id,
                 content,
                 parent_id,
                 page_name,
                 properties,
+                reference_content,
             ).await?;
             
             Ok(CommandResult {
@@ -217,8 +193,7 @@ pub async fn route_graph_command(
             })
         }
         
-        GraphCommand::UpdateBlock { graph_id, agent_id, block_id, content } => {
-            check_agent_authorization(agent_registry, agent_id, graph_id).await?;
+        GraphCommand::UpdateBlock { graph_id, block_id, content } => {
             
             let managers_guard = managers.read().await;
             let graph_manager_arc = managers_guard.get(&graph_id)
@@ -246,8 +221,7 @@ pub async fn route_graph_command(
             })
         }
         
-        GraphCommand::DeleteBlock { graph_id, agent_id, block_id } => {
-            check_agent_authorization(agent_registry, agent_id, graph_id).await?;
+        GraphCommand::DeleteBlock { graph_id, block_id } => {
             
             let managers_guard = managers.read().await;
             let graph_manager_arc = managers_guard.get(&graph_id)
@@ -272,8 +246,7 @@ pub async fn route_graph_command(
             })
         }
         
-        GraphCommand::CreatePage { graph_id, agent_id, page_name, properties } => {
-            check_agent_authorization(agent_registry, agent_id, graph_id).await?;
+        GraphCommand::CreatePage { graph_id, page_name, properties } => {
             
             let managers_guard = managers.read().await;
             let graph_manager_arc = managers_guard.get(&graph_id)
@@ -298,8 +271,7 @@ pub async fn route_graph_command(
             })
         }
         
-        GraphCommand::DeletePage { graph_id, agent_id, page_name } => {
-            check_agent_authorization(agent_registry, agent_id, graph_id).await?;
+        GraphCommand::DeletePage { graph_id, page_name } => {
             
             let managers_guard = managers.read().await;
             let graph_manager_arc = managers_guard.get(&graph_id)
@@ -328,21 +300,19 @@ pub async fn route_graph_command(
 
 /// Route an agent command to its handler
 pub async fn route_agent_command(
-    agents: &Arc<RwLock<HashMap<Uuid, Arc<RwLock<Agent>>>>>,
+    agent: &Arc<RwLock<Option<Agent>>>,
     command: AgentCommand,
 ) -> Result<CommandResult> {
     match command {
-        AgentCommand::AddMessage { agent_id, message } => {
-            let agents_guard = agents.read().await;
-            let agent_arc = agents_guard.get(&agent_id)
-                .ok_or_else(|| ProcessorError("Agent not found".to_string()))?
-                .clone();
-            let mut agent = agent_arc.write().await;
+        AgentCommand::AddMessage { message } => {
+            let mut agent_guard = agent.write().await;
+            let agent_mut = agent_guard.as_mut()
+                .ok_or_else(|| ProcessorError("Agent not initialized".to_string()))?;
             
             // Deserialize and add message
             let msg: Message = serde_json::from_value(message)?;
             let token = RouterToken::new();
-            agent.add_message(&token, msg).await?;
+            agent_mut.add_message(&token, msg).await?;
             
             Ok(CommandResult {
                 success: true,
@@ -352,15 +322,13 @@ pub async fn route_agent_command(
             })
         }
         
-        AgentCommand::ClearHistory { agent_id } => {
-            let agents_guard = agents.read().await;
-            let agent_arc = agents_guard.get(&agent_id)
-                .ok_or_else(|| ProcessorError("Agent not found".to_string()))?
-                .clone();
-            let mut agent = agent_arc.write().await;
+        AgentCommand::ClearHistory => {
+            let mut agent_guard = agent.write().await;
+            let agent_mut = agent_guard.as_mut()
+                .ok_or_else(|| ProcessorError("Agent not initialized".to_string()))?;
             
             let token = RouterToken::new();
-            agent.clear_history(&token).await?;
+            agent_mut.clear_history(&token).await?;
             
             Ok(CommandResult {
                 success: true,
@@ -370,17 +338,15 @@ pub async fn route_agent_command(
             })
         }
         
-        AgentCommand::SetLLMConfig { agent_id, config } => {
-            let agents_guard = agents.read().await;
-            let agent_arc = agents_guard.get(&agent_id)
-                .ok_or_else(|| ProcessorError("Agent not found".to_string()))?
-                .clone();
-            let mut agent = agent_arc.write().await;
+        AgentCommand::SetLLMConfig { config } => {
+            let mut agent_guard = agent.write().await;
+            let agent_mut = agent_guard.as_mut()
+                .ok_or_else(|| ProcessorError("Agent not initialized".to_string()))?;
             
             // Deserialize and set config
             let llm_config: LLMConfig = serde_json::from_value(config)?;
             let token = RouterToken::new();
-            agent.set_llm_config(&token, llm_config).await?;
+            agent_mut.set_llm_config(&token, llm_config).await?;
             
             Ok(CommandResult {
                 success: true,
@@ -390,15 +356,13 @@ pub async fn route_agent_command(
             })
         }
         
-        AgentCommand::SetSystemPrompt { agent_id, prompt } => {
-            let agents_guard = agents.read().await;
-            let agent_arc = agents_guard.get(&agent_id)
-                .ok_or_else(|| ProcessorError("Agent not found".to_string()))?
-                .clone();
-            let mut agent = agent_arc.write().await;
+        AgentCommand::SetSystemPrompt { prompt } => {
+            let mut agent_guard = agent.write().await;
+            let agent_mut = agent_guard.as_mut()
+                .ok_or_else(|| ProcessorError("Agent not initialized".to_string()))?;
             
             let token = RouterToken::new();
-            agent.set_system_prompt(&token, prompt).await?;
+            agent_mut.set_system_prompt(&token, prompt).await?;
             
             Ok(CommandResult {
                 success: true,
@@ -408,32 +372,13 @@ pub async fn route_agent_command(
             })
         }
         
-        AgentCommand::SetDefaultGraph { agent_id, graph_id } => {
-            let agents_guard = agents.read().await;
-            let agent_arc = agents_guard.get(&agent_id)
-                .ok_or_else(|| ProcessorError("Agent not found".to_string()))?
-                .clone();
-            let mut agent = agent_arc.write().await;
-            
-            let token = RouterToken::new();
-            agent.set_default_graph_id(&token, graph_id).await?;
-            
-            Ok(CommandResult {
-                success: true,
-                data: None,
-                error: None,
-                child_commands: vec![],
-            })
-        }
     }
 }
 
 /// Route a registry command to its handler
 pub async fn route_registry_command(
     graph_managers: &Arc<RwLock<HashMap<Uuid, Arc<RwLock<GraphManager>>>>>,
-    agents: &Arc<RwLock<HashMap<Uuid, Arc<RwLock<Agent>>>>>,
     graph_registry: &Arc<RwLock<GraphRegistry>>,
-    agent_registry: &Arc<RwLock<AgentRegistry>>,
     command: RegistryCommand,
     data_dir: &Path,
 ) -> Result<CommandResult> {
@@ -442,17 +387,7 @@ pub async fn route_registry_command(
             route_graph_registry_command(
                 graph_managers,
                 graph_registry,
-                agent_registry,
                 graph_cmd,
-                data_dir,
-            ).await
-        }
-        RegistryCommand::Agent(agent_cmd) => {
-            route_agent_registry_command(
-                agents,
-                agent_registry,
-                graph_registry,
-                agent_cmd,
                 data_dir,
             ).await
         }
@@ -463,19 +398,15 @@ pub async fn route_registry_command(
 async fn route_graph_registry_command(
     graph_managers: &Arc<RwLock<HashMap<Uuid, Arc<RwLock<GraphManager>>>>>,
     graph_registry: &Arc<RwLock<GraphRegistry>>,
-    agent_registry: &Arc<RwLock<AgentRegistry>>,
     command: GraphRegistryCommand,
     data_dir: &Path,
 ) -> Result<CommandResult> {
     match command {
-        GraphRegistryCommand::CreateGraph { name, description, resolved_id } => {
-            // Use the complete workflow
+        GraphRegistryCommand::CreateGraph { name, description } => {
+            // Generate new UUID for graph
+            let graph_id = Uuid::new_v4();
             let mut graph_reg = graph_registry.write().await;
-            let mut agent_reg = agent_registry.write().await;
             let mut managers = graph_managers.write().await;
-            
-            // resolved_id should always be Some after resolution
-            let graph_id = resolved_id.expect("CreateGraph command should be resolved before execution");
             
             let token = RouterToken::new();
             let graph_info = graph_reg.create_graph_complete(
@@ -484,7 +415,6 @@ async fn route_graph_registry_command(
                 name,
                 description,
                 &mut *managers,
-                &mut *agent_reg,
                 data_dir,
             ).await?;
             
@@ -519,9 +449,8 @@ async fn route_graph_registry_command(
             // Use registry method that handles both memory and archival
             let mut registry = graph_registry.write().await;
             let mut managers = graph_managers.write().await;
-            let mut agent_reg = agent_registry.write().await;
             let token = RouterToken::new();
-            registry.remove_graph(&token, &graph_id, &mut *managers, &mut *agent_reg).await?;
+            registry.remove_graph(&token, &graph_id, &mut *managers).await?;
             
             Ok(CommandResult {
                 success: true,
@@ -543,9 +472,13 @@ async fn route_graph_registry_command(
                 data_dir,
             ).await?;
             
+            // Get the graph info to return
+            let graph_info = registry.get_graph(&graph_id)
+                .ok_or_else(|| StorageError::not_found("graph", "ID", graph_id.to_string()))?;
+            
             Ok(CommandResult {
                 success: true,
-                data: None,
+                data: Some(serde_json::to_value(graph_info)?),
                 error: None,
                 child_commands: vec![],
             })
@@ -566,193 +499,4 @@ async fn route_graph_registry_command(
             })
         }
     }
-}
-
-/// Route an agent registry command
-async fn route_agent_registry_command(
-    agents: &Arc<RwLock<HashMap<Uuid, Arc<RwLock<Agent>>>>>,
-    agent_registry: &Arc<RwLock<AgentRegistry>>,
-    graph_registry: &Arc<RwLock<GraphRegistry>>,
-    command: AgentRegistryCommand,
-    data_dir: &Path,
-) -> Result<CommandResult> {
-    match command {
-        AgentRegistryCommand::CreateAgent { name, description, resolved_id } => {
-            // Use the complete workflow
-            let mut registry = agent_registry.write().await;
-            let mut agents_map = agents.write().await;
-            
-            // resolved_id should always be Some after resolution
-            let agent_id = resolved_id.expect("CreateAgent command should be resolved before execution");
-            
-            let token = RouterToken::new();
-            let agent_info = registry.create_agent_complete(
-                &token,
-                agent_id,
-                name,
-                description,
-                None,  // system_prompt
-                &mut *agents_map,
-                data_dir,
-            ).await?;
-            
-            Ok(CommandResult {
-                success: true,
-                data: Some(serde_json::to_value(agent_info)?),
-                error: None,
-                child_commands: vec![],
-            })
-        }
-        
-        AgentRegistryCommand::RegisterAgent { agent_id, name, description } => {
-            // Low-level registry operation
-            let mut registry = agent_registry.write().await;
-            let token = RouterToken::new();
-            registry.register_agent(&token, Some(agent_id), name, description).await?;
-            
-            Ok(CommandResult {
-                success: true,
-                data: Some(serde_json::json!({ "agent_id": agent_id })),
-                error: None,
-                child_commands: vec![],
-            })
-        }
-        
-        AgentRegistryCommand::DeleteAgent { agent_id } => {
-            let mut registry = agent_registry.write().await;
-            let mut agents_map = agents.write().await;
-            let mut graph_reg = graph_registry.write().await;
-            let token = RouterToken::new();
-            registry.remove_agent(&token, &agent_id, &mut *agents_map, &mut *graph_reg).await?;
-            
-            Ok(CommandResult {
-                success: true,
-                data: None,
-                error: None,
-                child_commands: vec![],
-            })
-        }
-        
-        AgentRegistryCommand::ActivateAgent { agent_id } => {
-            // Use complete workflow
-            let mut registry = agent_registry.write().await;
-            let mut agents_map = agents.write().await;
-            let token = RouterToken::new();
-            registry.activate_agent_complete(&token, agent_id, &mut *agents_map).await?;
-            
-            Ok(CommandResult {
-                success: true,
-                data: None,
-                error: None,
-                child_commands: vec![],
-            })
-        }
-        
-        AgentRegistryCommand::DeactivateAgent { agent_id } => {
-            // Use complete workflow that handles memory cleanup
-            let mut registry = agent_registry.write().await;
-            let mut agents_map = agents.write().await;
-            let token = RouterToken::new();
-            registry.deactivate_agent_complete(&token, agent_id, &mut *agents_map).await?;
-            
-            Ok(CommandResult {
-                success: true,
-                data: None,
-                error: None,
-                child_commands: vec![],
-            })
-        }
-        
-        AgentRegistryCommand::AuthorizeAgent { agent_id, graph_id } => {
-            // Update both registries
-            let mut agent_reg = agent_registry.write().await;
-            let mut graph_reg = graph_registry.write().await;
-            
-            // Check if this will be the agent's first graph (for default graph setting)
-            let needs_default = agent_reg.get_agent(&agent_id)
-                .map(|a| a.authorized_graphs.is_empty())
-                .unwrap_or(false);
-            
-            let token = RouterToken::new();
-            agent_reg.authorize_agent_for_graph(
-                &token,
-                &agent_id,
-                &graph_id,
-                &mut *graph_reg,
-            ).await?;
-            
-            // If this was the first graph, set it as default
-            let child_commands = if needs_default {
-                vec![super::commands::Command::Agent(AgentCommand::SetDefaultGraph {
-                    agent_id,
-                    graph_id: Some(graph_id),
-                })]
-            } else {
-                vec![]
-            };
-            
-            Ok(CommandResult {
-                success: true,
-                data: None,
-                error: None,
-                child_commands,
-            })
-        }
-        
-        AgentRegistryCommand::DeauthorizeAgent { agent_id, graph_id } => {
-            // Update both registries
-            let mut agent_reg = agent_registry.write().await;
-            let mut graph_reg = graph_registry.write().await;
-            
-            let token = RouterToken::new();
-            agent_reg.deauthorize_agent_from_graph(
-                &token,
-                &agent_id,
-                &graph_id,
-                &mut *graph_reg,
-            ).await?;
-            
-            Ok(CommandResult {
-                success: true,
-                data: None,
-                error: None,
-                child_commands: vec![],
-            })
-        }
-        
-        AgentRegistryCommand::SetPrimeAgent { agent_id } => {
-            let mut registry = agent_registry.write().await;
-            let token = RouterToken::new();
-            registry.set_prime_agent(&token, &agent_id).await?;
-            
-            Ok(CommandResult {
-                success: true,
-                data: None,
-                error: None,
-                child_commands: vec![],
-            })
-        }
-    }
-}
-
-
-/// Helper to check agent authorization for a graph
-async fn check_agent_authorization(
-    agent_registry: &Arc<RwLock<AgentRegistry>>,
-    agent_id: Uuid,
-    graph_id: Uuid,
-) -> Result<()> {
-    let registry = agent_registry.read().await;
-    
-    // Check if agent is authorized for this graph
-    if let Some(agent_info) = registry.get_agent(&agent_id) {
-        if agent_info.authorized_graphs.contains(&graph_id) {
-            return Ok(());
-        }
-    }
-    
-    Err(ProcessorError(format!(
-        "Agent {} is not authorized for graph {}", 
-        agent_id, graph_id
-    )).into())
 }

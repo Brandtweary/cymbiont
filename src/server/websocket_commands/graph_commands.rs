@@ -2,8 +2,7 @@
 //! @description Graph-related WebSocket command handlers
 //! 
 //! This module implements all graph-related WebSocket commands, providing
-//! comprehensive knowledge graph management through the GraphOps trait
-//! which enforces agent authorization at runtime.
+//! comprehensive knowledge graph management through the GraphOps trait.
 //! 
 //! ## Command Categories
 //! 
@@ -19,15 +18,9 @@
 //! ### Graph Lifecycle
 //! - `OpenGraph`: Load graph into memory and trigger recovery
 //! - `CloseGraph`: Save and unload graph from memory
-//! - `CreateGraph`: Create new graph with prime agent authorization
+//! - `CreateGraph`: Create new graph with specified name
 //! - `DeleteGraph`: Archive entire graph to archived_graphs/
 //! - `ListGraphs`: Return all registered graphs with metadata
-//! 
-//! ## Authorization Model
-//! 
-//! All operations require an authenticated agent with appropriate graph
-//! permissions. The current_agent_id from the WebSocket connection is
-//! passed to GraphOps methods which perform runtime authorization checks.
 //! 
 //! ## Graph Targeting
 //! 
@@ -36,21 +29,31 @@
 //! - `graph_name`: Human-readable name resolution
 //! - Smart defaults: Falls back to single open graph when unspecified
 //! 
+//! The graph resolution system provides intelligent defaults: when only one
+//! graph is open and no target is specified, operations automatically target
+//! that graph. This simplifies common single-graph workflows.
+//! 
 //! ## CQRS Integration
 //! 
 //! All modifying operations route through the CQRS CommandQueue via the
-//! GraphOps trait, ensuring sequential processing and enabling crash
-//! recovery through the command log.
+//! GraphOps trait, ensuring sequential processing and consistency. The
+//! CommandQueue provides deadlock-free mutations through single-threaded
+//! command processing while allowing unlimited concurrent reads.
 //! 
 //! ## Error Handling
 //! 
-//! - Authorization failures return clear "not authorized" errors
-//! - Missing agent selection returns "no agent selected" errors
 //! - Graph resolution failures provide specific error messages
 //! - Operation failures are wrapped with descriptive context
+//! - Missing graphs return NotFound errors with graph identification
+//! - Multiple open graphs without target specification return clear guidance
+//! 
+//! ## Response Format
+//! 
+//! All commands return WebSocket responses with consistent structure:
+//! - Success responses include operation-specific data
+//! - Error responses include descriptive error messages
 
 use std::sync::Arc;
-use uuid::Uuid;
 use crate::error::*;
 use crate::AppState;
 use crate::graph::graph_operations::GraphOps;
@@ -64,7 +67,6 @@ pub async fn handle(
     command: Command,
     connection_id: &str,
     state: &Arc<AppState>,
-    current_agent_id: Option<Uuid>,
 ) -> Result<()> {
     match command {
         Command::CreateBlock { content, parent_id, page_name, temp_id: _, graph_id, graph_name } => {
@@ -77,15 +79,7 @@ pub async fn handle(
                 true  // allow smart default
             ).await?;
             
-            // Get current agent ID
-            let agent_id = match current_agent_id {
-                Some(id) => id,
-                None => {
-                    return Err(ServerError::websocket("No agent selected for this operation").into());
-                }
-            };
-            
-            let block_id = state.add_block(agent_id, content, parent_id, page_name, None, &resolved_graph_id).await?;
+            let block_id = state.add_block(None, content, parent_id, page_name, None, None, &resolved_graph_id).await?;
             let data = serde_json::json!({ "block_id": block_id });
             send_success_response(connection_id, state, Some(data)).await?;
         }
@@ -99,15 +93,7 @@ pub async fn handle(
                 true  // allow smart default
             ).await?;
             
-            // Get current agent ID
-            let agent_id = match current_agent_id {
-                Some(id) => id,
-                None => {
-                    return Err(ServerError::websocket("No agent selected for this operation").into());
-                }
-            };
-            
-            state.update_block(agent_id, block_id.clone(), content, &resolved_graph_id).await?;
+            state.update_block(block_id.clone(), content, &resolved_graph_id).await?;
             let data = serde_json::json!({ "block_id": block_id });
             send_success_response(connection_id, state, Some(data)).await?;
         }
@@ -121,15 +107,7 @@ pub async fn handle(
                 true  // allow smart default
             ).await?;
             
-            // Get current agent ID
-            let agent_id = match current_agent_id {
-                Some(id) => id,
-                None => {
-                    return Err(ServerError::websocket("No agent selected for this operation").into());
-                }
-            };
-            
-            state.delete_block(agent_id, block_id.clone(), &resolved_graph_id).await?;
+            state.delete_block(block_id.clone(), &resolved_graph_id).await?;
             let data = serde_json::json!({ "block_id": block_id });
             send_success_response(connection_id, state, Some(data)).await?;
         }
@@ -143,14 +121,6 @@ pub async fn handle(
                 true  // allow smart default
             ).await?;
             
-            // Get current agent ID
-            let agent_id = match current_agent_id {
-                Some(id) => id,
-                None => {
-                    return Err(ServerError::websocket("No agent selected for this operation").into());
-                }
-            };
-            
             // Convert HashMap<String, String> to serde_json::Value
             let properties_json = properties.map(|props| {
                 serde_json::Value::Object(
@@ -160,7 +130,7 @@ pub async fn handle(
                 )
             });
             
-            state.create_page(agent_id, name.clone(), properties_json, &resolved_graph_id).await?;
+            state.create_page(name.clone(), properties_json, &resolved_graph_id).await?;
             let data = serde_json::json!({ "page_name": name });
             send_success_response(connection_id, state, Some(data)).await?;
         }
@@ -174,15 +144,7 @@ pub async fn handle(
                 true  // allow smart default
             ).await?;
             
-            // Get current agent ID
-            let agent_id = match current_agent_id {
-                Some(id) => id,
-                None => {
-                    return Err(ServerError::websocket("No agent selected for this operation").into());
-                }
-            };
-            
-            state.delete_page(agent_id, page_name.clone(), &resolved_graph_id).await?;
+            state.delete_page(page_name.clone(), &resolved_graph_id).await?;
             let data = serde_json::json!({ "page_name": page_name });
             send_success_response(connection_id, state, Some(data)).await?;
         }

@@ -1,8 +1,8 @@
 pub mod test_harness;
-pub mod wal_validation;
+pub mod test_validator;
 
 // Re-export commonly used items for convenience
 pub use test_harness::{setup_test_env, cleanup_test_env};
 
-// Export WAL validation types
-pub use wal_validation::{WalValidator, MessagePattern};
+// Export test validation types
+pub use test_validator::{TestValidator, MessagePattern};

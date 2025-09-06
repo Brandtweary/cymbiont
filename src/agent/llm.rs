@@ -252,11 +252,11 @@ fn generate_mock_args(tool_name: &str, tools: &[ToolDefinition]) -> serde_json::
                     // Generate appropriate test values based on parameter name
                     match required_param.as_str() {
                         "content" => serde_json::Value::String("Test content from MockLLM".to_string()),
-                        // Use valid UUIDs for ID fields - this block exists in dummy graph
-                        "block_id" => serde_json::Value::String("67f9a190-985b-4dbf-90e4-c2abffb2ab51".to_string()),
-                        "node_id" => serde_json::Value::String("456e7890-e89b-12d3-a456-426614174000".to_string()),
+                        // Generate fresh UUIDs for ID fields - tests should create their own blocks
+                        "block_id" => serde_json::Value::String(uuid::Uuid::new_v4().to_string()),
+                        "node_id" => serde_json::Value::String(uuid::Uuid::new_v4().to_string()),
                         "page_name" => serde_json::Value::String("Test Page".to_string()),
-                        "start_id" => serde_json::Value::String("789e0123-e89b-12d3-a456-426614174000".to_string()),
+                        "start_id" => serde_json::Value::String(uuid::Uuid::new_v4().to_string()),
                         _ => serde_json::Value::String(format!("test-{}", required_param)),
                     }
                 },
@@ -281,11 +281,29 @@ impl LLMBackend for MockLLM {
         tools: &[ToolDefinition],
     ) -> Result<LLMResponse> {
         // For testing: look at the last user message
-        if let Some(Message::User { echo_tool, echo, .. }) = messages.last() {
+        if let Some(Message::User { echo_tool, echo, content, .. }) = messages.last() {
             // Priority 1: echo_tool returns a tool call
             if let Some(tool_name) = echo_tool {
                 // Generate mock arguments based on the tool schema
-                let mock_args = generate_mock_args(tool_name, tools);
+                // But try to extract UUIDs from the message content for block_id/node_id parameters
+                let mut mock_args = generate_mock_args(tool_name, tools);
+                
+                // Extract UUID from message content if it contains one
+                // This allows tests to pass actual IDs like "Update block {uuid} with new content"
+                if let Some(args_obj) = mock_args.as_object_mut() {
+                    // Simple regex to find UUID pattern in the message
+                    let uuid_regex = regex::Regex::new(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").unwrap();
+                    if let Some(captures) = uuid_regex.find(content) {
+                        let uuid_str = captures.as_str();
+                        // Update block_id or node_id if present in args
+                        if args_obj.contains_key("block_id") {
+                            args_obj.insert("block_id".to_string(), serde_json::Value::String(uuid_str.to_string()));
+                        }
+                        if args_obj.contains_key("node_id") {
+                            args_obj.insert("node_id".to_string(), serde_json::Value::String(uuid_str.to_string()));
+                        }
+                    }
+                }
                 
                 return Ok(LLMResponse {
                     content: format!("I've executed the {} tool for you", tool_name),

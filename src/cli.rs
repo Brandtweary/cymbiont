@@ -1,14 +1,14 @@
 //! CLI Command Handling Module
 //!
 //! This module contains all CLI argument parsing and command execution logic
-//! for Cymbiont. It handles agent management, graph operations, and various
+//! for Cymbiont. It handles graph operations, and various
 //! administrative commands through a clean command-line interface.
 //!
 //! ## Architecture
 //!
 //! The CLI module is responsible for:
 //! - Parsing command-line arguments using clap
-//! - Executing one-off commands (agent/graph management)
+//! - Executing one-off commands (graph management)
 //! - Displaying system status when no commands are provided
 //! - Determining whether to exit after command completion
 //!
@@ -79,15 +79,6 @@
 //! - Delete graphs by name or ID
 //! - List all graphs with metadata
 //!
-//! ### Agent Management
-//! - Create/delete agents
-//! - Activate/deactivate agents (memory management)
-//! - Display agent information
-//!
-//! ### Agent Authorization
-//! - Authorize agents for specific graphs
-//! - Deauthorize agents from graphs
-//! - Manage multi-agent access control
 //!
 //! ## Execution Model
 //!
@@ -110,7 +101,6 @@ use crate::utils::AsyncRwLockExt;
 use crate::app_state::AppState;
 use crate::graph::graph_operations::GraphOps;
 use crate::import;
-use crate::cqrs::{Command, RegistryCommand, AgentRegistryCommand};
 
 /// CLI Commands Contract Enforcement Macro
 /// Developer must specify ALL CLI commands exhaustively
@@ -226,21 +216,12 @@ cli_commands! {
     string_commands: [
         (ImportLogseq, path, import_logseq, "PATH", "import_logseq"),
         (DeleteGraph, identifier, delete_graph, "NAME_OR_ID", "delete_graph"),
-        (CreateAgent, name, create_agent, "NAME", "create_agent"),
-        (DeleteAgent, identifier, delete_agent, "NAME_OR_ID", "delete_agent"),
-        (ActivateAgent, identifier, activate_agent, "NAME_OR_ID", "activate_agent"),
-        (DeactivateAgent, identifier, deactivate_agent, "NAME_OR_ID", "deactivate_agent"),
-        (AgentInfo, identifier, agent_info, "NAME_OR_ID", "agent_info"),
-        (AuthorizeAgent, agent, authorize_agent, "AGENT_NAME_OR_ID", "authorize_agent"),
-        (DeauthorizeAgent, agent, deauthorize_agent, "AGENT_NAME_OR_ID", "deauthorize_agent"),
     ],
     flag_commands: [
         (ListGraphs, list_graphs, "", "list_graphs"),
+        (AgentInfo, agent_info, "", "agent_info"),
     ],
     supporting_fields: [
-        (agent_description, "DESCRIPTION", "create_agent"),
-        (for_graph, "GRAPH_NAME_OR_ID", "authorize_agent"),
-        (from_graph, "GRAPH_NAME_OR_ID", "deauthorize_agent"),
     ],
 }
 
@@ -316,275 +297,23 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
         // Don't return true - continue running
     }
     
-    // Handle agent admin commands (these exit after completion)
-    
-    // Create agent
-    if let Some(agent_name) = &args.create_agent {
-        // Submit command to CQRS system
-        let command = Command::Registry(RegistryCommand::Agent(
-            AgentRegistryCommand::CreateAgent {
-                name: Some(agent_name.clone()),
-                description: args.agent_description.clone(),
-                resolved_id: None,  // Will be resolved before WAL write
-            }
-        ));
-        
-        let result = app_state.command_queue.execute(command).await?;
-        
-        if let Some(data) = result.data {
-            if let (Some(agent_id), Some(name)) = (data["id"].as_str(), data["name"].as_str()) {
-                info!("✅ Created agent '{}' with ID: {}", name, agent_id);
-            } else {
-                info!("✅ Created agent successfully");
-            }
-        }
-    }
-    
-    // Delete agent
-    if let Some(agent_identifier) = &args.delete_agent {
-        let resolved_id = {
-            let registry = app_state.agent_registry.read_or_panic("delete agent - read registry").await;
-            
-            // Try to parse as UUID first
-            let uuid_opt = Uuid::parse_str(&agent_identifier).ok();
-            
-            registry.resolve_agent_target(
-                uuid_opt.as_ref(),
-                if uuid_opt.is_none() { Some(&agent_identifier) } else { None },
-                false  // No smart default for delete
-            )?
-        };
-        
-        // Don't allow deleting the prime agent
-        {
-            let registry = app_state.agent_registry.read_or_panic("delete agent - check prime").await;
-            if Some(resolved_id) == registry.get_prime_agent_id() {
-                return Err("Cannot delete the prime agent".into());
-            }
-        }
-        
-        // Submit command to delete agent (handles deactivation and archival)
-        let command = Command::Registry(RegistryCommand::Agent(
-            AgentRegistryCommand::DeleteAgent { agent_id: resolved_id }
-        ));
-        app_state.command_queue.execute(command).await?;
-        
-        info!("✅ Deleted agent: {}", resolved_id);
-    }
-    
-    // Activate agent
-    if let Some(agent_identifier) = &args.activate_agent {
-        let resolved_id = {
-            let registry = app_state.agent_registry.read_or_panic("read agent registry").await;
-            
-            // Try to parse as UUID first
-            let uuid_opt = Uuid::parse_str(&agent_identifier).ok();
-            
-            registry.resolve_agent_target(
-                uuid_opt.as_ref(),
-                if uuid_opt.is_none() { Some(&agent_identifier) } else { None },
-                false  // No smart default for activate
-            )?
-        };
-        
-        // Submit command to activate agent
-        let command = Command::Registry(RegistryCommand::Agent(
-            AgentRegistryCommand::ActivateAgent { agent_id: resolved_id }
-        ));
-        app_state.command_queue.execute(command).await?;
-        
-        info!("✅ Activated agent: {}", resolved_id);
-    }
-    
-    // Deactivate agent
-    if let Some(agent_identifier) = &args.deactivate_agent {
-        let resolved_id = {
-            let registry = app_state.agent_registry.read_or_panic("read agent registry").await;
-            
-            // Try to parse as UUID first
-            let uuid_opt = Uuid::parse_str(&agent_identifier).ok();
-            
-            registry.resolve_agent_target(
-                uuid_opt.as_ref(),
-                if uuid_opt.is_none() { Some(&agent_identifier) } else { None },
-                false  // No smart default for deactivate
-            )?
-        };
-        
-        // Don't allow deactivating the prime agent if it's the only active agent
-        {
-            let registry = app_state.agent_registry.read_or_panic("read agent registry").await;
-            if Some(resolved_id) == registry.get_prime_agent_id() {
-                let active_agents = registry.get_active_agents();
-                if active_agents.len() == 1 {
-                    return Err("Cannot deactivate the prime agent when it's the only active agent".into());
-                }
-            }
-        }
-        
-        // Submit command to deactivate agent
-        let command = Command::Registry(RegistryCommand::Agent(
-            AgentRegistryCommand::DeactivateAgent { agent_id: resolved_id }
-        ));
-        app_state.command_queue.execute(command).await?;
-        
-        info!("✅ Deactivated agent: {}", resolved_id);
-    }
-    
-    // Authorize agent for graph
-    if let Some(agent_identifier) = &args.authorize_agent {
-        // Resolve agent (no smart default for authorize)
-        let resolved_agent_id = {
-            let registry = app_state.agent_registry.read_or_panic("read agent registry").await;
-            
-            // Try to parse as UUID first
-            let uuid_opt = Uuid::parse_str(&agent_identifier).ok();
-            
-            registry.resolve_agent_target(
-                uuid_opt.as_ref(),
-                if uuid_opt.is_none() { Some(&agent_identifier) } else { None },
-                false  // No smart default for authorize
-            )?
-        };
-        
-        // Resolve graph (requires --for-graph)
-        let graph_identifier = args.for_graph.as_deref()
-            .ok_or_else(|| "Must specify --for-graph with --authorize-agent")?;
-        
-        let resolved_graph_id = {
-            let registry = app_state.graph_registry.read_or_panic("read graph registry").await;
-            
-            // Try to parse as UUID first
-            let uuid_opt = Uuid::parse_str(&graph_identifier).ok();
-            
-            registry.resolve_graph_target(
-                uuid_opt.as_ref(),
-                if uuid_opt.is_none() { Some(&graph_identifier) } else { None },
-                false  // No smart default for graph
-            )?
-        };
-        
-        // Submit command to authorize agent for graph
-        let command = Command::Registry(RegistryCommand::Agent(
-            AgentRegistryCommand::AuthorizeAgent {
-                agent_id: resolved_agent_id,
-                graph_id: resolved_graph_id,
-            }
-        ));
-        app_state.command_queue.execute(command).await?;
-        
-        info!("✅ Authorized agent {} for graph {}", resolved_agent_id, resolved_graph_id);
-    }
-    
-    // Deauthorize agent from graph
-    if let Some(agent_identifier) = &args.deauthorize_agent {
-        // Resolve agent (no smart default for deauthorize)
-        let resolved_agent_id = {
-            let registry = app_state.agent_registry.read_or_panic("read agent registry").await;
-            
-            // Try to parse as UUID first
-            let uuid_opt = Uuid::parse_str(&agent_identifier).ok();
-            
-            registry.resolve_agent_target(
-                uuid_opt.as_ref(),
-                if uuid_opt.is_none() { Some(&agent_identifier) } else { None },
-                false  // No smart default for deauthorize
-            )?
-        };
-        
-        // Resolve graph (requires --from-graph)
-        let graph_identifier = args.from_graph.as_deref()
-            .ok_or_else(|| "Must specify --from-graph with --deauthorize-agent")?;
-        
-        let resolved_graph_id = {
-            let registry = app_state.graph_registry.read_or_panic("read graph registry").await;
-            
-            // Try to parse as UUID first
-            let uuid_opt = Uuid::parse_str(&graph_identifier).ok();
-            
-            registry.resolve_graph_target(
-                uuid_opt.as_ref(),
-                if uuid_opt.is_none() { Some(&graph_identifier) } else { None },
-                false  // No smart default for graph
-            )?
-        };
-        
-        // Submit command to deauthorize agent from graph
-        let command = Command::Registry(RegistryCommand::Agent(
-            AgentRegistryCommand::DeauthorizeAgent {
-                agent_id: resolved_agent_id,
-                graph_id: resolved_graph_id,
-            }
-        ));
-        app_state.command_queue.execute(command).await?;
-        
-        info!("✅ Deauthorized agent {} from graph {}", resolved_agent_id, resolved_graph_id);
-    }
-    
     // Show agent info
-    if let Some(agent_identifier) = &args.agent_info {
-        // Resolve agent (allows smart default to prime if not specified)
-        let resolved_id = {
-            let registry = app_state.agent_registry.read_or_panic("read agent registry").await;
-            
-            // Try to parse as UUID first
-            let uuid_opt = Uuid::parse_str(&agent_identifier).ok();
-            
-            registry.resolve_agent_target(
-                uuid_opt.as_ref(),
-                if uuid_opt.is_none() { Some(&agent_identifier) } else { None },
-                true  // Allow smart default (prime agent) for info command
-            )?
-        };
+    if args.agent_info {
+        // Get the agent state
+        let agent_opt = app_state.agent.read_or_panic("read agent state").await;
         
-        // Get agent info from registry
-        let (agent_info, is_active) = {
-            let registry = app_state.agent_registry.read_or_panic("read agent registry").await;
-            
-            let info = registry.get_agent(&resolved_id)
-                .ok_or_else(|| format!("Agent {} not found", resolved_id))?
-                .clone();
-            let active = registry.is_agent_active(&resolved_id);
-            (info, active)
-        };
-        
-        // Display agent information
-        info!("🤖 Agent Information");
-        info!("  ID: {}", agent_info.id);
-        info!("  Name: {}", agent_info.name);
-        if let Some(desc) = &agent_info.description {
-            info!("  Description: {}", desc);
-        }
-        info!("  Is Prime: {}", agent_info.is_prime);
-        info!("  Is Active: {}", is_active);
-        info!("  Created: {}", agent_info.created);
-        info!("  Last Active: {}", agent_info.last_active);
-        
-        // Show authorized graphs
-        if !agent_info.authorized_graphs.is_empty() {
-            info!("  Authorized Graphs:");
-            let graph_registry = app_state.graph_registry.read_or_panic("read graph registry").await;
-            
-            for graph_id in &agent_info.authorized_graphs {
-                if let Some(graph) = graph_registry.get_graph(graph_id) {
-                    info!("    - {} ({})", graph.name, graph_id);
-                } else {
-                    info!("    - {} (not found)", graph_id);
-                }
-            }
+        if let Some(ref agent) = *agent_opt {
+            info!("🤖 Agent Information");
+            info!("  ID: {}", agent.id);
+            info!("  Name: {}", agent.name);
+            info!("  Created: {}", agent.created);
+            info!("  Last Active: {}", agent.last_active);
+            info!("  Conversation Messages: {}", agent.conversation_history.len());
         } else {
-            info!("  Authorized Graphs: None");
+            info!("No agent initialized");
         }
         
-        // Show conversation stats if agent is loaded
-        if is_active {
-            let agents = app_state.agents.read_or_panic("show agent status - read agents").await;
-            if let Some(agent_arc) = agents.get(&resolved_id) {
-                let agent = agent_arc.read_or_panic("show agent status - read agent").await;
-                info!("  Conversation Messages: {}", agent.conversation_history.len());
-            }
-        }
-        
+        return Ok(false);
     }
     
     // List graphs

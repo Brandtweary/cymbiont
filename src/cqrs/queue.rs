@@ -32,7 +32,6 @@
 //! // Submit a command and await the result
 //! let result = app_state.command_queue.execute(
 //!     Command::Graph(GraphCommand::CreateBlock {
-//!         agent_id,
 //!         graph_id,
 //!         content: "Hello".to_string(),
 //!         parent_id: None,

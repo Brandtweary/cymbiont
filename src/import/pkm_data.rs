@@ -38,9 +38,9 @@
 //! ## Design Principles
 //!
 //! ### Separation of Concerns
-//! - PKM logic is isolated from graph operations and authorization
+//! - PKM logic is isolated from graph operations
 //! - Helper functions work directly with GraphManager, not AppState
-//! - GraphOps handles transactions, authorization, and WAL logging
+//! - GraphOps handles transactions and command routing
 //!
 //! ### Reference Resolution
 //! - Block references `((block-id))` are expanded to actual content
@@ -51,7 +51,6 @@
 //! ## Key Functions
 //!
 //! ### Block Helpers
-//! - `create_block_with_resolution()`: Create block with reference expansion
 //! - `update_block_with_resolution()`: Update block content and references
 //! - `setup_block_relationships()`: Create parent-child and page-block edges
 //!
@@ -242,7 +241,7 @@ pub fn build_block_map(graph_manager: &GraphManager) -> HashMap<String, String> 
     for idx in graph_manager.graph.node_indices() {
         if let Some(node) = graph_manager.graph.node_weight(idx) {
             if matches!(node.node_type, NodeType::Block) {
-                block_map.insert(node.pkm_id.clone(), node.content.clone());
+                block_map.insert(node.id.clone(), node.content.clone());
             }
         }
     }
@@ -254,14 +253,14 @@ pub fn build_block_map(graph_manager: &GraphManager) -> HashMap<String, String> 
 // Block Helper Functions
 // ============================================================================
 
-/// Create a block node with reference resolution
-pub fn create_block_with_resolution(
+/// Create a block node with reference resolution and optional block ID
+pub fn create_block_with_resolution_and_id(
     manager: &mut GraphManager,
+    block_id: Option<String>,
     content: String,
     properties: Option<&serde_json::Value>,
 ) -> Result<(String, Option<String>)> {
-    let block_id = uuid::Uuid::new_v4().to_string();
-    let internal_id = uuid::Uuid::new_v4().to_string();
+    let block_id = block_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let now = chrono::Utc::now();
     
     // Parse properties
@@ -281,7 +280,6 @@ pub fn create_block_with_resolution(
     // Create the node
     manager.create_or_update_node(
         block_id.clone(),
-        internal_id,
         NodeType::Block,
         content,
         reference_content.clone(),
@@ -316,7 +314,6 @@ pub fn update_block_with_resolution(
     };
     
     manager.create_or_update_node(
-        existing_node.pkm_id,
         existing_node.id,
         existing_node.node_type,
         new_content,
@@ -376,7 +373,6 @@ pub fn ensure_page_exists(
     // Create the page if it doesn't exist
     let idx = manager.create_node(
         normalized_name,
-        uuid::Uuid::new_v4().to_string(),
         NodeType::Page,
         page_name.to_string(),
         None,
@@ -409,7 +405,6 @@ pub fn create_or_update_page(
                 node_data.updated_at = now;
                 
                 manager.create_or_update_node(
-                    node_data.pkm_id,
                     node_data.id,
                     node_data.node_type,
                     node_data.content,
@@ -422,13 +417,11 @@ pub fn create_or_update_page(
         }
     } else {
         // Page doesn't exist - create it
-        let internal_id = uuid::Uuid::new_v4().to_string();
-        let default_props = json!({});
+            let default_props = json!({});
         let props = properties.unwrap_or(&default_props);
         
         manager.create_or_update_node(
             normalized_name,
-            internal_id,
             NodeType::Page,
             page_name.to_string(),
             None, // Pages don't have reference content

@@ -9,7 +9,7 @@
 //! 
 //! The GraphManager maintains two critical data structures:
 //! 1. `graph: StableGraph<NodeData, EdgeData>` - The actual graph structure
-//! 2. `pkm_to_node: HashMap<String, NodeIndex>` - O(1) external ID → graph node lookup
+//! 2. `node_index: HashMap<String, NodeIndex>` - O(1) node ID → graph node lookup
 //! 
 //! ## Key Design Decisions
 //! 
@@ -18,11 +18,10 @@
 //! This is critical for our HashMap-based ID mapping system, preventing index invalidation
 //! and ensuring reliable node references throughout the application lifetime.
 //! 
-//! ### Dual ID System
-//! - **External ID (pkm_id)**: Application-provided identifier (e.g., UUID, name)
-//! - **Internal ID**: System-generated UUID for graph serialization
-//! This separation allows the graph to be self-contained while maintaining stable
-//! external references.
+//! ### ID System
+//! - **Node ID (id)**: Application-provided identifier (e.g., UUID for blocks, name for pages)
+//! This provides stable references for external operations while maintaining
+//! efficient graph traversal.
 //! 
 //! ### Generic Design
 //! GraphManager is domain-agnostic and accepts any node/edge data that conforms to
@@ -37,8 +36,7 @@
 //! ## Data Structures
 //! 
 //! ### NodeData
-//! - `id`: Internal UUID for serialization
-//! - `pkm_id`: External identifier provided by application
+//! - `id`: Node identifier provided by application
 //! - `node_type`: Enum discriminator (Page or Block)
 //! - `content`: Primary node content
 //! - `reference_content`: Optional expanded/resolved content
@@ -114,8 +112,9 @@
 //! - **Recovery Layer**: State rebuilt from command replay on startup
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::fs;
+use std::time::Instant;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use petgraph::stable_graph::{StableGraph, NodeIndex};
@@ -143,11 +142,8 @@ pub enum NodeType {
 /// Data stored in each graph node
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeData {
-    /// Our internal unique identifier
+    /// Node identifier (UUID for blocks, name for pages)
     pub id: String,
-    
-    /// Original PKM identifier (UUID for blocks, name for pages)
-    pub pkm_id: String,
     
     /// Type of node (Page or Block)
     pub node_type: NodeType,
@@ -215,16 +211,21 @@ pub struct GraphManager {
     /// The knowledge graph
     pub graph: KnowledgeGraph,
     
-    /// Mapping from PKM IDs to graph node indices
-    pub pkm_to_node: NodeMap,
+    /// Mapping from node IDs to graph node indices
+    pub node_index: NodeMap,
     
+    /// Data directory for this graph
+    pub data_dir: PathBuf,
+    
+    /// Time of last save (for autosave)
+    last_save: Instant,
+    
+    /// Number of operations since last save
+    operations_since_save: usize,
 }
 
 impl GraphManager {
     /// Create a new empty graph manager
-    /// 
-    /// The graph state will be rebuilt from command replay during recovery.
-    /// No JSON loading occurs - the command log is the source of truth.
     pub fn new<P: AsRef<Path>>(data_dir: P) -> Result<Self> {
         // Ensure directories exist
         std::fs::create_dir_all(data_dir.as_ref())
@@ -232,24 +233,24 @@ impl GraphManager {
         
         let manager = Self {
             graph: StableGraph::new(),
-            pkm_to_node: HashMap::new(),
+            node_index: HashMap::new(),
+            data_dir: data_dir.as_ref().to_path_buf(),
+            last_save: Instant::now(),
+            operations_since_save: 0,
         };
         
-        info!("🌐 Initialized empty knowledge graph (will be populated from WAL)");
+        info!("🌐 Initialized empty knowledge graph");
         
         Ok(manager)
     }
     
     
-    /// Export the graph to JSON for debugging/inspection
-    /// 
-    /// Used by the test harness to validate graph state after operations.
-    /// The command log is the authoritative source of truth for runtime.
-    pub fn export_json(&self, path: &Path) -> Result<()> {
+    /// Save graph to JSON
+    pub fn save(&self, path: &Path) -> Result<()> {
         let data = serde_json::json!({
             "version": 1,
             "graph": &self.graph,
-            "pkm_to_node": &self.pkm_to_node,
+            "node_index": &self.node_index,
         });
         
         let json = serde_json::to_string_pretty(&data)
@@ -261,17 +262,47 @@ impl GraphManager {
         Ok(())
     }
     
+    /// Track an operation and trigger autosave if needed
+    fn track_operation(&mut self) {
+        self.operations_since_save += 1;
+        let _ = self.check_autosave();
+    }
+    
+    /// Check if autosave is needed and perform it
+    /// 
+    /// Saves if either:
+    /// - 5 minutes have passed since last save
+    /// - 10 operations have been performed since last save
+    fn check_autosave(&mut self) -> Result<()> {
+        const AUTOSAVE_INTERVAL_SECS: u64 = 300; // 5 minutes
+        const AUTOSAVE_OP_THRESHOLD: usize = 10;
+        
+        let should_save = self.operations_since_save >= AUTOSAVE_OP_THRESHOLD ||
+                         self.last_save.elapsed().as_secs() >= AUTOSAVE_INTERVAL_SECS;
+        
+        if should_save {
+            let save_path = self.data_dir.join("knowledge_graph.json");
+            self.save(&save_path)?;
+            
+            self.last_save = Instant::now();
+            self.operations_since_save = 0;
+            
+            info!("💾 Autosaved graph to {}", save_path.display());
+        }
+        
+        Ok(())
+    }
+    
     
     /// Find a node by its PKM ID
-    pub fn find_node(&self, pkm_id: &str) -> Option<NodeIndex> {
-        self.pkm_to_node.get(pkm_id).copied()
+    pub fn find_node(&self, node_id: &str) -> Option<NodeIndex> {
+        self.node_index.get(node_id).copied()
     }
     
     /// Create a new node
     pub fn create_node(
         &mut self,
-        pkm_id: String,
-        internal_id: String,
+        node_id: String,
         node_type: NodeType,
         content: String,
         reference_content: Option<String>,
@@ -280,8 +311,7 @@ impl GraphManager {
         updated_at: DateTime<Utc>,
     ) -> NodeIndex {
         let node_data = NodeData {
-            id: internal_id,
-            pkm_id: pkm_id.clone(),
+            id: node_id.clone(),
             node_type,
             content,
             reference_content,
@@ -291,15 +321,15 @@ impl GraphManager {
         };
         
         let idx = self.graph.add_node(node_data);
-        self.pkm_to_node.insert(pkm_id, idx);
+        self.node_index.insert(node_id, idx);
+        self.track_operation();
         idx
     }
     
     /// Create or update a node
     pub fn create_or_update_node(
         &mut self,
-        pkm_id: String,
-        internal_id: String,
+        node_id: String,
         node_type: NodeType,
         content: String,
         reference_content: Option<String>,
@@ -308,8 +338,7 @@ impl GraphManager {
         updated_at: DateTime<Utc>,
     ) -> Result<NodeIndex> {
         let node_data = NodeData {
-            id: internal_id,
-            pkm_id: pkm_id.clone(),
+            id: node_id.clone(),
             node_type,
             content,
             reference_content,
@@ -318,7 +347,7 @@ impl GraphManager {
             updated_at,
         };
         
-        let idx = if let Some(&existing_idx) = self.pkm_to_node.get(&pkm_id) {
+        let idx = if let Some(&existing_idx) = self.node_index.get(&node_id) {
             // Update existing node
             if let Some(node) = self.graph.node_weight_mut(existing_idx) {
                 *node = node_data;
@@ -327,9 +356,11 @@ impl GraphManager {
         } else {
             // Create new node
             let idx = self.graph.add_node(node_data);
-            self.pkm_to_node.insert(pkm_id, idx);
+            self.node_index.insert(node_id, idx);
             idx
         };
+        
+        self.track_operation();
         Ok(idx)
     }
     
@@ -344,6 +375,7 @@ impl GraphManager {
     ) -> bool {
         if !self.has_edge(source, target, &edge_type) {
             self.graph.add_edge(source, target, EdgeData { edge_type, weight });
+            self.track_operation();
             true
         } else {
             false
@@ -354,14 +386,17 @@ impl GraphManager {
     /// Delete nodes from the graph
     /// 
     /// Removes nodes and all their edges from the graph.
-    /// The deletion is logged to command WAL for recovery/history.
     pub fn delete_nodes(&mut self, nodes: Vec<(String, NodeIndex)>) -> Result<usize> {
         let mut deleted_count = 0;
         
-        for (pkm_id, node_idx) in nodes {
+        for (node_id, node_idx) in nodes {
             self.graph.remove_node(node_idx);
-            self.pkm_to_node.remove(&pkm_id);
+            self.node_index.remove(&node_id);
             deleted_count += 1;
+        }
+        
+        if deleted_count > 0 {
+            self.track_operation();
         }
         
         Ok(deleted_count)
@@ -406,7 +441,6 @@ mod tests {
         
         let node_idx = manager.create_node(
             "test-node-1".to_string(),
-            "internal-1".to_string(),
             NodeType::Block,
             "Test content".to_string(),
             Some("Resolved content".to_string()),
@@ -417,7 +451,7 @@ mod tests {
         
         // Verify node was created
         let node = manager.get_node(node_idx).unwrap();
-        assert_eq!(node.pkm_id, "test-node-1");
+        assert_eq!(node.id, "test-node-1");
         assert_eq!(node.content, "Test content");
         assert_eq!(node.reference_content, Some("Resolved content".to_string()));
         assert_eq!(node.node_type, NodeType::Block);
@@ -433,7 +467,6 @@ mod tests {
         // Create initial node
         let idx1 = manager.create_or_update_node(
             "test-node-1".to_string(),
-            "internal-1".to_string(),
             NodeType::Page,
             "Original content".to_string(),
             None,
@@ -445,7 +478,6 @@ mod tests {
         // Update the same node
         let idx2 = manager.create_or_update_node(
             "test-node-1".to_string(),
-            "internal-2".to_string(),
             NodeType::Page,
             "Updated content".to_string(),
             Some("Updated resolved".to_string()),
@@ -470,7 +502,6 @@ mod tests {
         // Create two nodes
         let node1 = manager.create_node(
             "node-1".to_string(),
-            "internal-1".to_string(),
             NodeType::Block,
             "Node 1".to_string(),
             None,
@@ -481,7 +512,6 @@ mod tests {
         
         let node2 = manager.create_node(
             "node-2".to_string(),
-            "internal-2".to_string(),
             NodeType::Block,
             "Node 2".to_string(),
             None,
@@ -508,7 +538,6 @@ mod tests {
         
         let node_idx = manager.create_node(
             "find-me".to_string(),
-            "internal-1".to_string(),
             NodeType::Page,
             "Content".to_string(),
             None,

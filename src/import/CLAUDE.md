@@ -22,7 +22,6 @@ Data import functionality for PKM systems, currently supporting Logseq markdown 
 
 - **import_utils.rs**: High-level coordination
   - `import_logseq_graph()` - Full import workflow
-  - Prime agent authorization
   - Progress tracking
 
 ## Import Flow 🔄
@@ -32,7 +31,6 @@ Data import functionality for PKM systems, currently supporting Logseq markdown 
 3. **Transform**: Convert to PKM data structures
 4. **Create Graph**: Initialize new graph with metadata
 5. **Apply Data**: Insert pages and blocks with edges (references resolved inline)
-6. **Authorize Agent**: Grant prime agent access
 
 ## Key Functions
 

@@ -1,6 +1,6 @@
 use std::fs;
 use serde_json::{json, Value};
-use crate::common::{setup_test_env, cleanup_test_env, WalValidator};
+use crate::common::{setup_test_env, cleanup_test_env, TestValidator};
 use crate::common::test_harness::{TestServer, PreShutdown, PostShutdown, assert_phase, read_auth_token};
 
 
@@ -50,9 +50,8 @@ pub fn test_http_logseq_import() {
         // Read auth token
         let auth_token = read_auth_token(&test_data_dir);
         
-        // Initialize WAL validator
-        let mut validator = WalValidator::new(&test_data_dir);
-        validator.expect_dummy_graph();
+        // Initialize validator
+        let mut validator = TestValidator::new(&test_data_dir);
         
         // Get the absolute path to the dummy graph
         let dummy_graph_path = std::env::current_dir()
@@ -75,6 +74,9 @@ pub fn test_http_logseq_import() {
         assert_eq!(response["errors"].as_array().unwrap().len(), 0);
         
         let graph_id = response["graph_id"].as_str().expect("No graph_id in response");
+        
+        // Now that we have the graph_id, set up expectations for the dummy graph
+        validator.expect_dummy_graph(Some(graph_id));
         
         // Verify the graph registry was created
         let registry_path = data_dir.join("graph_registry.json");
@@ -119,7 +121,7 @@ pub fn test_http_logseq_import() {
         
         // Find the cyberorganism-test-1 page
         let test_page = pages.iter()
-            .find(|p| p["pkm_id"].as_str() == Some("cyberorganism-test-1"))
+            .find(|p| p["id"].as_str() == Some("cyberorganism-test-1"))
             .expect("cyberorganism-test-1 page not found");
         
         // Validate page properties
@@ -130,16 +132,18 @@ pub fn test_http_logseq_import() {
             "Page cymbiont-updated-ms property not preserved"
         );
         
-        // Test reference expansion (similar to CLI test)
+        // Test reference expansion - look for any block with a block reference pattern
         let ref_block = blocks.iter()
             .find(|b| {
                 let content = b["content"].as_str().unwrap_or("");
-                content == "((67f9a190-b504-46ca-b1d9-cfe1a80f1633))"
+                // Look for block reference pattern ((uuid))
+                content.starts_with("((") && content.ends_with("))") && content.len() > 30
             })
             .expect("Block with reference not found");
         
         let ref_content = ref_block["reference_content"].as_str()
             .expect("reference_content field missing");
+        
         assert_eq!(
             ref_content, 
             "## Introduction to Knowledge Graphs",
@@ -152,8 +156,8 @@ pub fn test_http_logseq_import() {
         // Phase 3: Server has shutdown - safe to validate persisted data
         assert_phase(PostShutdown);
         
-        // Validate WAL operations
-        validator.validate_all().expect("WAL validation failed");
+        // Validate operations
+        validator.validate_all().expect("Validation failed");
         
         test_env
     });

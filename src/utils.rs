@@ -284,33 +284,35 @@ pub fn find_available_port(config: &BackendConfig) -> Result<u16> {
 
 // ===== JSON Utilities =====
 
-/// Export all system data to JSON for debugging/inspection
-pub async fn export_all_system_data(app_state: &std::sync::Arc<crate::app_state::AppState>) -> crate::error::Result<()> {
+/// Save all system data to JSON
+pub async fn save_all_system_data(app_state: &std::sync::Arc<crate::app_state::AppState>) -> crate::error::Result<()> {
     use std::sync::Arc;
     use tokio::sync::RwLock;
     use crate::utils::AsyncRwLockExt;
     use crate::graph::graph_manager::GraphManager;
     
-    tracing::info!("Starting JSON export of all system data");
+    tracing::info!("Saving all system data to JSON");
     
-    // Export registries
+    // Save graph registry
     {
-        let graph_registry = app_state.graph_registry.read_or_panic("export graph registry").await;
+        let graph_registry = app_state.graph_registry.read_or_panic("save graph registry").await;
         let path = app_state.data_dir.join("graph_registry.json");
-        graph_registry.export_json(&path)?;
+        graph_registry.save(&path)?;
     }
     
+    // Save agent state
     {
-        let agent_registry = app_state.agent_registry.read_or_panic("export agent registry").await;
-        let path = app_state.data_dir.join("agent_registry.json");
-        agent_registry.export_json(&path)?;
+        let agent_opt = app_state.agent.read_or_panic("save agent").await;
+        if let Some(ref agent) = *agent_opt {
+            agent.save(&app_state.data_dir)?;
+        }
     }
     
-    // Export all graphs (both open and closed)
+    // Save all graphs (both open and closed)
     {
         // Get all registered graphs from the registry
         let all_graphs = {
-            let registry = app_state.graph_registry.read_or_panic("export - get all graphs").await;
+            let registry = app_state.graph_registry.read_or_panic("save - get all graphs").await;
             registry.get_all_graphs()
         };
         
@@ -335,25 +337,25 @@ pub async fn export_all_system_data(app_state: &std::sync::Arc<crate::app_state:
                         }
                     }
                     Err(e) => {
-                        tracing::error!("Failed to create graph manager {} for export: {}", graph_id, e);
+                        tracing::error!("Failed to create graph manager {} for save: {}", graph_id, e);
                         continue;
                     }
                 }
             }
             
-            // Now export the graph (it definitely has a manager now)
+            // Now save the graph (it definitely has a manager now)
             {
                 let managers = app_state.graph_managers.read().await;
                 if let Some(manager_lock) = managers.get(&graph_id) {
-                    let manager = manager_lock.read_or_panic("export graph manager").await;
+                    let manager = manager_lock.read_or_panic("save graph manager").await;
                     let graph_dir = app_state.data_dir.join("graphs").join(graph_id.to_string());
                     tokio::fs::create_dir_all(&graph_dir).await?;
                     let path = graph_dir.join("knowledge_graph.json");
-                    manager.export_json(&path)?;
+                    manager.save(&path)?;
                 }
             }
             
-            // If we opened it just for export, close it again to free memory
+            // If we opened it just for saving, close it again to free memory
             if !was_already_open {
                 let mut managers = app_state.graph_managers.write().await;
                 managers.remove(&graph_id);
@@ -361,19 +363,8 @@ pub async fn export_all_system_data(app_state: &std::sync::Arc<crate::app_state:
         }
     }
     
-    // Export all agents
-    {
-        let agents = app_state.agents.read().await;
-        for (agent_id, agent_arc) in agents.iter() {
-            let agent = agent_arc.read_or_panic("export agent").await;
-            let agent_dir = app_state.data_dir.join("agents").join(agent_id.to_string());
-            tokio::fs::create_dir_all(&agent_dir).await?;
-            let path = agent_dir.join("agent.json");
-            agent.export_json(&path)?;
-        }
-    }
     
-    tracing::info!("JSON export completed successfully");
+    tracing::info!("System data saved successfully");
     Ok(())
 }
 
@@ -442,5 +433,75 @@ mod tests {
         // This test might be flaky if port 0 allocation fails
         // Port 0 lets the OS assign any available port
         assert!(is_port_available(0));
+    }
+}
+
+// ===== UUID Serialization Helpers =====
+
+/// Custom serialization modules for UUID collections
+/// 
+/// These helpers allow HashMaps, HashSets, and Vecs containing UUIDs
+/// to be serialized as human-readable strings in JSON format.
+pub mod uuid_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::{HashMap, HashSet};
+    use uuid::Uuid;
+    
+    pub mod uuid_hashmap_serde {
+        use super::*;
+        
+        pub fn serialize<S, V>(map: &HashMap<Uuid, V>, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+            V: Serialize,
+        {
+            let string_map: HashMap<String, &V> = map
+                .iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect();
+            string_map.serialize(serializer)
+        }
+        
+        pub fn deserialize<'de, D, V>(deserializer: D) -> Result<HashMap<Uuid, V>, D::Error>
+        where
+            D: Deserializer<'de>,
+            V: Deserialize<'de>,
+        {
+            let string_map = HashMap::<String, V>::deserialize(deserializer)?;
+            string_map
+                .into_iter()
+                .map(|(k, v)| {
+                    Uuid::parse_str(&k)
+                        .map(|uuid| (uuid, v))
+                        .map_err(serde::de::Error::custom)
+                })
+                .collect()
+        }
+    }
+    
+    pub mod uuid_hashset_serde {
+        use super::*;
+        
+        pub fn serialize<S>(set: &HashSet<Uuid>, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            let string_vec: Vec<String> = set
+                .iter()
+                .map(|uuid| uuid.to_string())
+                .collect();
+            string_vec.serialize(serializer)
+        }
+        
+        pub fn deserialize<'de, D>(deserializer: D) -> Result<HashSet<Uuid>, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            let string_vec = Vec::<String>::deserialize(deserializer)?;
+            string_vec
+                .into_iter()
+                .map(|s| Uuid::parse_str(&s).map_err(serde::de::Error::custom))
+                .collect()
+        }
     }
 }

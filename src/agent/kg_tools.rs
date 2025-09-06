@@ -44,7 +44,6 @@
 //! // Execute a tool (mutations go through CQRS)
 //! let result = kg_tools::execute_tool(
 //!     app_state,
-//!     &mut agent,
 //!     "add_block",
 //!     json!({"content": "Hello", "graph_id": "..."})
 //! ).await?;
@@ -72,16 +71,13 @@ use crate::graph::graph_operations::GraphOps;
 use crate::utils::AsyncRwLockExt;
 use crate::error::*;
 use crate::agent::schemas::ToolDefinition;
-use crate::agent::agent::Agent;
-use crate::cqrs::{Command, AgentCommand};
 
 
 
 /// Type alias for async tool functions
-/// Takes Arc<AppState> reference, mutable agent reference, and args - returns a future
+/// Takes Arc<AppState> reference and args - returns a future
 type ToolFn = for<'a> fn(
     app_state: &'a Arc<AppState>,
-    agent: &'a mut Agent,
     args: Value,
 ) -> Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>>;
 
@@ -110,10 +106,6 @@ static TOOLS: Lazy<HashMap<&'static str, ToolFn>> = Lazy::new(|| {
     tools.insert("create_graph", create_graph as ToolFn);
     tools.insert("delete_graph", delete_graph as ToolFn);
     
-    // Agent graph management (for agents to manage their own context)
-    tools.insert("set_default_graph", set_default_graph as ToolFn);
-    tools.insert("get_default_graph", get_default_graph as ToolFn);
-    tools.insert("list_my_graphs", list_my_graphs as ToolFn);
     
     tools
 });
@@ -121,14 +113,13 @@ static TOOLS: Lazy<HashMap<&'static str, ToolFn>> = Lazy::new(|| {
 /// Execute a tool by name
 pub async fn execute_tool(
     app_state: &Arc<AppState>,
-    agent: &mut Agent,
     tool_name: &str,
     args: Value,
 ) -> Result<Value> {
     let tool = TOOLS.get(tool_name)
         .ok_or_else(|| AgentError::tool(format!("Tool not found: {}", tool_name)))?;
     
-    tool(app_state, agent, args).await
+    tool(app_state, args).await
 }
 
 /// Get tool schemas for the LLM
@@ -139,9 +130,9 @@ pub fn get_tool_schemas() -> Vec<ToolDefinition> {
 /// Helper function to parse graph target (ID or name) from args
 /// 
 /// Supports both graph_id (UUID) and graph_name (string) parameters.
-/// Falls back to the agent's default graph or smart default if no graph is specified.
+/// Falls back to smart default if no graph is specified.
 /// Uses the GraphRegistry to resolve names to IDs.
-async fn parse_graph_target(app_state: &Arc<AppState>, agent: &Agent, args: &Value, use_smart_default: bool) -> Result<Uuid> {
+async fn parse_graph_target(app_state: &Arc<AppState>, args: &Value, use_smart_default: bool) -> Result<Uuid> {
     // Try to get graph_id first
     let graph_id = args.get("graph_id")
         .and_then(|v| v.as_str())
@@ -154,16 +145,12 @@ async fn parse_graph_target(app_state: &Arc<AppState>, agent: &Agent, args: &Val
     // If neither provided, choose fallback behavior
     if graph_id.is_none() && graph_name.is_none() {
         if use_smart_default {
-            // Use smart default (for set_default_graph)
             let registry = app_state.graph_registry.read_or_panic("parse graph target - smart default").await;
             return registry.resolve_graph_target(None, None, true)
                 .map_err(|e| AgentError::tool(format!("Failed to resolve graph target: {}", e)).into());
         } else {
-            // Use agent's default graph (for regular tools)
-            if let Some(default_id) = agent.default_graph_id {
-                return Ok(default_id);
-            }
-            return Err(AgentError::tool("No graph specified and no default graph set for agent").into());
+            // No default graph available
+            return Err(AgentError::tool("No graph specified and no default graph available").into());
         }
     }
     
@@ -180,7 +167,6 @@ async fn parse_graph_target(app_state: &Arc<AppState>, agent: &Agent, args: &Val
 
 fn add_block<'a>(
     app_state: &'a Arc<AppState>,
-    agent: &'a mut Agent,
     args: Value,
 ) -> Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>> {
     Box::pin(async move {
@@ -199,11 +185,12 @@ fn add_block<'a>(
         
         let properties = args.get("properties").cloned();
         
-        let graph_id = parse_graph_target(app_state, agent, &args, false).await?;
+        let graph_id = parse_graph_target(app_state, &args, true).await?;
         
-        match app_state.add_block(agent.id, content, parent_id, page_name, properties, &graph_id).await {
+        match app_state.add_block(None, content, parent_id, page_name, properties, None, &graph_id).await {
             Ok(block_id) => Ok(json!({
                 "success": true,
+                "message": "✓ Tool 'add_block' executed successfully",
                 "block_id": block_id
             })),
             Err(e) => Ok(json!({
@@ -216,7 +203,6 @@ fn add_block<'a>(
 
 fn update_block<'a>(
     app_state: &'a Arc<AppState>,
-    agent: &'a mut Agent,
     args: Value,
 ) -> Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>> {
     Box::pin(async move {
@@ -230,11 +216,12 @@ fn update_block<'a>(
             .ok_or_else(|| AgentError::tool("Missing required parameter: content"))?
             .to_string();
         
-        let graph_id = parse_graph_target(app_state, agent, &args, false).await?;
+        let graph_id = parse_graph_target(app_state, &args, true).await?;
         
-        match app_state.update_block(agent.id, block_id, content, &graph_id).await {
+        match app_state.update_block(block_id, content, &graph_id).await {
             Ok(()) => Ok(json!({
-                "success": true
+                "success": true,
+                "message": "✓ Tool 'update_block' executed successfully"
             })),
             Err(e) => Ok(json!({
                 "success": false,
@@ -246,7 +233,6 @@ fn update_block<'a>(
 
 fn delete_block<'a>(
     app_state: &'a Arc<AppState>,
-    agent: &'a mut Agent,
     args: Value,
 ) -> Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>> {
     Box::pin(async move {
@@ -255,11 +241,12 @@ fn delete_block<'a>(
             .ok_or_else(|| AgentError::tool("Missing required parameter: block_id"))?
             .to_string();
         
-        let graph_id = parse_graph_target(app_state, agent, &args, false).await?;
+        let graph_id = parse_graph_target(app_state, &args, true).await?;
         
-        match app_state.delete_block(agent.id, block_id, &graph_id).await {
+        match app_state.delete_block(block_id, &graph_id).await {
             Ok(()) => Ok(json!({
-                "success": true
+                "success": true,
+                "message": "✓ Tool 'delete_block' executed successfully"
             })),
             Err(e) => Ok(json!({
                 "success": false,
@@ -273,7 +260,6 @@ fn delete_block<'a>(
 
 fn create_page<'a>(
     app_state: &'a Arc<AppState>,
-    agent: &'a mut Agent,
     args: Value,
 ) -> Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>> {
     Box::pin(async move {
@@ -284,11 +270,12 @@ fn create_page<'a>(
         
         let properties = args.get("properties").cloned();
         
-        let graph_id = parse_graph_target(app_state, agent, &args, false).await?;
+        let graph_id = parse_graph_target(app_state, &args, true).await?;
         
-        match app_state.create_page(agent.id, page_name, properties, &graph_id).await {
+        match app_state.create_page(page_name, properties, &graph_id).await {
             Ok(()) => Ok(json!({
-                "success": true
+                "success": true,
+                "message": "✓ Tool 'create_page' executed successfully"
             })),
             Err(e) => Ok(json!({
                 "success": false,
@@ -300,7 +287,6 @@ fn create_page<'a>(
 
 fn delete_page<'a>(
     app_state: &'a Arc<AppState>,
-    agent: &'a mut Agent,
     args: Value,
 ) -> Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>> {
     Box::pin(async move {
@@ -309,11 +295,12 @@ fn delete_page<'a>(
             .ok_or_else(|| AgentError::tool("Missing required parameter: page_name"))?
             .to_string();
         
-        let graph_id = parse_graph_target(app_state, agent, &args, false).await?;
+        let graph_id = parse_graph_target(app_state, &args, true).await?;
         
-        match app_state.delete_page(agent.id, page_name, &graph_id).await {
+        match app_state.delete_page(page_name, &graph_id).await {
             Ok(()) => Ok(json!({
-                "success": true
+                "success": true,
+                "message": "✓ Tool 'delete_page' executed successfully"
             })),
             Err(e) => Ok(json!({
                 "success": false,
@@ -327,7 +314,6 @@ fn delete_page<'a>(
 
 fn get_node<'a>(
     app_state: &'a Arc<AppState>,
-    agent: &'a mut Agent,
     args: Value,
 ) -> Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>> {
     Box::pin(async move {
@@ -335,10 +321,17 @@ fn get_node<'a>(
             .and_then(|v| v.as_str())
             .ok_or_else(|| AgentError::tool("Missing required parameter: node_id"))?;
         
-        let graph_id = parse_graph_target(app_state, agent, &args, false).await?;
+        let graph_id = parse_graph_target(app_state, &args, true).await?;
         
-        match app_state.get_node(agent.id, node_id, &graph_id).await {
-            Ok(node_data) => Ok(node_data),
+        match app_state.get_node(node_id, &graph_id).await {
+            Ok(node_data) => {
+                let mut result = node_data;
+                if let Some(obj) = result.as_object_mut() {
+                    obj.insert("success".to_string(), json!(true));
+                    obj.insert("message".to_string(), json!("✓ Tool 'get_node' executed successfully"));
+                }
+                Ok(result)
+            },
             Err(e) => Ok(json!({
                 "success": false,
                 "error": e.to_string()
@@ -349,7 +342,6 @@ fn get_node<'a>(
 
 fn query_graph_bfs<'a>(
     app_state: &'a Arc<AppState>,
-    agent: &'a mut Agent,
     args: Value,
 ) -> Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>> {
     Box::pin(async move {
@@ -361,10 +353,10 @@ fn query_graph_bfs<'a>(
             .and_then(|v| v.as_u64())
             .unwrap_or(3) as usize;
         
-        let graph_id = parse_graph_target(app_state, agent, &args, false).await?;
+        let graph_id = parse_graph_target(app_state, &args, true).await?;
         
         // This is now an async operation
-        match app_state.query_graph_bfs(agent.id, start_id, max_depth, &graph_id).await {
+        match app_state.query_graph_bfs(start_id, max_depth, &graph_id).await {
             Ok(nodes) => Ok(json!({
                 "success": true,
                 "nodes": nodes
@@ -381,13 +373,13 @@ fn query_graph_bfs<'a>(
 
 fn list_graphs<'a>(
     app_state: &'a Arc<AppState>,
-    _agent: &'a mut Agent,
     _args: Value,
 ) -> Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>> {
     Box::pin(async move {
         match app_state.list_graphs().await {
             Ok(graphs) => Ok(json!({
                 "success": true,
+                "message": "✓ Tool 'list_graphs' executed successfully",
                 "graphs": graphs
             })),
             Err(e) => Ok(json!({
@@ -400,13 +392,13 @@ fn list_graphs<'a>(
 
 fn list_open_graphs<'a>(
     app_state: &'a Arc<AppState>,
-    _agent: &'a mut Agent,
     _args: Value,
 ) -> Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>> {
     Box::pin(async move {
         match app_state.list_open_graphs().await {
             Ok(graph_ids) => Ok(json!({
                 "success": true,
+                "message": "✓ Tool 'list_open_graphs' executed successfully",
                 "graph_ids": graph_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>()
             })),
             Err(e) => Ok(json!({
@@ -419,15 +411,15 @@ fn list_open_graphs<'a>(
 
 fn open_graph<'a>(
     app_state: &'a Arc<AppState>,
-    agent: &'a mut Agent,
     args: Value,
 ) -> Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>> {
     Box::pin(async move {
-        let graph_id = parse_graph_target(app_state, agent, &args, false).await?;
+        let graph_id = parse_graph_target(app_state, &args, true).await?;
         
         match app_state.open_graph(graph_id).await {
             Ok(graph_info) => Ok(json!({
                 "success": true,
+                "message": "✓ Tool 'open_graph' executed successfully",
                 "graph_id": graph_info["id"],
                 "name": graph_info["name"]
             })),
@@ -441,15 +433,15 @@ fn open_graph<'a>(
 
 fn close_graph<'a>(
     app_state: &'a Arc<AppState>,
-    agent: &'a mut Agent,
     args: Value,
 ) -> Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>> {
     Box::pin(async move {
-        let graph_id = parse_graph_target(app_state, agent, &args, false).await?;
+        let graph_id = parse_graph_target(app_state, &args, true).await?;
         
         match app_state.close_graph(graph_id).await {
             Ok(()) => Ok(json!({
-                "success": true
+                "success": true,
+                "message": "✓ Tool 'close_graph' executed successfully"
             })),
             Err(e) => Ok(json!({
                 "success": false,
@@ -461,7 +453,6 @@ fn close_graph<'a>(
 
 fn create_graph<'a>(
     app_state: &'a Arc<AppState>,
-    agent: &'a mut Agent,
     args: Value,
 ) -> Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>> {
     Box::pin(async move {
@@ -475,24 +466,9 @@ fn create_graph<'a>(
         
         match app_state.create_graph(name, description).await {
             Ok(graph_info) => {
-                // If this agent has no default graph, set it to the newly created one
-                // (This commonly happens for the prime agent creating its first graph)
-                let graph_id = graph_info["id"].as_str()
-                    .and_then(|s| Uuid::parse_str(s).ok())
-                    .unwrap();
-                
-                if agent.get_default_graph_id().is_none() {
-                    // Submit command to set default graph
-                    let command = Command::Agent(AgentCommand::SetDefaultGraph {
-                        agent_id: agent.id,
-                        graph_id: Some(graph_id),
-                    });
-                    app_state.command_queue.execute(command).await?;
-                    tracing::info!("Set default graph for agent {} to new graph {}", agent.id, graph_id);
-                }
-                
                 Ok(json!({
                     "success": true,
+                    "message": "✓ Tool 'create_graph' executed successfully",
                     "graph_id": graph_info["id"],
                     "name": graph_info["name"]
                 }))
@@ -507,15 +483,15 @@ fn create_graph<'a>(
 
 fn delete_graph<'a>(
     app_state: &'a Arc<AppState>,
-    agent: &'a mut Agent,
     args: Value,
 ) -> Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>> {
     Box::pin(async move {
-        let graph_id = parse_graph_target(app_state, agent, &args, false).await?;
+        let graph_id = parse_graph_target(app_state, &args, true).await?;
         
         match app_state.delete_graph(&graph_id).await {
             Ok(()) => Ok(json!({
-                "success": true
+                "success": true,
+                "message": "✓ Tool 'delete_graph' executed successfully"
             })),
             Err(e) => Ok(json!({
                 "success": false,
@@ -525,121 +501,6 @@ fn delete_graph<'a>(
     })
 }
 
-// Agent Graph Management Operations
-
-fn set_default_graph<'a>(
-    app_state: &'a Arc<AppState>,
-    agent: &'a mut Agent,
-    args: Value,
-) -> Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>> {
-    Box::pin(async move {
-        
-        let graph_id = parse_graph_target(app_state, agent, &args, true).await?;
-        
-        // Check if agent is authorized for this graph
-        let is_authorized = {
-            let agent_registry = app_state.agent_registry.read_or_panic("set default graph").await;
-            agent_registry.is_agent_authorized(&agent.id, &graph_id)
-        };
-        
-        if !is_authorized {
-            return Ok(json!({
-                "success": false,
-                "error": format!("Agent is not authorized for graph {}", graph_id)
-            }));
-        }
-        
-        // Submit command to set default graph
-        let command = Command::Agent(AgentCommand::SetDefaultGraph {
-            agent_id: agent.id,
-            graph_id: Some(graph_id),
-        });
-        
-        match app_state.command_queue.execute(command).await {
-            Ok(_) => {
-                Ok(json!({
-                    "success": true,
-                    "graph_id": graph_id.to_string()
-                }))
-            },
-            Err(e) => Ok(json!({
-                "success": false,
-                "error": e.to_string()
-            }))
-        }
-    })
-}
-
-fn get_default_graph<'a>(
-    app_state: &'a Arc<AppState>,
-    agent: &'a mut Agent,
-    _args: Value,
-) -> Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>> {
-    Box::pin(async move {
-        // Get default graph directly from agent reference
-        if let Some(default_id) = agent.get_default_graph_id() {
-            // Get graph name if available
-            let graph_registry = app_state.graph_registry.read_or_panic("get default graph").await;
-            let graph_name = graph_registry.get_graph(&default_id)
-                .map(|info| info.name.clone());
-            drop(graph_registry);
-            
-            Ok(json!({
-                "success": true,
-                "graph_id": default_id.to_string(),
-                "graph_name": graph_name
-            }))
-        } else {
-            Ok(json!({
-                "success": true,
-                "graph_id": null,
-                "graph_name": null
-            }))
-        }
-    })
-}
-
-fn list_my_graphs<'a>(
-    app_state: &'a Arc<AppState>,
-    agent: &'a mut Agent,
-    _args: Value,
-) -> Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>> {
-    Box::pin(async move {
-        // Get authorized graphs and build list (drop sync locks before await)
-        let graphs = {
-            let agent_registry = app_state.agent_registry.read_or_panic("list my graphs").await;
-            let graph_registry = app_state.graph_registry.read_or_panic("list my graphs").await;
-            
-            // Get authorized graph IDs for this agent
-            let authorized_graphs = agent_registry
-                .get_agent(&agent.id)
-                .map(|info| info.authorized_graphs.clone())
-                .unwrap_or_default();
-            
-            // Build list with graph info
-            let mut graphs = Vec::new();
-            for graph_id in authorized_graphs {
-                if let Some(graph_info) = graph_registry.get_graph(&graph_id) {
-                    graphs.push(json!({
-                        "id": graph_id.to_string(),
-                        "name": graph_info.name,
-                        "is_open": graph_registry.is_graph_open(&graph_id)
-                    }));
-                }
-            }
-            graphs
-        };
-        
-        // Get current default directly from agent reference
-        let default_graph_id = agent.get_default_graph_id();
-        
-        Ok(json!({
-            "success": true,
-            "graphs": graphs,
-            "default_graph_id": default_graph_id.map(|id| id.to_string())
-        }))
-    })
-}
 
 #[cfg(test)]
 mod tests {

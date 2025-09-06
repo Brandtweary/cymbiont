@@ -4,8 +4,8 @@
 //! It enforces clear separation between test phases to prevent common mistakes like
 //! trying to validate persisted data before the server has shut down.
 //! 
-//! For WAL operations testing, use the WALValidationFixture from wal_validation.rs
-//! to validate that expected operations were recorded in the transaction log.
+//! For test validation, use TestValidator from test_validator.rs
+//! to validate that expected operations resulted in correct JSON persistence.
 //! 
 //! ## Universal Test Infrastructure
 //! 
@@ -77,21 +77,6 @@
 //! let test_env = server.wait_for_completion(); // Wait for natural exit
 //! ```
 //! 
-//! ## Crash Recovery Test Example
-//! 
-//! ```rust
-//! // Start server and create some in-flight transactions
-//! let mut server = TestServer::start(test_env);
-//! // ... create transactions via WebSocket ...
-//! 
-//! // Simulate crash
-//! server.force_kill();
-//! 
-//! // Start new server - recovery should happen
-//! let server2 = TestServer::start(test_env);
-//! // ... verify transactions were recovered ...
-//! ```
-//! 
 //! ## Key Functions
 //! 
 //! **Environment Setup:**
@@ -117,13 +102,6 @@
 //! - `read_auth_token()` - Read authentication token from data directory
 //! - `get_single_open_graph_id()` - Get ID when exactly one graph is open
 //! - `import_dummy_graph()` - Import test graph via CLI
-//! 
-//! **Freeze Operations (Test Infrastructure):**
-//! - `freeze_operations()` - Pause graph operations after transaction creation
-//! - `unfreeze_operations()` - Resume paused graph operations
-//! - `get_freeze_state()` - Check if operations are currently frozen
-//! - `send_command_async()` - Send command without waiting for response
-//! - `read_pending_response()` - Read response with timeout handling
 //! 
 //! ## Important Notes
 //! 
@@ -448,7 +426,7 @@ impl TestServer {
             }
         }
         
-        // Additional wait for WAL flush and file operations
+        // Additional wait for JSON file operations
         thread::sleep(Duration::from_millis(1000));
         
         // Clone before moving out (since we implement Drop)
@@ -467,67 +445,6 @@ impl TestServer {
         &self.test_env
     }
     
-    /// Wait for the process to complete naturally (for CLI tests with duration)
-    pub fn wait_for_completion(mut self) -> TestEnv {
-        // Just wait for the process to exit on its own
-        let _ = self.process.wait().expect("Failed to wait for process");
-        
-        // Additional wait for WAL flush and file operations
-        thread::sleep(Duration::from_millis(1000));
-        
-        // Clone before moving out (since we implement Drop)
-        let test_env = self.test_env.clone();
-        
-        test_env
-    }
-    
-    /// Force kill the process (for crash tests)
-    #[allow(dead_code)] // TODO: Remove when crash recovery test is implemented
-    pub fn force_kill(&mut self) {
-        let pid = self.process.id();
-        
-        #[cfg(target_family = "unix")]
-        {
-            // Use SIGKILL (-9) for immediate termination
-            let _ = Command::new("kill")
-                .args(&["-9", &pid.to_string()])
-                .output();
-        }
-        
-        #[cfg(not(target_family = "unix"))]
-        {
-            // On non-Unix, just use kill()
-            let _ = self.process.kill();
-        }
-        
-        // Wait a moment for the process to die
-        thread::sleep(Duration::from_millis(100));
-    }
-    
-    /// Get process ID
-    #[allow(dead_code)] // TODO: Remove when crash recovery test is implemented
-    pub fn pid(&self) -> u32 {
-        self.process.id()
-    }
-    
-    /// Send SIGINT to the server process (same as Ctrl+C)
-    pub fn send_sigint(&mut self) {
-        let pid = self.process.id();
-        
-        // Send SIGINT to the process
-        #[cfg(unix)]
-        {
-            let _ = Command::new("kill")
-                .args(&["-2", &pid.to_string()])
-                .status();
-        }
-        
-        #[cfg(not(unix))]
-        {
-            // On non-Unix, just kill the process
-            let _ = self.process.kill();
-        }
-    }
 }
 
 impl Drop for TestServer {
@@ -744,12 +661,12 @@ pub fn get_single_open_graph_id(data_dir: &Path) -> String {
 /// Combined setup: start server + import graph via HTTP
 /// This replaces the old version that used CLI import
 pub fn setup_with_graph(test_env: TestEnv) -> (TestServer, String) {
-    // Start server FIRST - creates prime agent
+    // Start server FIRST
     let server = TestServer::start(test_env);
     let port = server.port();
     let data_dir = server.test_env().data_dir.clone();
     
-    // Import graph via HTTP - uses existing prime agent
+    // Import graph via HTTP
     let graph_id = block_on(async {
         // Wait for server to be ready
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -760,82 +677,7 @@ pub fn setup_with_graph(test_env: TestEnv) -> (TestServer, String) {
     (server, graph_id)
 }
 
-
-// ===== Freeze Operation Utilities =====
-
-/// Freeze all graph operations
-pub fn freeze_operations(ws: &mut WsConnection) -> bool {
-    let cmd = json!({
-        "type": "freeze_operations"
-    });
-    
-    let response = send_command(ws, cmd);
-    response["type"] == "success"
-}
-
-/// Unfreeze all graph operations
-pub fn unfreeze_operations(ws: &mut WsConnection) -> bool {
-    let cmd = json!({
-        "type": "unfreeze_operations"
-    });
-    
-    let response = send_command(ws, cmd);
-    response["type"] == "success"
-}
-
-/// Check if operations are frozen
-pub fn get_freeze_state(ws: &mut WsConnection) -> bool {
-    let cmd = json!({
-        "type": "get_freeze_state"
-    });
-    
-    let response = send_command(ws, cmd);
-    if response["type"] == "success" {
-        response["data"]["frozen"].as_bool().unwrap_or(false)
-    } else {
-        false
-    }
-}
-
-/// Send command without waiting for response (for frozen operations)
-pub fn send_command_async(ws: &mut WsConnection, command: Value) {
-    let msg = Message::Text(command.to_string());
-    ws.send(msg).expect("Failed to send WebSocket message");
-}
-
-/// Try to read a pending response with timeout
-pub fn read_pending_response(ws: &mut WsConnection) -> Value {
-    // Try reading with a reasonable timeout
-    let timeout = Duration::from_secs(5);
-    let start = Instant::now();
-    
-    loop {
-        match ws.read() {
-            Ok(Message::Text(text)) => {
-                let response: Value = serde_json::from_str(&text)
-                    .expect("Failed to parse WebSocket response");
-                
-                // Skip heartbeats
-                if response["type"] == "heartbeat" {
-                    continue;
-                }
-                
-                return response;
-            }
-            Ok(Message::Close(_)) => {
-                panic!("WebSocket connection closed unexpectedly");
-            }
-            Ok(_) => continue,  // Skip other message types
-            Err(e) => {
-                if start.elapsed() > timeout {
-                    panic!("Timeout waiting for response: {}", e);
-                }
-                // Brief sleep before retrying
-                thread::sleep(Duration::from_millis(10));
-            }
-        }
-    }
-}
+// ===== Agent Chat Utilities =====
 
 /// Send agent chat and get request_id (for async processing)
 /// 

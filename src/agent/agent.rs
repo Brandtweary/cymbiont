@@ -3,7 +3,7 @@
 //! This module provides the main Agent struct that manages conversation state,
 //! LLM configuration, and interaction with the knowledge graph. Each agent
 //! maintains its own conversation history, model configuration, and serves as
-//! an autonomous knowledge worker within the multi-agent framework.
+//! an autonomous knowledge worker within the knowledge management framework.
 //!
 //! ## CQRS Integration
 //!
@@ -20,9 +20,7 @@
 //! - **System Prompts**: Custom instructions and behavioral guidelines
 //! - **Context Management**: Automatic history trimming and continuity preservation
 //!
-//! Agents do not directly track graph authorizations - this is managed by the
 //! AgentRegistry as the single source of truth to prevent synchronization issues
-//! and ensure consistent authorization state across the system.
 //!
 //! ## Agent Lifecycle States
 //!
@@ -46,25 +44,9 @@
 //! - Tool execution routes through CommandQueue
 //! - Conversation history maintained with automatic trimming
 //!
-//! ### Deactivation Phase (DeactivateAgent command)
-//! - Removed from CommandProcessor's agents HashMap
-//! - AgentRegistry updated to mark agent as "inactive"
-//! - Memory freed
-//!
 //! ### Deletion Phase (DeleteAgent command)
 //! - Agent moved to `{data_dir}/archived_agents/` with timestamp
 //! - Removed from AgentRegistry permanently
-//! - All graph authorizations revoked automatically
-//! - Prime agent protected from deletion
-//!
-//! ## Prime Agent System
-//!
-//! The prime agent is a special system agent that ensures seamless user experience:
-//! - **Auto-creation**: Created automatically on first system startup
-//! - **Always Available**: Cannot be deleted, ensuring at least one agent exists
-//! - **Default Authorization**: Automatically authorized for all new graphs
-//! - **WebSocket Default**: Used as current agent when no specific agent selected
-//! - **Fallback Role**: Provides system stability and prevents authentication deadlocks
 //!
 //! ## Conversation Management
 //!
@@ -104,12 +86,9 @@
 //! ## Authorization and Security
 //!
 //! Agents operate within the CQRS authorization framework:
-//! - Graph authorizations managed by AgentRegistry via CQRS commands
 //! - RouterToken required for all state mutations
 //! - Tool execution authorized through CommandQueue
-//! - Runtime authorization errors provide clear messaging
 //! - Agent state isolated per agent (no cross-agent data access)
-//! - Prime agent cannot be deleted (system stability)
 //! - All modifications logged to command WAL for audit
 //!
 //! ## Error Handling and Recovery
@@ -129,7 +108,6 @@
 //! - **Function Calling**: LLM-driven tool selection and execution
 //! - **Advanced Context**: Semantic search in conversation history
 //! - **Multi-modal**: Support for image and document processing
-//! - **Collaborative**: Multi-agent coordination and handoffs
 //!
 //! Extension points include pluggable LLM backends via LLMBackend trait,
 //! custom message types, and custom context window management algorithms.
@@ -381,7 +359,7 @@ fn value_type_name(value: &Value) -> String {
 /// Main Agent struct containing full state
 /// 
 /// This struct manages the complete agent state including conversation
-/// history, LLM configuration, and graph authorizations. It provides
+/// history, LLM configuration, and context management. It provides
 /// methods for conversation management, persistence, and context control.
 #[derive(Debug)]
 pub struct Agent {
@@ -403,8 +381,6 @@ pub struct Agent {
     /// Custom system prompt/instructions
     pub system_prompt: Option<String>,
     
-    /// Default graph for tool operations (set to first authorized graph)
-    pub default_graph_id: Option<Uuid>,
     
     /// Creation timestamp
     pub created: DateTime<Utc>,
@@ -429,30 +405,6 @@ impl Agent {
             conversation_history: Vec::new(),
             context_window_limit: 100,  // Default context window
             system_prompt,
-            default_graph_id: None,  // Will be set when first authorized for a graph
-            created: now,
-            last_active: now,
-        }
-    }
-    
-    /// Create empty agent for WAL rebuild
-    /// 
-    /// This creates a minimal agent that will be populated through WAL replay.
-    /// Used during system startup to rebuild from transaction log.
-    pub fn new_empty(
-        id: Uuid, 
-        name: String
-    ) -> Self {
-        let now = Utc::now();
-        
-        Agent {
-            id,
-            name,
-            llm_config: LLMConfig::default(),
-            conversation_history: Vec::new(),
-            context_window_limit: 100,
-            system_prompt: None,
-            default_graph_id: None,
             created: now,
             last_active: now,
         }
@@ -505,21 +457,6 @@ impl Agent {
         Ok(())
     }
     
-    
-    /// Get the agent's default graph ID
-    pub fn get_default_graph_id(&self) -> Option<Uuid> {
-        self.default_graph_id
-    }
-    
-    /// Set the agent's default graph ID
-    /// 
-    /// This is typically called when the agent is first authorized for a graph,
-    /// or when the agent explicitly switches its default using the set_default_graph tool.
-    pub async fn set_default_graph_id(&mut self, _token: &RouterToken, graph_id: Option<Uuid>) -> Result<()> {
-        self.default_graph_id = graph_id;
-        Ok(())
-    }
-    
     /// Set system prompt
     /// 
     /// TODO: Add WebSocket/CLI command for setting system prompt.
@@ -569,7 +506,7 @@ impl Agent {
             });
         }
         
-        let result = kg_tools::execute_tool(app_state, self, tool_name, args).await?;
+        let result = kg_tools::execute_tool(app_state, tool_name, args).await?;
         
         // Convert result Value to AgentContext
         let context = if let Some(obj) = result.as_object() {
@@ -613,12 +550,12 @@ impl Agent {
     }
     
     
-    /// Export the agent to JSON for debugging/inspection
+    /// Save the agent to JSON persistence
     /// 
-    /// Note: This is NOT for persistence - WAL is the source of truth
-    /// The test harness (tests/common/wal_validation.rs) reads the WAL for validation
-    pub fn export_json(&self, path: &Path) -> Result<()> {
-        // Create a serializable version for export
+    /// Saves to data/agent.json for single-agent architecture
+    pub fn save(&self, data_dir: &Path) -> Result<()> {
+        let agent_path = data_dir.join("agent.json");
+        
         let data = serde_json::json!({
             "version": 1,
             "id": self.id,
@@ -627,7 +564,6 @@ impl Agent {
             "conversation_history": self.conversation_history,
             "context_window_limit": self.context_window_limit,
             "system_prompt": self.system_prompt,
-            "default_graph_id": self.default_graph_id,
             "created": self.created,
             "last_active": self.last_active,
         });
@@ -635,11 +571,69 @@ impl Agent {
         let json = serde_json::to_string_pretty(&data)
             .map_err(|e| AgentError::serialization(format!("Failed to serialize agent: {}", e)))?;
         
-        fs::write(path, json)
+        fs::write(&agent_path, json)
             .map_err(|e| AgentError::serialization(format!("Failed to write agent JSON: {}", e)))?;
         
         Ok(())
     }
+    
+    /// Load agent from JSON persistence
+    /// 
+    /// Returns None if file doesn't exist
+    pub fn load(data_dir: &Path) -> Result<Option<Agent>> {
+        let agent_path = data_dir.join("agent.json");
+        
+        if !agent_path.exists() {
+            return Ok(None);
+        }
+        
+        let json = fs::read_to_string(&agent_path)
+            .map_err(|e| AgentError::serialization(format!("Failed to read agent JSON: {}", e)))?;
+        
+        let data: serde_json::Value = serde_json::from_str(&json)
+            .map_err(|e| AgentError::serialization(format!("Failed to parse agent JSON: {}", e)))?;
+        
+        let agent = Agent {
+            id: data["id"].as_str()
+                .and_then(|s| Uuid::parse_str(s).ok())
+                .unwrap_or_else(Uuid::new_v4),
+            name: data["name"].as_str()
+                .unwrap_or("Cymbiont")
+                .to_string(),
+            llm_config: serde_json::from_value(data["llm_config"].clone())
+                .unwrap_or(LLMConfig::Mock { default_response: "I am a mock LLM response".to_string() }),
+            conversation_history: serde_json::from_value(data["conversation_history"].clone())
+                .unwrap_or_default(),
+            context_window_limit: data["context_window_limit"].as_u64()
+                .unwrap_or(10) as usize,
+            system_prompt: data["system_prompt"].as_str()
+                .map(String::from),
+            created: serde_json::from_value(data["created"].clone())
+                .unwrap_or_else(|_| chrono::Utc::now()),
+            last_active: serde_json::from_value(data["last_active"].clone())
+                .unwrap_or_else(|_| chrono::Utc::now()),
+        };
+        
+        Ok(Some(agent))
+    }
+    
+    /// Load existing agent or create new one
+    pub fn load_or_create(data_dir: &Path) -> Result<Agent> {
+        if let Some(agent) = Self::load(data_dir)? {
+            Ok(agent)
+        } else {
+            info!("No existing agent found, creating new agent");
+            let agent = Agent::new(
+                Uuid::new_v4(),
+                "Cymbiont".to_string(),
+                LLMConfig::Mock { default_response: "I am a mock LLM response".to_string() },
+                None
+            );
+            agent.save(data_dir)?;
+            Ok(agent)
+        }
+    }
+    
 }
 
 /// Process a message for an agent without holding locks during LLM/tool execution
@@ -654,7 +648,6 @@ impl Agent {
 /// This can be called from WebSocket handlers, CLI, or any other interface.
 pub async fn process_agent_message(
     app_state: &Arc<AppState>,
-    agent_id: Uuid,
     content: String,
     echo: Option<String>,
     echo_tool: Option<String>,
@@ -669,17 +662,15 @@ pub async fn process_agent_message(
         echo_tool: echo_tool.clone(),
     };
     let command = Command::Agent(AgentCommand::AddMessage {
-        agent_id,
         message: serde_json::to_value(user_msg)?,
     });
     app_state.command_queue.execute(command).await?;
     
     // Phase 2: Get LLM response (no locks held)
     let context = {
-        let agents = app_state.agents.read().await;
-        let agent_arc = agents.get(&agent_id)
-            .ok_or_else(|| AgentError::tool(format!("Agent {} not found", agent_id)))?;
-        let agent = agent_arc.read().await;
+        let agent_opt = app_state.agent.read().await;
+        let agent = agent_opt.as_ref()
+            .ok_or_else(|| AgentError::tool("Agent not initialized".to_string()))?;
         LLMContext {
             conversation_history: agent.conversation_history.clone(),
             llm_backend: agent.get_llm_backend(),
@@ -691,10 +682,9 @@ pub async fn process_agent_message(
     // Phase 3: Execute tool if requested (brief lock only)
     if let Some(tool_call) = &llm_response.tool_call {
         let tool_result = {
-            let agents = app_state.agents.read().await;
-            let agent_arc = agents.get(&agent_id)
-                .ok_or_else(|| AgentError::tool(format!("Agent {} not found", agent_id)))?;
-            let mut agent = agent_arc.write().await;
+            let mut agent_opt = app_state.agent.write().await;
+            let agent = agent_opt.as_mut()
+                .ok_or_else(|| AgentError::tool("Agent not initialized".to_string()))?;
             agent.execute_tool(app_state, &tool_call.name, tool_call.arguments.clone()).await?
         };
         
@@ -706,7 +696,6 @@ pub async fn process_agent_message(
             timestamp: chrono::Utc::now(),
         };
         let command = Command::Agent(AgentCommand::AddMessage {
-            agent_id,
             message: serde_json::to_value(tool_msg)?,
         });
         app_state.command_queue.execute(command).await?;
@@ -718,7 +707,6 @@ pub async fn process_agent_message(
         timestamp: chrono::Utc::now(),
     };
     let command = Command::Agent(AgentCommand::AddMessage {
-        agent_id,
         message: serde_json::to_value(assistant_msg)?,
     });
     app_state.command_queue.execute(command).await?;

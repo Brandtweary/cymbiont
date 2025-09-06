@@ -10,7 +10,7 @@ server/
 ├── websocket_utils.rs       # Shared helpers (auth checks, response sending, graph resolution)
 ├── websocket_commands/      # Command handlers organized by domain
 │   ├── mod.rs              # Command module exports
-│   ├── agent_commands.rs   # Agent chat, selection, admin operations
+│   ├── agent_commands.rs   # Agent chat operations
 │   ├── graph_commands.rs   # Graph CRUD and block/page operations  
 │   └── misc_commands.rs    # Auth, test, freeze commands
 └── auth.rs                  # Token generation, validation, middleware
@@ -32,7 +32,6 @@ server/
 ### Connection Lifecycle
 1. HTTP upgrade at `/ws` endpoint (no auth required)
 2. Send `Auth { token }` command to authenticate
-3. Prime agent automatically set as current on auth success
 4. Commands execute as spawned async tasks for concurrency
 5. Heartbeat every 30s, automatic cleanup on disconnect
 
@@ -49,28 +48,18 @@ server/
 - `DeletePage { page_name, graph_id?, graph_name? }` - Archive page and blocks
 - `OpenGraph { graph_id?, graph_name? }` - Load graph and trigger recovery
 - `CloseGraph { graph_id?, graph_name? }` - Save and unload graph
-- `CreateGraph { name?, description? }` - Create new graph with prime agent auth
+- `CreateGraph { name?, description? }` - Create new graph
 - `DeleteGraph { graph_id?, graph_name? }` - Archive graph to archived_graphs/
 - `ListGraphs` - Return all graphs with metadata
 
 ### Agent Chat Commands
-- `AgentChat { message, echo?, echo_tool?, agent_id?, agent_name? }` - Send message to agent (echo for text, echo_tool for tool calls in MockLLM)
-- `AgentSelect { agent_id?, agent_name? }` - Switch connection's current agent
-- `AgentList` - List all agents with active/prime status
-- `AgentHistory { agent_id?, agent_name?, limit? }` - Get conversation messages
-- `AgentReset { agent_id?, agent_name? }` - Clear agent conversation history
-- `AgentInfo { agent_id?, agent_name? }` - Detailed agent information with stats
-
-### Agent Admin Commands
-- `CreateAgent { name, description? }` - Register new agent with MockLLM config
-- `DeleteAgent { agent_id?, agent_name? }` - Archive agent (prime protected)
-- `ActivateAgent { agent_id?, agent_name? }` - Load agent into memory
-- `DeactivateAgent { agent_id?, agent_name? }` - Save and unload from memory
-- `AuthorizeAgent { agent_id?, agent_name?, graph_id?, graph_name? }` - Grant graph access
-- `DeauthorizeAgent { agent_id?, agent_name?, graph_id?, graph_name? }` - Revoke graph access
+- `AgentChat { message, echo?, echo_tool? }` - Send message to agent (echo for text, echo_tool for tool calls in MockLLM)
+- `AgentHistory { limit? }` - Get conversation messages
+- `AgentReset` - Clear agent conversation history
+- `AgentInfo` - Detailed agent information with stats
 
 ### System Commands
-- `Auth { token }` - Authenticate connection and set prime agent as current
+- `Auth { token }` - Authenticate connection
 - `Test { message }` - Echo test with connection stats
 - `Heartbeat` - Client keep-alive (no response to prevent loops)
 - `FreezeOperations` - Pause graph operations after command log write (testing)
@@ -84,7 +73,7 @@ server/
 - **WebSocket**: Send `Auth { token }` after connection to authenticate and get prime agent
 
 ## Key Patterns
-- **Connection State**: Each WsConnection has ID, sender channel, auth flag, and current_agent_id
+- **Connection State**: Each WsConnection has ID, sender channel, and auth flag
 - **Command Routing**: Routes by type to domain handlers (agent/graph/misc) with connection context
 - **Async Processing**: Each message spawns separate task to prevent blocking
 - **Lock-Free Sending**: Clone sender before use to avoid deadlocks
@@ -97,6 +86,5 @@ server/
 
 ## Gotchas
 - WebSocket upgrade is public; auth happens post-connection
-- Prime agent set on auth success, not connection
-- All graph ops need authorized agent
+- All graph ops validate access
 - Client heartbeats acknowledged but don't respond (prevents loops)

@@ -103,7 +103,7 @@ pub async fn send_response(
     
     // Now send without holding any lock
     let msg = serde_json::to_string(&response)?;
-    sender.send(Message::Text(msg))
+    sender.send(Message::Text(msg.into()))
         .map_err(|_| ServerError::websocket("Failed to send message on channel"))?;
     Ok(())
 }

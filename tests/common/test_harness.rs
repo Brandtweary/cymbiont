@@ -503,7 +503,7 @@ pub fn connect_websocket(port: u16) -> WsConnection {
 /// Send a command and wait for response (skipping heartbeats)
 pub fn send_command(ws: &mut WsConnection, command: Value) -> Value {
     // Send command
-    let msg = Message::Text(command.to_string());
+    let msg = Message::Text(command.to_string().into());
     ws.send(msg).expect("Failed to send WebSocket message");
     
     // Wait for response with timeout
@@ -690,7 +690,7 @@ pub fn send_agent_chat(ws: &mut WsConnection, message: &str, echo: Option<&str>,
         "echo_tool": echo_tool,
     });
     
-    let msg = Message::Text(cmd.to_string());
+    let msg = Message::Text(cmd.to_string().into());
     ws.send(msg).expect("Failed to send agent chat");
     
     // Read ACK response

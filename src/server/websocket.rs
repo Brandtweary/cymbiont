@@ -260,7 +260,7 @@ pub async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                 _ = interval.tick() => {
                     let heartbeat = Response::Heartbeat;
                     if let Ok(msg) = serde_json::to_string(&heartbeat) {
-                        if heartbeat_tx.send(Message::Text(msg)).is_err() {
+                        if heartbeat_tx.send(Message::Text(msg.into())).is_err() {
                             break;
                         }
                     }

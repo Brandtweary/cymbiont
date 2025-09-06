@@ -52,18 +52,22 @@
 //! Process management operations fail gracefully with informative error messages
 //! when platform-specific commands are unavailable or processes cannot be terminated.
 
-use std::process::Command;
+use std::process::{self, Command};
 use std::fs;
 use std::net::TcpListener;
 use std::collections::HashMap;
 use std::time::Duration;
 use std::sync::Arc;
+use std::thread;
 use serde::{Serialize, Deserialize};
 use serde_json;
-use tracing::{error, trace, warn};
+use tracing::{error, trace, warn, info};
 use tokio::sync::{RwLock as AsyncRwLock, RwLockReadGuard as AsyncRwLockReadGuard, RwLockWriteGuard as AsyncRwLockWriteGuard};
+use tokio::fs as tokio_fs;
 use crate::config::BackendConfig;
 use crate::error::*;
+use crate::app_state::AppState;
+use crate::graph::graph_manager::GraphManager;
 
 // ===== Async Lock Utilities =====
 
@@ -173,7 +177,7 @@ pub fn terminate_previous_instance(filename: &str) -> bool {
                     if output.status.success() {
                         trace!("🔧 Successfully terminated previous instance");
                         // Give the process time to shut down
-                        std::thread::sleep(Duration::from_millis(500));
+                        thread::sleep(Duration::from_millis(500));
                         return true;
                     }
                     error!("Failed to terminate process: {}", 
@@ -217,7 +221,7 @@ pub fn terminate_previous_instance(filename: &str) -> bool {
                     if output.status.success() {
                         trace!("🔧 Successfully terminated previous instance");
                         // Give the process time to shut down
-                        std::thread::sleep(Duration::from_millis(500));
+                        thread::sleep(Duration::from_millis(500));
                         return true;
                     } else {
                         error!("Failed to terminate process: {}", 
@@ -239,7 +243,7 @@ pub fn terminate_previous_instance(filename: &str) -> bool {
 pub fn write_server_info(host: &str, port: u16, filename: &str) -> Result<()> {
     trace!("[SERVER-INFO-WRITE] Writing server info to: {}", filename);
     let info = ServerInfo {
-        pid: std::process::id(),
+        pid: process::id(),
         host: host.to_string(),
         port,
     };
@@ -251,7 +255,7 @@ pub fn write_server_info(host: &str, port: u16, filename: &str) -> Result<()> {
 
 /// Write just a PID file for process management
 pub fn write_pid_file() -> Result<()> {
-    let pid = std::process::id();
+    let pid = process::id();
     fs::write(".cymbiont.pid", pid.to_string())?;
     Ok(())
 }
@@ -279,19 +283,14 @@ pub fn find_available_port(config: &BackendConfig) -> Result<u16> {
         }
     }
     
-    Err("Could not find an available port".into())
+    Err(ServerError::port_binding("Could not find an available port").into())
 }
 
 // ===== JSON Utilities =====
 
 /// Save all system data to JSON
-pub async fn save_all_system_data(app_state: &std::sync::Arc<crate::app_state::AppState>) -> crate::error::Result<()> {
-    use std::sync::Arc;
-    use tokio::sync::RwLock;
-    use crate::utils::AsyncRwLockExt;
-    use crate::graph::graph_manager::GraphManager;
-    
-    tracing::info!("Saving all system data to JSON");
+pub async fn save_all_system_data(app_state: &Arc<AppState>) -> crate::error::Result<()> {
+    info!("Saving all system data to JSON");
     
     // Save graph registry
     {
@@ -333,11 +332,11 @@ pub async fn save_all_system_data(app_state: &std::sync::Arc<crate::app_state::A
                         // Temporarily insert it
                         {
                             let mut managers = app_state.graph_managers.write().await;
-                            managers.insert(graph_id, Arc::new(RwLock::new(graph_manager)));
+                            managers.insert(graph_id, Arc::new(AsyncRwLock::new(graph_manager)));
                         }
                     }
                     Err(e) => {
-                        tracing::error!("Failed to create graph manager {} for save: {}", graph_id, e);
+                        error!("Failed to create graph manager {} for save: {}", graph_id, e);
                         continue;
                     }
                 }
@@ -349,7 +348,7 @@ pub async fn save_all_system_data(app_state: &std::sync::Arc<crate::app_state::A
                 if let Some(manager_lock) = managers.get(&graph_id) {
                     let manager = manager_lock.read_or_panic("save graph manager").await;
                     let graph_dir = app_state.data_dir.join("graphs").join(graph_id.to_string());
-                    tokio::fs::create_dir_all(&graph_dir).await?;
+                    tokio_fs::create_dir_all(&graph_dir).await?;
                     let path = graph_dir.join("knowledge_graph.json");
                     manager.save(&path)?;
                 }
@@ -364,7 +363,7 @@ pub async fn save_all_system_data(app_state: &std::sync::Arc<crate::app_state::A
     }
     
     
-    tracing::info!("System data saved successfully");
+    info!("System data saved successfully");
     Ok(())
 }
 
@@ -444,6 +443,7 @@ mod tests {
 /// to be serialized as human-readable strings in JSON format.
 pub mod uuid_serde {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde::de::Error as SerdeError;
     use std::collections::{HashMap, HashSet};
     use uuid::Uuid;
     
@@ -473,7 +473,7 @@ pub mod uuid_serde {
                 .map(|(k, v)| {
                     Uuid::parse_str(&k)
                         .map(|uuid| (uuid, v))
-                        .map_err(serde::de::Error::custom)
+                        .map_err(SerdeError::custom)
                 })
                 .collect()
         }
@@ -500,7 +500,7 @@ pub mod uuid_serde {
             let string_vec = Vec::<String>::deserialize(deserializer)?;
             string_vec
                 .into_iter()
-                .map(|s| Uuid::parse_str(&s).map_err(serde::de::Error::custom))
+                .map(|s| Uuid::parse_str(&s).map_err(SerdeError::custom))
                 .collect()
         }
     }

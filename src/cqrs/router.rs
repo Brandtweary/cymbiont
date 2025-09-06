@@ -139,7 +139,6 @@ use crate::agent::agent::Agent;
 use crate::agent::llm::{Message, LLMConfig};
 use super::commands::{CommandResult, GraphCommand, AgentCommand, RegistryCommand,
                       GraphRegistryCommand};
-use super::processor::ProcessorError;
 
 /// Private token that proves a call came through the CQRS router.
 /// This type can ONLY be constructed within the router module,
@@ -166,7 +165,7 @@ pub async fn route_graph_command(
             // Get the graph manager
             let managers_guard = managers.read().await;
             let graph_manager_arc = managers_guard.get(&graph_id)
-                .ok_or_else(|| ProcessorError("Graph not found".to_string()))?
+                .ok_or_else(|| ProcessorError::NotFound("Graph".to_string()))?
                 .clone();
             let mut graph_manager = graph_manager_arc.write().await;
             
@@ -197,7 +196,7 @@ pub async fn route_graph_command(
             
             let managers_guard = managers.read().await;
             let graph_manager_arc = managers_guard.get(&graph_id)
-                .ok_or_else(|| ProcessorError("Graph not found".to_string()))?
+                .ok_or_else(|| ProcessorError::NotFound("Graph".to_string()))?
                 .clone();
             let mut graph_manager = graph_manager_arc.write().await;
             
@@ -225,7 +224,7 @@ pub async fn route_graph_command(
             
             let managers_guard = managers.read().await;
             let graph_manager_arc = managers_guard.get(&graph_id)
-                .ok_or_else(|| ProcessorError("Graph not found".to_string()))?
+                .ok_or_else(|| ProcessorError::NotFound("Graph".to_string()))?
                 .clone();
             let mut graph_manager = graph_manager_arc.write().await;
             
@@ -250,7 +249,7 @@ pub async fn route_graph_command(
             
             let managers_guard = managers.read().await;
             let graph_manager_arc = managers_guard.get(&graph_id)
-                .ok_or_else(|| ProcessorError("Graph not found".to_string()))?
+                .ok_or_else(|| ProcessorError::NotFound("Graph".to_string()))?
                 .clone();
             let mut graph_manager = graph_manager_arc.write().await;
             
@@ -275,7 +274,7 @@ pub async fn route_graph_command(
             
             let managers_guard = managers.read().await;
             let graph_manager_arc = managers_guard.get(&graph_id)
-                .ok_or_else(|| ProcessorError("Graph not found".to_string()))?
+                .ok_or_else(|| ProcessorError::NotFound("Graph".to_string()))?
                 .clone();
             let mut graph_manager = graph_manager_arc.write().await;
             
@@ -307,7 +306,7 @@ pub async fn route_agent_command(
         AgentCommand::AddMessage { message } => {
             let mut agent_guard = agent.write().await;
             let agent_mut = agent_guard.as_mut()
-                .ok_or_else(|| ProcessorError("Agent not initialized".to_string()))?;
+                .ok_or_else(|| ProcessorError::NotFound("Agent".to_string()))?;
             
             // Deserialize and add message
             let msg: Message = serde_json::from_value(message)?;
@@ -325,7 +324,7 @@ pub async fn route_agent_command(
         AgentCommand::ClearHistory => {
             let mut agent_guard = agent.write().await;
             let agent_mut = agent_guard.as_mut()
-                .ok_or_else(|| ProcessorError("Agent not initialized".to_string()))?;
+                .ok_or_else(|| ProcessorError::NotFound("Agent".to_string()))?;
             
             let token = RouterToken::new();
             agent_mut.clear_history(&token).await?;
@@ -341,7 +340,7 @@ pub async fn route_agent_command(
         AgentCommand::SetLLMConfig { config } => {
             let mut agent_guard = agent.write().await;
             let agent_mut = agent_guard.as_mut()
-                .ok_or_else(|| ProcessorError("Agent not initialized".to_string()))?;
+                .ok_or_else(|| ProcessorError::NotFound("Agent".to_string()))?;
             
             // Deserialize and set config
             let llm_config: LLMConfig = serde_json::from_value(config)?;
@@ -359,7 +358,7 @@ pub async fn route_agent_command(
         AgentCommand::SetSystemPrompt { prompt } => {
             let mut agent_guard = agent.write().await;
             let agent_mut = agent_guard.as_mut()
-                .ok_or_else(|| ProcessorError("Agent not initialized".to_string()))?;
+                .ok_or_else(|| ProcessorError::NotFound("Agent".to_string()))?;
             
             let token = RouterToken::new();
             agent_mut.set_system_prompt(&token, prompt).await?;

@@ -91,6 +91,7 @@ use chrono::Utc;
 use regex::Regex;
 use serde_json::json;
 use tracing::error;
+use uuid::Uuid;
 use super::pkm_data::{PKMBlockData, PKMPageData, PKMReference, resolve_block_references};
 use crate::error::*;
 
@@ -392,7 +393,7 @@ fn convert_blocks_to_pkm(
         }
         
         let block_id = logseq_block.id.clone()
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
         
         // Extract references from content
         let references = extract_references(&logseq_block.content);

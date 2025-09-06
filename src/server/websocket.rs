@@ -75,6 +75,7 @@ use std::{
     time::Duration,
 };
 use tokio::time::interval;
+use tokio::sync::{mpsc, watch};
 use tracing::{error, warn};
 use uuid::Uuid;
 
@@ -89,9 +90,9 @@ use crate::server::{
 /// WebSocket connection state
 pub struct WsConnection {
     pub id: String,
-    pub sender: tokio::sync::mpsc::UnboundedSender<Message>,
+    pub sender: mpsc::UnboundedSender<Message>,
     pub authenticated: bool,
-    pub shutdown_tx: tokio::sync::watch::Sender<bool>,
+    pub shutdown_tx: watch::Sender<bool>,
 }
 
 /// Command protocol definitions
@@ -223,10 +224,10 @@ pub async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     // Connection established - connection_id: {}
 
     let (mut sender, mut receiver) = socket.split();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, mut rx) = mpsc::unbounded_channel();
     
     // Create shutdown signal
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     let ws_connection = WsConnection {
         id: connection_id.clone(),

@@ -166,7 +166,7 @@ impl GraphRegistry {
         if !graph_managers.contains_key(&graph_id) {
             // Create graph manager
             let graph_dir = data_dir.join("graphs").join(graph_id.to_string());
-            std::fs::create_dir_all(&graph_dir)?;
+            fs::create_dir_all(&graph_dir)?;
             let graph_manager = GraphManager::new(graph_dir)?;
             
             // Insert into HashMap
@@ -194,7 +194,7 @@ impl GraphRegistry {
     ) -> Result<GraphInfo> {
         // Create the graph directory
         let graph_dir = data_dir.join("graphs").join(graph_id.to_string());
-        std::fs::create_dir_all(&graph_dir)?;
+        fs::create_dir_all(&graph_dir)?;
         
         // Step 1: Register the graph
         let graph_info = self.register_graph(Some(graph_id), name, description, &graph_dir).await?;

@@ -6,6 +6,7 @@
 
 use axum::extract::ws::Message;
 use std::sync::Arc;
+use uuid::Uuid;
 use crate::error::*;
 use crate::AppState;
 use crate::utils::AsyncRwLockExt;
@@ -17,11 +18,11 @@ pub async fn resolve_graph_for_command(
     graph_id: Option<&str>,
     graph_name: Option<&str>,
     allow_smart_default: bool,
-) -> Result<uuid::Uuid> {
+) -> Result<Uuid> {
     let registry = state.graph_registry.read_or_panic("read graph registry").await;
     
     let graph_uuid = if let Some(id_str) = graph_id {
-        Some(uuid::Uuid::parse_str(id_str)
+        Some(Uuid::parse_str(id_str)
             .map_err(|_| ServerError::invalid_request(format!("Invalid graph UUID: {}", id_str)))?)
     } else {
         None

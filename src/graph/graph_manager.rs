@@ -228,7 +228,7 @@ impl GraphManager {
     /// Create a new empty graph manager
     pub fn new<P: AsRef<Path>>(data_dir: P) -> Result<Self> {
         // Ensure directories exist
-        std::fs::create_dir_all(data_dir.as_ref())
+        fs::create_dir_all(data_dir.as_ref())
             .map_err(|e| GraphError::lifecycle(format!("Failed to create directories: {}", e)))?;
         
         let manager = Self {

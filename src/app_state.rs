@@ -83,17 +83,21 @@
 //! - **Durability**: CommandLog persists all mutations
 
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::fs;
 use std::time::Duration;
+use std::env;
 use tokio::sync::{oneshot, RwLock};
+use tokio::time::sleep;
 use tracing::{error, warn};
 use uuid::Uuid;
+use axum::extract::ws::Message;
 
 use crate::error::*;
-use crate::utils::AsyncRwLockExt;
+use crate::utils::{AsyncRwLockExt, save_all_system_data};
+use crate::cqrs::{Command, SystemCommand};
 
 use crate::{
     config::Config,
@@ -128,7 +132,7 @@ pub struct AppState {
     pub data_dir: PathBuf,  // Resolved absolute path
     
     // Server-specific components (optional)
-    pub ws_ready_tx: std::sync::Mutex<Option<oneshot::Sender<()>>>,
+    pub ws_ready_tx: Mutex<Option<oneshot::Sender<()>>>,
     pub ws_connections: Option<Arc<RwLock<HashMap<String, WsConnection>>>>,
     pub auth_token: Arc<RwLock<Option<String>>>,  // Authentication token
     
@@ -139,7 +143,7 @@ pub struct AppState {
 impl AppState {
     
     /// Create new AppState with pre-loaded config (avoids duplicate config loading)
-    pub async fn new_with_config(mut config: crate::config::Config, data_dir_override: Option<String>, with_server: bool) -> Result<Arc<Self>> {
+    pub async fn new_with_config(mut config: Config, data_dir_override: Option<String>, with_server: bool) -> Result<Arc<Self>> {
         // Apply data_dir override if provided
         if let Some(cli_data_dir) = &data_dir_override {
             config.data_dir = cli_data_dir.clone();
@@ -148,13 +152,13 @@ impl AppState {
         Self::new_internal_with_config(config, with_server).await
     }
     
-    async fn new_internal_with_config(config: crate::config::Config, with_server: bool) -> Result<Arc<Self>> {
+    async fn new_internal_with_config(config: Config, with_server: bool) -> Result<Arc<Self>> {
         
         // Initialize data directory
-        let data_dir = if std::path::Path::new(&config.data_dir).is_absolute() {
+        let data_dir = if Path::new(&config.data_dir).is_absolute() {
             PathBuf::from(&config.data_dir)
         } else {
-            std::env::current_dir()
+            env::current_dir()
                 .map_err(|e| CymbiontError::Other(format!("Failed to get current directory: {e}")))?
                 .join(&config.data_dir)
         };
@@ -200,7 +204,7 @@ impl AppState {
             graph_registry,
             config,
             data_dir: data_dir.clone(),
-            ws_ready_tx: std::sync::Mutex::new(None),
+            ws_ready_tx: Mutex::new(None),
             ws_connections,
             auth_token: Arc::new(RwLock::new(None)),
             shutdown_initiated: Arc::new(AtomicBool::new(false)),
@@ -236,7 +240,6 @@ impl AppState {
             let connection_count = conn_map.len();
             
             if connection_count > 0 {
-                use axum::extract::ws::Message;
                 
                 // Send Close frame to all connections before shutting down
                 for (_, conn) in conn_map.iter() {
@@ -253,12 +256,12 @@ impl AppState {
                 drop(conn_map);
                 
                 // Give tasks a moment to shut down gracefully
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                sleep(Duration::from_millis(100)).await;
             }
         }
         
         // Save all system data to JSON
-        if let Err(e) = crate::utils::save_all_system_data(self).await {
+        if let Err(e) = save_all_system_data(self).await {
             error!("Failed to save system data: {}", e);
         }
         
@@ -266,7 +269,6 @@ impl AppState {
     
     /// Initiate graceful shutdown on the CQRS command queue
     pub async fn initiate_graceful_shutdown(&self) -> usize {
-        use crate::cqrs::{Command, SystemCommand};
         
         // Set the local shutdown flag to prevent new operations
         self.shutdown_initiated.store(true, Ordering::Release);
@@ -287,7 +289,6 @@ impl AppState {
     
     /// Wait for active transactions to complete
     pub async fn wait_for_transactions(&self, timeout: Duration) -> bool {
-        use crate::cqrs::{Command, SystemCommand};
         
         if let Ok(result) = self.command_queue.execute(
             Command::System(SystemCommand::WaitForCompletion { 
@@ -306,7 +307,6 @@ impl AppState {
     
     /// Force flush transactions for immediate shutdown
     pub async fn force_flush_transactions(&self) {
-        use crate::cqrs::{Command, SystemCommand};
         
         let _ = self.command_queue.execute(
             Command::System(SystemCommand::ForceFlush)

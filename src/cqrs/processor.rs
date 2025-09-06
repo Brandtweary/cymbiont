@@ -137,15 +137,7 @@ pub struct ProcessorResources {
     pub graph_managers: Arc<RwLock<HashMap<Uuid, Arc<RwLock<GraphManager>>>>>,
 }
 
-/// Error type for processor operations
-#[derive(Debug)]
-pub struct ProcessorError(pub String);
-
-impl From<ProcessorError> for CymbiontError {
-    fn from(e: ProcessorError) -> Self {
-        CymbiontError::Other(e.0)
-    }
-}
+// ProcessorError is now in error.rs
 
 /// Processor states for shutdown coordination
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,7 +231,7 @@ impl CommandProcessor {
                     if !matches!(envelope.command, Command::System(_)) {
                         warn!("Rejecting command during shutdown: {:?}", envelope.command);
                         let _ = envelope.response.send(Err(
-                            ProcessorError("Graceful shutdown in progress, rejecting new commands".to_string()).into()
+                            ProcessorError::ShuttingDown.into()
                         ));
                         continue;
                     }
@@ -248,7 +240,7 @@ impl CommandProcessor {
                     // Reject everything
                     warn!("Rejecting command - processor is shut down: {:?}", envelope.command);
                     let _ = envelope.response.send(Err(
-                        ProcessorError("Processor is shut down".to_string()).into()
+                        ProcessorError::Shutdown.into()
                     ));
                     continue;
                 }

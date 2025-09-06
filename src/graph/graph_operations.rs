@@ -436,7 +436,7 @@ pub async fn execute_create_block(
     reference_content: Option<String>,
 ) -> Result<String> {
     // Use provided block_id if available, otherwise generate new one
-    let final_block_id = block_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let final_block_id = block_id.unwrap_or_else(|| Uuid::new_v4().to_string());
     
     // Use provided reference_content if available, otherwise resolve on-the-fly
     let (block_id, _reference_content) = if let Some(ref_content) = reference_content {
@@ -575,7 +575,7 @@ mod tests {
         assert_eq!(graph_err.to_string(), "Graph lifecycle error: Test error");
         
         // Test NodeNotFound creation
-        let graph_id = uuid::Uuid::new_v4();
+        let graph_id = Uuid::new_v4();
         let node_err = GraphError::node_not_found("block-123", graph_id);
         assert_eq!(node_err.to_string(), format!("Node not found: block-123 in graph {}", graph_id));
     }
@@ -583,7 +583,7 @@ mod tests {
     #[test]
     fn test_command_variants() {
         // Test that all GraphCommand variants can be created through Command enum
-        let graph_id = uuid::Uuid::new_v4();
+        let graph_id = Uuid::new_v4();
         
         let create_block = Command::Graph(GraphCommand::CreateBlock {
             graph_id,
@@ -632,7 +632,7 @@ mod tests {
         }
         
         fn returns_node_not_found() -> Result<String> {
-            let graph_id = uuid::Uuid::new_v4();
+            let graph_id = Uuid::new_v4();
             Err(GraphError::node_not_found("node-123", graph_id).into())
         }
         

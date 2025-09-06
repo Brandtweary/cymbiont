@@ -88,6 +88,9 @@ pub enum CymbiontError {
     #[error("Configuration error: {0}")]
     Config(#[from] ConfigError),
 
+    /// CQRS processor errors
+    #[error("Processor error: {0}")]
+    Processor(#[from] ProcessorError),
 
     /// File system and I/O errors
     #[error("I/O error: {0}")]
@@ -214,6 +217,22 @@ pub enum ConfigError {
     /// I/O errors reading config
     #[error("I/O error reading config: {0}")]
     IO(#[from] std::io::Error),
+}
+
+/// CQRS processor errors
+#[derive(Error, Debug)]
+pub enum ProcessorError {
+    /// Entity not found
+    #[error("{0} not found")]
+    NotFound(String),
+    
+    /// System is shutting down
+    #[error("Graceful shutdown in progress, rejecting new commands")]
+    ShuttingDown,
+    
+    /// Processor has shut down
+    #[error("Processor is shut down")]
+    Shutdown,
 }
 
 

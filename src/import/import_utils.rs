@@ -28,7 +28,9 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::collections::HashMap;
 use tracing::{info, error};
+use uuid::Uuid;
 use crate::app_state::AppState;
 use crate::graph::graph_operations::GraphOps;
 use super::logseq;
@@ -73,7 +75,7 @@ pub async fn import_logseq_graph(
         Some(format!("Imported from: {}", logseq_path.display()))
     ).await?;
     
-    let graph_id = uuid::Uuid::parse_str(
+    let graph_id = Uuid::parse_str(
         graph_info["id"].as_str()
             .ok_or_else(|| ImportError::validation("Graph ID not found in response"))?
     ).map_err(|e| ImportError::validation(format!("Invalid graph ID: {}", e)))?;
@@ -109,11 +111,11 @@ pub async fn import_logseq_graph(
     }
     
     // Build a mapping from original IDs to new UUIDs
-    let mut id_mapping: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut id_mapping: HashMap<String, String> = HashMap::new();
     
     // First pass: generate new UUIDs for all blocks
     for block in &blocks {
-        let new_id = uuid::Uuid::new_v4().to_string();
+        let new_id = Uuid::new_v4().to_string();
         id_mapping.insert(block.id.clone(), new_id);
     }
     

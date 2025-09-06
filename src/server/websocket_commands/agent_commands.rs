@@ -18,6 +18,7 @@
 //! `Arc<RwLock<Option<Agent>>>`.
 
 use std::sync::Arc;
+use tracing::error;
 use crate::error::*;
 use crate::AppState;
 use crate::agent::llm::Message as LlmMessage;
@@ -64,13 +65,13 @@ pub async fn handle(
                             "response": response
                         });
                         if let Err(e) = send_success_response(&conn_id, &state_clone, Some(response_data)).await {
-                            tracing::error!("Failed to send agent response: {}", e);
+                            error!("Failed to send agent response: {}", e);
                         }
                     }
                     Err(e) => {
                         // Send error response
                         if let Err(send_err) = send_error_response(&conn_id, &state_clone, &e.to_string()).await {
-                            tracing::error!("Failed to send error response: {}", send_err);
+                            error!("Failed to send error response: {}", send_err);
                         }
                     }
                 }

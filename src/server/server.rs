@@ -48,7 +48,15 @@
 //! - `server_info_file`: Path for process discovery file
 
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::fs;
+use std::result;
+use std::io;
 use tracing::info;
+use tokio::task::JoinHandle;
+use tokio::net::TcpListener;
+use tokio;
+use axum;
 
 use crate::error::*;
 use crate::{
@@ -60,14 +68,14 @@ use crate::{
 /// Start the HTTP server and return it for external lifecycle management
 /// The caller is responsible for handling shutdown signals and cleanup
 pub async fn start_server(
-    app_state: std::sync::Arc<AppState>,
-) -> Result<(tokio::task::JoinHandle<std::result::Result<(), std::io::Error>>, String)> {
+    app_state: Arc<AppState>,
+) -> Result<(JoinHandle<result::Result<(), io::Error>>, String)> {
     let server_info_file = &app_state.config.backend.server_info_file;
     
     // Terminate any previous instance
-    if std::fs::metadata(server_info_file).is_ok() {
+    if fs::metadata(server_info_file).is_ok() {
         terminate_previous_instance(server_info_file);
-        let _ = std::fs::remove_file(server_info_file);
+        let _ = fs::remove_file(server_info_file);
     }
     
     // Create and start server
@@ -79,7 +87,7 @@ pub async fn start_server(
     write_server_info("127.0.0.1", port, server_info_file)
         .map_err(|e| ServerError::startup(format!("Failed to write server info: {}", e)))?;
     
-    let listener = tokio::net::TcpListener::bind(addr).await
+    let listener = TcpListener::bind(addr).await
         .map_err(|e| ServerError::port_binding(format!("Failed to bind to port {}: {}", port, e)))?;
     
     info!("🚀 Cymbiont Server listening on {}", addr);
@@ -94,5 +102,5 @@ pub async fn start_server(
 
 /// Clean up server info file
 pub fn cleanup_server_info(filename: &str) {
-    let _ = std::fs::remove_file(filename);
+    let _ = fs::remove_file(filename);
 }

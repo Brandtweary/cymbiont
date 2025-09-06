@@ -48,8 +48,15 @@ use axum::{
 };
 use std::path::Path;
 use std::sync::Arc;
+use std::io;
+use std::result;
+use std::fs::Permissions;
 use tracing::{info, warn, error};
 use uuid::Uuid;
+use tokio::fs as tokio_fs;
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 use crate::error::*;
 use crate::utils::AsyncRwLockExt;
@@ -61,16 +68,15 @@ pub fn generate_auth_token() -> String {
 }
 
 /// Save auth token to file for external access with restricted permissions
-pub async fn save_auth_token(data_dir: &Path, token: &str) -> std::io::Result<()> {
+pub async fn save_auth_token(data_dir: &Path, token: &str) -> io::Result<()> {
     let token_path = data_dir.join("auth_token");
-    tokio::fs::write(&token_path, token).await?;
+    tokio_fs::write(&token_path, token).await?;
     
     // Set restrictive permissions (owner read/write only)
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let permissions = std::fs::Permissions::from_mode(0o600);
-        tokio::fs::set_permissions(&token_path, permissions).await?;
+        let permissions = Permissions::from_mode(0o600);
+        tokio_fs::set_permissions(&token_path, permissions).await?;
     }
     
     Ok(())
@@ -113,7 +119,7 @@ pub async fn auth_middleware(
     State(state): State<Arc<AppState>>,
     request: Request,
     next: Next,
-) -> std::result::Result<Response, StatusCode> {
+) -> result::Result<Response, StatusCode> {
     // Check if auth is disabled
     if state.config.auth.disabled {
         return Ok(next.run(request).await);

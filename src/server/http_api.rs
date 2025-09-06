@@ -73,6 +73,7 @@ use axum::{
     middleware,
 };
 use std::sync::Arc;
+use std::path::Path;
 use tracing::{info, error};
 use serde::{Deserialize, Serialize};
 use crate::utils::AsyncRwLockExt;
@@ -151,7 +152,7 @@ pub async fn import_logseq(
     State(state): State<Arc<AppState>>,
     Json(request): Json<LogseqImportRequest>,
 ) -> Json<LogseqImportResponse> {
-    let path = std::path::Path::new(&request.path);
+    let path = Path::new(&request.path);
     
     // Validate the path exists and is a directory
     if !path.exists() {

@@ -62,6 +62,12 @@
 use crate::error::*;
 use clap::Parser;
 use tracing::{info, error, warn, trace};
+use std::process;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::runtime::Runtime;
+use tokio::signal;
+use tokio::time::sleep;
 
 // Internal modules
 mod agent;
@@ -81,14 +87,14 @@ use autodebugger::{init_logging, VerbosityConfig as AutodebuggerVerbosityConfig}
 
 fn main() -> Result<()> {
     // Create Tokio runtime explicitly for proper shutdown control
-    let runtime = tokio::runtime::Runtime::new()
+    let runtime = Runtime::new()
         .map_err(|e| CymbiontError::Other(format!("Failed to create runtime: {}", e)))?;
     
     // Run async main logic
     let result = runtime.block_on(async_main());
     
     // Force runtime shutdown with timeout
-    runtime.shutdown_timeout(std::time::Duration::from_secs(2));
+    runtime.shutdown_timeout(Duration::from_secs(2));
     
     result
 }
@@ -110,7 +116,7 @@ async fn async_main() -> Result<()> {
     let verbosity_layer = init_logging(None, Some(verbosity_config));
     
     // Track start time for total runtime measurement
-    let start_time = std::time::Instant::now();
+    let start_time = Instant::now();
     
     // Phase 1: Create AppState based on mode (using pre-loaded config)
     let app_state = AppState::new_with_config(config, args.data_dir.clone(), args.server).await?;
@@ -134,7 +140,7 @@ async fn async_main() -> Result<()> {
             }
             
             trace!("Forcing process exit (sled workaround)");
-            std::process::exit(0);
+            process::exit(0);
         }
     }
     
@@ -158,11 +164,11 @@ async fn async_main() -> Result<()> {
     
     // Force exit because sled/tokio threads won't terminate
     trace!("Forcing process exit (sled workaround)");
-    std::process::exit(0)
+    process::exit(0)
 }
 
 /// Common startup sequence for both server and CLI modes
-async fn run_startup_sequence(app_state: &std::sync::Arc<AppState>) -> Result<()> {
+async fn run_startup_sequence(app_state: &Arc<AppState>) -> Result<()> {
     info!("🧠 Cymbiont initialized");
     info!("📁 Data directory: {}", app_state.data_dir.display());
     
@@ -183,7 +189,7 @@ async fn run_startup_sequence(app_state: &std::sync::Arc<AppState>) -> Result<()
 
 /// Run the server event loop
 async fn run_server_loop(
-    app_state: &std::sync::Arc<AppState>,
+    app_state: &Arc<AppState>,
     args: &Args,
 ) -> Result<()> {
     // Start server and get handle
@@ -197,14 +203,14 @@ async fn run_server_loop(
                     error!("Server task error: {}", e);
                 }
             }
-            _ = tokio::time::sleep(std::time::Duration::from_secs(duration)) => {
+            _ = sleep(Duration::from_secs(duration)) => {
                 info!("⏱️ Duration limit reached");
             }
-            _ = tokio::signal::ctrl_c() => {
+            _ = signal::ctrl_c() => {
                 info!("🛑 Received shutdown signal");
                 if handle_graceful_shutdown(app_state).await {
                     server::cleanup_server_info(&server_info_file);
-                    std::process::exit(1);
+                    process::exit(1);
                 }
             }
         }
@@ -216,11 +222,11 @@ async fn run_server_loop(
                     error!("Server task error: {}", e);
                 }
             }
-            _ = tokio::signal::ctrl_c() => {
+            _ = signal::ctrl_c() => {
                 info!("🛑 Received shutdown signal");
                 if handle_graceful_shutdown(app_state).await {
                     server::cleanup_server_info(&server_info_file);
-                    std::process::exit(1);
+                    process::exit(1);
                 }
             }
         }
@@ -235,12 +241,12 @@ async fn run_server_loop(
 
 /// Run the CLI event loop
 async fn run_cli_loop(
-    app_state: &std::sync::Arc<AppState>,
+    app_state: &Arc<AppState>,
     args: &Args,
 ) -> Result<()> {
     // Handle duration for CLI mode
     if let Some(duration) = args.duration.or(app_state.config.development.default_duration) {
-        tokio::time::sleep(std::time::Duration::from_secs(duration)).await;
+        sleep(Duration::from_secs(duration)).await;
         info!("⏱️ Duration limit reached");
     } else {
         // Run indefinitely (for future interactive features)
@@ -250,13 +256,13 @@ async fn run_cli_loop(
         info!("Running indefinitely. Press Ctrl+C to exit.");
         
         // First Ctrl+C - initiate graceful shutdown
-        tokio::signal::ctrl_c().await?;
+        signal::ctrl_c().await?;
         info!("🛑 Received shutdown signal");
         
         if handle_graceful_shutdown(&app_state).await {
             // Force quit requested
             utils::remove_pid_file();
-            std::process::exit(1);
+            process::exit(1);
         }
     }
     
@@ -269,16 +275,16 @@ async fn run_cli_loop(
 
 /// Handle graceful shutdown with transaction completion
 /// Returns true if should exit immediately (force quit), false to continue with normal cleanup
-async fn handle_graceful_shutdown(app_state: &std::sync::Arc<AppState>) -> bool {
+async fn handle_graceful_shutdown(app_state: &Arc<AppState>) -> bool {
     // Brief grace period for spawned tasks to reach transaction boundary
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    sleep(Duration::from_millis(100)).await;
     
     let active_count = app_state.initiate_graceful_shutdown().await;
     if active_count > 0 {
         info!("⏳ Waiting for {} transactions to complete... Press Ctrl+C again to force quit", active_count);
         
         tokio::select! {
-            completed = app_state.wait_for_transactions(std::time::Duration::from_secs(30)) => {
+            completed = app_state.wait_for_transactions(Duration::from_secs(30)) => {
                 if completed {
                     info!("✅ All transactions completed");
                 } else {
@@ -286,7 +292,7 @@ async fn handle_graceful_shutdown(app_state: &std::sync::Arc<AppState>) -> bool 
                 }
                 false // Continue with normal cleanup
             }
-            _ = tokio::signal::ctrl_c() => {
+            _ = signal::ctrl_c() => {
                 error!("⚡ Force quit requested");
                 app_state.force_flush_transactions().await;
                 true // Force immediate exit

@@ -57,6 +57,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use uuid::Uuid;
 
 use crate::agent::schemas::ToolDefinition;
 use crate::error::*;
@@ -253,10 +254,10 @@ fn generate_mock_args(tool_name: &str, tools: &[ToolDefinition]) -> serde_json::
                     match required_param.as_str() {
                         "content" => serde_json::Value::String("Test content from MockLLM".to_string()),
                         // Generate fresh UUIDs for ID fields - tests should create their own blocks
-                        "block_id" => serde_json::Value::String(uuid::Uuid::new_v4().to_string()),
-                        "node_id" => serde_json::Value::String(uuid::Uuid::new_v4().to_string()),
+                        "block_id" => serde_json::Value::String(Uuid::new_v4().to_string()),
+                        "node_id" => serde_json::Value::String(Uuid::new_v4().to_string()),
                         "page_name" => serde_json::Value::String("Test Page".to_string()),
-                        "start_id" => serde_json::Value::String(uuid::Uuid::new_v4().to_string()),
+                        "start_id" => serde_json::Value::String(Uuid::new_v4().to_string()),
                         _ => serde_json::Value::String(format!("test-{}", required_param)),
                     }
                 },

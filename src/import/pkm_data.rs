@@ -65,6 +65,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use uuid::Uuid;
 use petgraph::stable_graph::NodeIndex;
 use crate::graph::graph_manager::{GraphManager, NodeType, EdgeType};
 use crate::error::*;
@@ -260,7 +261,7 @@ pub fn create_block_with_resolution_and_id(
     content: String,
     properties: Option<&serde_json::Value>,
 ) -> Result<(String, Option<String>)> {
-    let block_id = block_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let block_id = block_id.unwrap_or_else(|| Uuid::new_v4().to_string());
     let now = chrono::Utc::now();
     
     // Parse properties

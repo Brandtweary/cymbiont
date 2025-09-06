@@ -123,6 +123,8 @@
 use std::path::Path;
 use std::fs;
 use std::sync::Arc;
+use std::fmt;
+use std::result;
 use chrono::{DateTime, Utc};
 use tracing::info;
 use uuid::Uuid;
@@ -133,6 +135,7 @@ use crate::agent::kg_tools;
 use crate::app_state::AppState;
 use crate::error::*;
 use crate::cqrs::router::RouterToken;
+use crate::cqrs::{Command, AgentCommand};
 
 /// Context for LLM processing without holding agent locks
 pub struct LLMContext {
@@ -156,8 +159,8 @@ enum ValidationIssue {
     InvalidValue(String),
 }
 
-impl std::fmt::Display for ValidationError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.issue {
             ValidationIssue::MissingRequired => {
                 write!(f, "Required field '{}' is missing", self.field)
@@ -183,7 +186,7 @@ impl std::fmt::Display for ValidationError {
 /// - Type checking
 /// - UUID format validation for ID fields
 /// - Value range validation where applicable
-fn validate_tool_arguments(tool_name: &str, args: &Value) -> std::result::Result<(), String> {
+fn validate_tool_arguments(tool_name: &str, args: &Value) -> result::Result<(), String> {
     // Get all tool schemas
     let tools = kg_tools::get_tool_schemas();
     
@@ -238,7 +241,7 @@ fn validate_tool_arguments(tool_name: &str, args: &Value) -> std::result::Result
 }
 
 /// Validate a single field value against its expected type
-fn validate_field_value(field_name: &str, value: &Value, expected_type: &str) -> std::result::Result<(), ValidationError> {
+fn validate_field_value(field_name: &str, value: &Value, expected_type: &str) -> result::Result<(), ValidationError> {
     match expected_type {
         "string" => {
             if let Some(s) = value.as_str() {
@@ -652,7 +655,6 @@ pub async fn process_agent_message(
     echo: Option<String>,
     echo_tool: Option<String>,
 ) -> Result<String> {
-    use crate::cqrs::{Command, AgentCommand};
     
     // Phase 1: Add user message via CQRS
     let user_msg = Message::User { 

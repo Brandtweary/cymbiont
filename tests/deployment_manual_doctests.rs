@@ -51,10 +51,6 @@ mod tests {
         assert!(validate_command(&["--server", "--port", "8080"]));
     }
 
-    // Note: All example commands in the manual now use real cymbiont commands
-    // The manual has been updated to only show --import-logseq and --server
-    // which are actual working commands
-
     #[test]
     fn test_filesystem_commands_are_standard() {
         // These are standard Unix commands mentioned in the manual

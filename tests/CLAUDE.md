@@ -12,6 +12,7 @@
   - **websocket_commands.rs**: WebSocket API tests
   - **agent_commands.rs**: Agent chat command tests
   - **agent_tools.rs**: Agent tool execution tests for knowledge graph tools
+- **deployment_manual_doctests.rs**: Validates commands in CYMBIONT_EMERGENCY_DEPLOYMENT.md
 
 ## Test Utilities
 

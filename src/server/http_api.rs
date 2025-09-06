@@ -84,6 +84,7 @@ use crate::server::auth::auth_middleware;
 // ===== API Types =====
 
 // Basic response for API calls
+#[cfg(test)]
 #[derive(Serialize)]
 pub struct ApiResponse {
     pub success: bool,

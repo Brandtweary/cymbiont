@@ -26,14 +26,14 @@
 //!
 //! The schema format is compatible with:
 //! - Ollama's tool calling interface
-//! - OpenAI's function calling format
+//! - `OpenAI`'s function calling format
 //! - Anthropic's tool use specification
 //!
 //! This ensures agents can work with multiple LLM providers without schema translation.
 //!
 //! ## Schema Generation
 //!
-//! Each tool has a dedicated schema function that returns a ToolDefinition with
+//! Each tool has a dedicated schema function that returns a `ToolDefinition` with
 //! complete parameter specifications. The schemas include type information,
 //! descriptions, and required field indicators that help LLMs understand proper
 //! tool usage and parameter formatting.
@@ -110,7 +110,7 @@ fn tool(
                 .into_iter()
                 .map(|(k, v)| (k.to_string(), v))
                 .collect(),
-            required: required.into_iter().map(|s| s.to_string()).collect(),
+            required: required.into_iter().map(std::string::ToString::to_string).collect(),
         },
     }
 }

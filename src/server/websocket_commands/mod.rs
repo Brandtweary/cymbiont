@@ -1,4 +1,4 @@
-//! @module websocket_commands
+//! `@module websocket_commands`
 //! @description Command handlers for WebSocket protocol
 //!
 //! This module organizes WebSocket command handlers by domain,

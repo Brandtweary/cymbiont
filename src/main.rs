@@ -29,16 +29,16 @@
 //! ## Program Architecture
 //!
 //! The program follows a 5-phase startup sequence:
-//! 1. **Initialization**: Create AppState with CommandProcessor for CQRS
-//! 2. **Common Startup**: CommandProcessor initializes CQRS system and loads agent
-//! 3. **Command Handling**: Process CLI-specific commands via CommandQueue
+//! 1. **Initialization**: Create `AppState` with `CommandProcessor` for CQRS
+//! 2. **Common Startup**: `CommandProcessor` initializes CQRS system and loads agent
+//! 3. **Command Handling**: Process CLI-specific commands via `CommandQueue`
 //! 4. **Runtime Loop**: Enter mode-specific event loop (server or CLI)
 //! 5. **Cleanup**: Graceful shutdown with command completion
 //!
 //! Key functions organize the flow:
-//! - `AppState::new_with_config()`: Initialize CQRS and start CommandProcessor
+//! - `AppState::new_with_config()`: Initialize CQRS and start `CommandProcessor`
 //! - `run_startup_sequence()`: Common startup tasks
-//! - `cli::handle_cli_commands()`: Execute CLI commands through CommandQueue
+//! - `cli::handle_cli_commands()`: Execute CLI commands through `CommandQueue`
 //! - `run_server_loop()` / `run_cli_loop()`: Mode-specific runtime handling
 //!
 //! ## Lifecycle Behavior
@@ -57,9 +57,9 @@
 //! - First Ctrl+C: Initiates graceful shutdown, waits for active commands to complete (up to 30s)
 //! - Second Ctrl+C: Forces immediate termination with command log flush
 //!
-//! After graceful cleanup, the process uses std::process::exit(0) due to sled database background threads.
+//! After graceful cleanup, the process uses `std::process::exit(0)` due to sled database background threads.
 
-use crate::error::*;
+use crate::error::{CymbiontError, Result};
 use clap::Parser;
 use std::process;
 use std::sync::Arc;
@@ -88,7 +88,7 @@ use cli::{handle_cli_commands, Args};
 fn main() -> Result<()> {
     // Create Tokio runtime explicitly for proper shutdown control
     let runtime = Runtime::new()
-        .map_err(|e| CymbiontError::Other(format!("Failed to create runtime: {}", e)))?;
+        .map_err(|e| CymbiontError::Other(format!("Failed to create runtime: {e}")))?;
 
     // Run async main logic
     let result = runtime.block_on(async_main());
@@ -99,6 +99,7 @@ fn main() -> Result<()> {
     result
 }
 
+#[allow(clippy::cognitive_complexity)]
 async fn async_main() -> Result<()> {
     // Parse command line arguments
     let args = Args::parse();
@@ -122,26 +123,24 @@ async fn async_main() -> Result<()> {
     let app_state = AppState::new_with_config(config, args.data_dir.clone(), args.server).await?;
 
     // Phase 2: Common startup sequence (shared between modes)
-    run_startup_sequence(&app_state).await?;
+    run_startup_sequence(&app_state);
 
     // Phase 3: Handle one-off commands (CLI mode only)
-    if !args.server {
-        if handle_cli_commands(&app_state, &args).await? {
-            // Command requested early exit, run cleanup
-            app_state.shutdown().await;
-            utils::remove_pid_file();
-            info!("🧹 CLI shutdown complete");
+    if !args.server && handle_cli_commands(&app_state, &args).await? {
+        // Command requested early exit, run cleanup
+        app_state.shutdown().await;
+        utils::remove_pid_file();
+        info!("🧹 CLI shutdown complete");
 
-            let total_runtime = start_time.elapsed();
-            info!("💫 Total runtime: {:.2}s", total_runtime.as_secs_f64());
+        let total_runtime = start_time.elapsed();
+        info!("💫 Total runtime: {:.2}s", total_runtime.as_secs_f64());
 
-            if let Some(report) = verbosity_layer.check_and_report() {
-                warn!("{}", report);
-            }
-
-            trace!("Forcing process exit (sled workaround)");
-            process::exit(0);
+        if let Some(report) = verbosity_layer.check_and_report() {
+            warn!("{}", report);
         }
+
+        trace!("Forcing clean process exit");
+        process::exit(0);
     }
 
     // Phase 4: Enter runtime loop
@@ -168,7 +167,7 @@ async fn async_main() -> Result<()> {
 }
 
 /// Common startup sequence for both server and CLI modes
-async fn run_startup_sequence(app_state: &Arc<AppState>) -> Result<()> {
+fn run_startup_sequence(app_state: &Arc<AppState>) {
     info!("🧠 Cymbiont initialized");
     info!("📁 Data directory: {}", app_state.data_dir.display());
 
@@ -182,11 +181,10 @@ async fn run_startup_sequence(app_state: &Arc<AppState>) -> Result<()> {
     // - Validate configuration
     // - Run integrity checks
     // - etc.
-
-    Ok(())
 }
 
 /// Run the server event loop
+#[allow(clippy::cognitive_complexity)]
 async fn run_server_loop(app_state: &Arc<AppState>, args: &Args) -> Result<()> {
     // Start server and get handle
     let (server_handle, server_info_file) = server::start_server(app_state.clone()).await?;
@@ -202,7 +200,7 @@ async fn run_server_loop(app_state: &Arc<AppState>, args: &Args) -> Result<()> {
                     error!("Server task error: {}", e);
                 }
             }
-            _ = sleep(Duration::from_secs(duration)) => {
+            () = sleep(Duration::from_secs(duration)) => {
                 info!("⏱️ Duration limit reached");
             }
             _ = signal::ctrl_c() => {
@@ -257,7 +255,7 @@ async fn run_cli_loop(app_state: &Arc<AppState>, args: &Args) -> Result<()> {
         signal::ctrl_c().await?;
         info!("🛑 Received shutdown signal");
 
-        if handle_graceful_shutdown(&app_state).await {
+        if handle_graceful_shutdown(app_state).await {
             // Force quit requested
             utils::remove_pid_file();
             process::exit(1);

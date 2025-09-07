@@ -2,13 +2,13 @@
 //!
 //! This module provides a simple, efficient tool system for agents to interact
 //! with the knowledge graph through the CQRS architecture. Tools are registered
-//! in a static HashMap for fast dispatch without ownership complexity.
+//! in a static `HashMap` for fast dispatch without ownership complexity.
 //!
 //! ## Design Philosophy
 //!
-//! - **Static Registry**: Tools are function pointers in a static HashMap
-//! - **CQRS Integration**: All mutations route through CommandQueue
-//! - **No Direct State Access**: Tools use GraphOps trait which submits commands
+//! - **Static Registry**: Tools are function pointers in a static `HashMap`
+//! - **CQRS Integration**: All mutations route through `CommandQueue`
+//! - **No Direct State Access**: Tools use `GraphOps` trait which submits commands
 //! - **Simple Functions**: Each tool is a focused 10-20 line function
 //! - **Pure Data Schemas**: Tool definitions are just data for the LLM
 //!
@@ -52,19 +52,19 @@
 //! ## CQRS Architecture
 //!
 //! Tools don't directly modify state. Instead:
-//! 1. Tool functions call GraphOps methods on AppState
-//! 2. GraphOps methods submit commands to CommandQueue
-//! 3. CommandProcessor executes commands sequentially
+//! 1. Tool functions call `GraphOps` methods on `AppState`
+//! 2. `GraphOps` methods submit commands to `CommandQueue`
+//! 3. `CommandProcessor` executes commands sequentially
 //! 4. State changes are logged to command WAL for recovery
 //!
 //! This ensures all mutations are audited, recoverable, and deadlock-free.
 
 use crate::agent::schemas::ToolDefinition;
 use crate::app_state::AppState;
-use crate::error::*;
+use crate::error::{AgentError, Result};
 use crate::graph::graph_operations::GraphOps;
 use crate::utils::AsyncRwLockExt;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::future::Future;
@@ -80,7 +80,7 @@ type ToolFn = for<'a> fn(
 ) -> Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>>;
 
 /// Static registry of tools - no ownership needed
-static TOOLS: Lazy<HashMap<&'static str, ToolFn>> = Lazy::new(|| {
+static TOOLS: LazyLock<HashMap<&'static str, ToolFn>> = LazyLock::new(|| {
     let mut tools = HashMap::new();
 
     // Block operations
@@ -115,7 +115,7 @@ pub async fn execute_tool(
 ) -> Result<Value> {
     let tool = TOOLS
         .get(tool_name)
-        .ok_or_else(|| AgentError::tool(format!("Tool not found: {}", tool_name)))?;
+        .ok_or_else(|| AgentError::tool(format!("Tool not found: {tool_name}")))?;
 
     tool(app_state, args).await
 }
@@ -127,9 +127,9 @@ pub fn get_tool_schemas() -> Vec<ToolDefinition> {
 
 /// Helper function to parse graph target (ID or name) from args
 ///
-/// Supports both graph_id (UUID) and graph_name (string) parameters.
+/// Supports both `graph_id` (UUID) and `graph_name` (string) parameters.
 /// Falls back to smart default if no graph is specified.
-/// Uses the GraphRegistry to resolve names to IDs.
+/// Uses the `GraphRegistry` to resolve names to IDs.
 async fn parse_graph_target(
     app_state: &Arc<AppState>,
     args: &Value,
@@ -154,14 +154,13 @@ async fn parse_graph_target(
             return registry
                 .resolve_graph_target(None, None, true)
                 .map_err(|e| {
-                    AgentError::tool(format!("Failed to resolve graph target: {}", e)).into()
+                    AgentError::tool(format!("Failed to resolve graph target: {e}")).into()
                 });
-        } else {
-            // No default graph available
-            return Err(
-                AgentError::tool("No graph specified and no default graph available").into(),
-            );
         }
+        // No default graph available
+        return Err(
+            AgentError::tool("No graph specified and no default graph available").into(),
+        );
     }
 
     // Use the registry to resolve the target
@@ -175,7 +174,7 @@ async fn parse_graph_target(
             graph_name,
             false, // Explicit graph provided, no fallback needed
         )
-        .map_err(|e| AgentError::tool(format!("Failed to resolve graph target: {}", e)).into())
+        .map_err(|e| AgentError::tool(format!("Failed to resolve graph target: {e}")).into())
 }
 
 // Block Operations
@@ -194,12 +193,12 @@ fn add_block<'a>(
         let parent_id = args
             .get("parent_id")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+            .map(std::string::ToString::to_string);
 
         let page_name = args
             .get("page_name")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+            .map(std::string::ToString::to_string);
 
         let properties = args.get("properties").cloned();
 
@@ -385,7 +384,8 @@ fn query_graph_bfs<'a>(
             .and_then(|v| v.as_str())
             .ok_or_else(|| AgentError::tool("Missing required parameter: start_id"))?;
 
-        let max_depth = args.get("max_depth").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
+        #[allow(clippy::cast_possible_truncation)] // max_depth is a small BFS parameter
+        let max_depth = args.get("max_depth").and_then(serde_json::Value::as_u64).unwrap_or(3) as usize;
 
         let graph_id = parse_graph_target(app_state, &args, true).await?;
 
@@ -436,7 +436,7 @@ fn list_open_graphs<'a>(
             Ok(graph_ids) => Ok(json!({
                 "success": true,
                 "message": "✓ Tool 'list_open_graphs' executed successfully",
-                "graph_ids": graph_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>()
+                "graph_ids": graph_ids.iter().map(std::string::ToString::to_string).collect::<Vec<_>>()
             })),
             Err(e) => Ok(json!({
                 "success": false,
@@ -496,12 +496,12 @@ fn create_graph<'a>(
         let name = args
             .get("name")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+            .map(std::string::ToString::to_string);
 
         let description = args
             .get("description")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+            .map(std::string::ToString::to_string);
 
         match app_state.create_graph(name, description).await {
             Ok(graph_info) => Ok(json!({

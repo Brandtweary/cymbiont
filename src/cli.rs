@@ -14,8 +14,8 @@
 //!
 //! ## Concurrency Considerations
 //!
-//! All state mutations are serialized through the CQRS CommandQueue, eliminating
-//! concurrency issues. The CommandProcessor owns all mutable state and processes
+//! All state mutations are serialized through the CQRS `CommandQueue`, eliminating
+//! concurrency issues. The `CommandProcessor` owns all mutable state and processes
 //! commands sequentially, ensuring atomic operations without deadlocks
 //!
 //! ## Single Source of Truth: The `cli_commands!` Macro
@@ -70,7 +70,7 @@
 //! - Field name in JSON (for WebSocket bridge)
 //! - Args struct field name
 //! - Clap value name for help text
-//! - Snake_case command name string
+//! - `Snake_case` command name string
 //!
 //! ## Command Categories
 //!
@@ -93,7 +93,7 @@
 //! for both command-line and programmatic access.
 
 use crate::app_state::AppState;
-use crate::error::*;
+use crate::error::{CymbiontError, Result};
 use crate::graph::graph_operations::GraphOps;
 use crate::import;
 use crate::utils::AsyncRwLockExt;
@@ -198,7 +198,7 @@ macro_rules! cli_commands {
                         args.$flag_args_field = true;
                     }
                 )*
-                _ => return Err(format!("Unknown command: {}", command_name)),
+                _ => return Err(format!("Unknown command: {command_name}")),
             }
 
             // Parse supporting fields from JSON if present
@@ -219,12 +219,14 @@ cli_commands! {
     string_commands: [
         (ImportLogseq, path, import_logseq, "PATH", "import_logseq"),
         (DeleteGraph, identifier, delete_graph, "NAME_OR_ID", "delete_graph"),
+        (CreateGraph, name, create_graph, "NAME", "create_graph"),
     ],
     flag_commands: [
         (ListGraphs, list_graphs, "", "list_graphs"),
         (AgentInfo, agent_info, "", "agent_info"),
     ],
     supporting_fields: [
+        (description, "DESCRIPTION", "create_graph"),
     ],
 }
 
@@ -247,106 +249,166 @@ pub async fn dispatch_cli_command(
     result
 }
 
-/// Handle all CLI-specific commands
+// ===== Individual Command Handlers =====
+
+async fn handle_import_logseq(
+    app_state: &Arc<AppState>, 
+    logseq_path: &str
+) -> Result<bool> {
+    let import_start = Instant::now();
+    let path = Path::new(&logseq_path);
+    let result = import::import_logseq_graph(app_state, path, None).await?;
+
+    // Report any errors that occurred during import
+    if !result.errors.is_empty() {
+        error!("Import completed with {} errors:", result.errors.len());
+        for err in &result.errors {
+            error!("  - {}", err);
+        }
+    }
+
+    info!(
+        "✅ Import complete in {:.3}s",
+        import_start.elapsed().as_secs_f64()
+    );
+    
+    Ok(false) // Continue running after import
+}
+
+async fn handle_delete_graph(
+    app_state: &Arc<AppState>,
+    graph_identifier: &str
+) -> Result<bool> {
+    // Resolve the graph using centralized logic
+    let graph_uuid = {
+        let registry = app_state
+            .graph_registry
+            .read_or_panic("delete graph - read registry")
+            .await;
+
+        // Try to parse as UUID first
+        let uuid_opt = Uuid::parse_str(graph_identifier).ok();
+
+        // Use resolve_graph_target to handle both UUID and name
+        registry.resolve_graph_target(
+            uuid_opt.as_ref(),
+            if uuid_opt.is_none() {
+                Some(graph_identifier)
+            } else {
+                None
+            },
+            false, // No smart default for delete
+        )?
+    };
+
+    info!("🗑️  Deleting graph: {}", graph_identifier);
+
+    // Delete the graph using GraphOperations extension
+    app_state.delete_graph(&graph_uuid).await?;
+
+    info!("✅ Graph deleted successfully");
+    
+    Ok(false) // Continue running after delete
+}
+
+#[allow(clippy::cognitive_complexity)]
+async fn handle_agent_info(app_state: &Arc<AppState>) -> Result<bool> {
+    // Get the agent state
+    let agent_info = {
+        let agent_opt = app_state.agent.read_or_panic("read agent state").await;
+        agent_opt.as_ref().map(|agent| {
+            (
+                agent.id,
+                agent.name.clone(),
+                agent.created,
+                agent.last_active,
+                agent.conversation_history.len(),
+            )
+        })
+    };
+
+    if let Some((id, name, created, last_active, message_count)) = agent_info {
+        info!("🤖 Agent Information");
+        info!("  ID: {}", id);
+        info!("  Name: {}", name);
+        info!("  Created: {}", created);
+        info!("  Last Active: {}", last_active);
+        info!("  Conversation Messages: {}", message_count);
+    } else {
+        info!("No agent initialized");
+    }
+
+    Ok(false) // Continue running after showing info
+}
+
+#[allow(clippy::cognitive_complexity)]
+async fn handle_list_graphs(app_state: &Arc<AppState>) -> Result<bool> {
+    let graphs = app_state.list_graphs().await?;
+
+    if graphs.is_empty() {
+        info!("📊 No graphs found");
+    } else {
+        info!("📊 Found {} graph(s):", graphs.len());
+        for graph in &graphs {
+            info!("  ID: {}", graph["id"]);
+            info!("  Name: {}", graph["name"]);
+            if let Some(desc) = graph["description"].as_str() {
+                info!("  Description: {}", desc);
+            }
+            info!("  Created: {}", graph["created"]);
+            info!("  Last Accessed: {}", graph["last_accessed"]);
+            info!("");
+        }
+    }
+    
+    Ok(false) // Continue running after listing
+}
+
+async fn handle_create_graph(
+    app_state: &Arc<AppState>,
+    name: &str,
+    description: Option<&str>
+) -> Result<bool> {
+    info!("📊 Creating new graph: {}", name);
+    
+    // Use the GraphOps trait method to create the graph
+    let graph_info = app_state.create_graph(
+        Some(name.to_string()), 
+        description.map(str::to_string)
+    ).await?;
+    
+    info!("✅ Graph created successfully");
+    info!("  ID: {}", graph_info["id"]);
+    info!("  Name: {}", graph_info["name"]);
+    if let Some(desc) = graph_info["description"].as_str() {
+        info!("  Description: {}", desc);
+    }
+    
+    Ok(false) // Continue running after creation
+}
+
+/// Handle all CLI-specific commands - routes to individual handlers
 /// Returns true if should exit after command completion
 pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Result<bool> {
-    // Handle Logseq import if requested (continues running after)
+    // Route to appropriate handler based on command
     if let Some(logseq_path) = &args.import_logseq {
-        let import_start = Instant::now();
-        let path = Path::new(&logseq_path);
-        let result = import::import_logseq_graph(&app_state, path, None).await?;
-
-        // Report any errors that occurred during import
-        if !result.errors.is_empty() {
-            error!("Import completed with {} errors:", result.errors.len());
-            for err in &result.errors {
-                error!("  - {}", err);
-            }
-        }
-
-        info!(
-            "✅ Import complete in {:.3}s",
-            import_start.elapsed().as_secs_f64()
-        );
-        // Don't return true - continue running
+        return handle_import_logseq(app_state, logseq_path).await;
     }
 
-    // TODO: Add CLI command for creating a graph (should call GraphOps::create_graph)
+    if let Some(graph_name) = &args.create_graph {
+        return handle_create_graph(app_state, graph_name, args.description.as_deref()).await;
+    }
 
-    // Handle graph deletion if requested (continues running after)
     if let Some(graph_identifier) = &args.delete_graph {
-        // Resolve the graph using centralized logic
-        let graph_uuid = {
-            let registry = app_state
-                .graph_registry
-                .read_or_panic("delete graph - read registry")
-                .await;
-
-            // Try to parse as UUID first
-            let uuid_opt = Uuid::parse_str(&graph_identifier).ok();
-
-            // Use resolve_graph_target to handle both UUID and name
-            registry.resolve_graph_target(
-                uuid_opt.as_ref(),
-                if uuid_opt.is_none() {
-                    Some(&graph_identifier)
-                } else {
-                    None
-                },
-                false, // No smart default for delete
-            )?
-        };
-
-        info!("🗑️  Deleting graph: {}", graph_identifier);
-
-        // Delete the graph using GraphOperations extension
-        app_state.delete_graph(&graph_uuid).await?;
-
-        info!("✅ Graph deleted successfully");
-        // Don't return true - continue running
+        return handle_delete_graph(app_state, graph_identifier).await;
     }
 
-    // Show agent info
     if args.agent_info {
-        // Get the agent state
-        let agent_opt = app_state.agent.read_or_panic("read agent state").await;
-
-        if let Some(ref agent) = *agent_opt {
-            info!("🤖 Agent Information");
-            info!("  ID: {}", agent.id);
-            info!("  Name: {}", agent.name);
-            info!("  Created: {}", agent.created);
-            info!("  Last Active: {}", agent.last_active);
-            info!(
-                "  Conversation Messages: {}",
-                agent.conversation_history.len()
-            );
-        } else {
-            info!("No agent initialized");
-        }
-
-        return Ok(false);
+        return handle_agent_info(app_state).await;
     }
 
-    // List graphs
     if args.list_graphs {
-        let graphs = app_state.list_graphs().await?;
-
-        if graphs.is_empty() {
-            info!("📊 No graphs found");
-        } else {
-            info!("📊 Found {} graph(s):", graphs.len());
-            for graph in &graphs {
-                info!("  ID: {}", graph["id"]);
-                info!("  Name: {}", graph["name"]);
-                if let Some(desc) = graph["description"].as_str() {
-                    info!("  Description: {}", desc);
-                }
-                info!("  Created: {}", graph["created"]);
-                info!("  Last Accessed: {}", graph["last_accessed"]);
-                info!("");
-            }
-        }
+        return handle_list_graphs(app_state).await;
     }
 
     // If no commands, show status
@@ -374,7 +436,9 @@ pub async fn show_cli_status(app_state: &Arc<AppState>) -> Result<()> {
     // Get open graphs
     let open_graphs = app_state.list_open_graphs().await?;
 
-    if !open_graphs.is_empty() {
+    if open_graphs.is_empty() {
+        info!("📂 No open graphs");
+    } else {
         {
             let registry_guard = app_state
                 .graph_registry
@@ -387,8 +451,6 @@ pub async fn show_cli_status(app_state: &Arc<AppState>) -> Result<()> {
                 }
             }
         } // registry_guard drops here
-    } else {
-        info!("📂 No open graphs");
     }
 
     Ok(())

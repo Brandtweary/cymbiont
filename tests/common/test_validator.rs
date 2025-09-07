@@ -43,8 +43,8 @@ pub enum MessagePattern {
 impl MessagePattern {
     pub fn matches(&self, actual: &str) -> bool {
         match self {
-            MessagePattern::Exact(expected) => actual == expected,
-            MessagePattern::Contains(substring) => actual.contains(substring),
+            Self::Exact(expected) => actual == expected,
+            Self::Contains(substring) => actual.contains(substring),
         }
     }
 }
@@ -59,17 +59,17 @@ impl JsonReader {
     fn read_agent_data(data_dir: &Path) -> Result<Value, String> {
         let agent_path = data_dir.join("agent.json");
         let content = fs::read_to_string(&agent_path)
-            .map_err(|e| format!("Failed to read agent.json: {}", e))?;
-        serde_json::from_str(&content).map_err(|e| format!("Failed to parse agent.json: {}", e))
+            .map_err(|e| format!("Failed to read agent.json: {e}"))?;
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse agent.json: {e}"))
     }
 
     /// Read the graph registry file
     fn read_graph_registry(data_dir: &Path) -> Result<Value, String> {
         let registry_path = data_dir.join("graph_registry.json");
         let content = fs::read_to_string(&registry_path)
-            .map_err(|e| format!("Failed to read graph_registry.json: {}", e))?;
+            .map_err(|e| format!("Failed to read graph_registry.json: {e}"))?;
         serde_json::from_str(&content)
-            .map_err(|e| format!("Failed to parse graph_registry.json: {}", e))
+            .map_err(|e| format!("Failed to parse graph_registry.json: {e}"))
     }
 
     /// Read a specific graph's data
@@ -79,9 +79,9 @@ impl JsonReader {
             .join(graph_id)
             .join("knowledge_graph.json");
         let content = fs::read_to_string(&graph_path)
-            .map_err(|e| format!("Failed to read graph {}: {}", graph_id, e))?;
+            .map_err(|e| format!("Failed to read graph {graph_id}: {e}"))?;
         serde_json::from_str(&content)
-            .map_err(|e| format!("Failed to parse graph {}: {}", graph_id, e))
+            .map_err(|e| format!("Failed to parse graph {graph_id}: {e}"))
     }
 }
 
@@ -98,7 +98,7 @@ pub struct ExpectedGraphOp {
     pub properties: Option<Value>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GraphOpType {
     CreatePage,
     CreateBlock,
@@ -130,7 +130,7 @@ pub struct MessageOrderValidator {
 }
 
 impl MessageOrderValidator {
-    pub fn new(messages: Vec<Value>) -> Self {
+    pub const fn new(messages: Vec<Value>) -> Self {
         Self { messages }
     }
 
@@ -145,30 +145,27 @@ impl MessageOrderValidator {
         for (index, message) in self.messages.iter().enumerate() {
             let timestamp_str = message["timestamp"]
                 .as_str()
-                .ok_or_else(|| format!("Message at index {} missing timestamp", index))?;
+                .ok_or_else(|| format!("Message at index {index} missing timestamp"))?;
 
             let timestamp = DateTime::parse_from_rfc3339(timestamp_str)
-                .map_err(|e| format!("Invalid timestamp at index {}: {}", index, e))?
+                .map_err(|e| format!("Invalid timestamp at index {index}: {e}"))?
                 .with_timezone(&Utc);
 
             if timestamp > Utc::now() {
                 return Err(format!(
-                    "Message at index {} has future timestamp: {}",
-                    index, timestamp
+                    "Message at index {index} has future timestamp: {timestamp}"
                 ));
             }
 
             if let Some(last) = last_timestamp {
                 if timestamp < last {
                     return Err(format!(
-                        "Message timestamps out of order at index {}: {} < {}",
-                        index, timestamp, last
+                        "Message timestamps out of order at index {index}: {timestamp} < {last}"
                     ));
                 }
                 if timestamp == last {
                     return Err(format!(
-                        "Duplicate timestamp at index {}: {}",
-                        index, timestamp
+                        "Duplicate timestamp at index {index}: {timestamp}"
                     ));
                 }
             }
@@ -184,35 +181,32 @@ impl MessageOrderValidator {
         for (index, message) in self.messages.iter().enumerate() {
             let role = message["role"]
                 .as_str()
-                .ok_or_else(|| format!("Message at index {} missing role", index))?;
+                .ok_or_else(|| format!("Message at index {index} missing role"))?;
 
             match role {
                 "user" | "assistant" => {
                     if message["content"].is_null() {
                         return Err(format!(
-                            "{} message at index {} missing content",
-                            role, index
+                            "{role} message at index {index} missing content"
                         ));
                     }
                 }
                 "tool" => {
                     if message["name"].is_null() || message["result"].is_null() {
                         return Err(format!(
-                            "Tool message at index {} missing required fields",
-                            index
+                            "Tool message at index {index} missing required fields"
                         ));
                     }
                 }
                 _ => {
                     return Err(format!(
-                        "Unknown message role '{}' at index {}",
-                        role, index
+                        "Unknown message role '{role}' at index {index}"
                     ));
                 }
             }
 
             if message["timestamp"].is_null() {
-                return Err(format!("Message at index {} missing timestamp", index));
+                return Err(format!("Message at index {index} missing timestamp"));
             }
         }
 
@@ -221,8 +215,7 @@ impl MessageOrderValidator {
             for j in (i + 1)..self.messages.len() {
                 if self.messages[i] == self.messages[j] {
                     return Err(format!(
-                        "Duplicate messages found at indices {} and {}",
-                        i, j
+                        "Duplicate messages found at indices {i} and {j}"
                     ));
                 }
             }
@@ -284,13 +277,13 @@ impl TestValidator {
             };
 
             if let Some(id) = entity_id {
-                entity_ops.entry(id).or_insert_with(Vec::new).push(index);
+                entity_ops.entry(id).or_default().push(index);
             }
         }
 
         // For each entity with multiple operations, keep only the last one
         let mut indices_to_remove: HashSet<usize> = HashSet::new();
-        for (_, op_indices) in entity_ops.iter() {
+        for op_indices in entity_ops.values() {
             if op_indices.len() > 1 {
                 // Mark all but the last operation for removal
                 for &index in &op_indices[..op_indices.len() - 1] {
@@ -317,7 +310,7 @@ impl TestValidator {
         graph_id: Option<&str>,
     ) -> &mut Self {
         self.expected_graph_ops.push(ExpectedGraphOp {
-            graph_id: graph_id.map(|s| s.to_string()),
+            graph_id: graph_id.map(std::string::ToString::to_string),
             op_type: GraphOpType::CreatePage,
             content: Some(name.to_string()),
             page_name: None,
@@ -337,10 +330,10 @@ impl TestValidator {
         graph_id: Option<&str>,
     ) -> &mut Self {
         self.expected_graph_ops.push(ExpectedGraphOp {
-            graph_id: graph_id.map(|s| s.to_string()),
+            graph_id: graph_id.map(std::string::ToString::to_string),
             op_type: GraphOpType::CreateBlock,
             content: Some(content.to_string()),
-            page_name: page_name.map(|s| s.to_string()),
+            page_name: page_name.map(std::string::ToString::to_string),
             block_id: Some(block_id.to_string()),
             properties: None,
         });
@@ -356,7 +349,7 @@ impl TestValidator {
         graph_id: Option<&str>,
     ) -> &mut Self {
         self.expected_graph_ops.push(ExpectedGraphOp {
-            graph_id: graph_id.map(|s| s.to_string()),
+            graph_id: graph_id.map(std::string::ToString::to_string),
             op_type: GraphOpType::UpdateBlock,
             content: Some(new_content.to_string()),
             page_name: None,
@@ -369,7 +362,7 @@ impl TestValidator {
     /// Record that a block will be deleted in a specific graph
     pub fn expect_delete_block(&mut self, block_id: &str, graph_id: Option<&str>) -> &mut Self {
         self.expected_graph_ops.push(ExpectedGraphOp {
-            graph_id: graph_id.map(|s| s.to_string()),
+            graph_id: graph_id.map(std::string::ToString::to_string),
             op_type: GraphOpType::DeleteBlock,
             block_id: Some(block_id.to_string()),
             content: None,
@@ -383,7 +376,7 @@ impl TestValidator {
     /// Record that a page will be deleted in a specific graph
     pub fn expect_delete_page(&mut self, page_name: &str, graph_id: Option<&str>) -> &mut Self {
         self.expected_graph_ops.push(ExpectedGraphOp {
-            graph_id: graph_id.map(|s| s.to_string()),
+            graph_id: graph_id.map(std::string::ToString::to_string),
             op_type: GraphOpType::DeletePage,
             block_id: None,
             content: Some(page_name.to_string()),
@@ -443,7 +436,7 @@ impl TestValidator {
     }
 
     /// Set expected message count bounds
-    pub fn expect_message_count(&mut self, min: usize, max: Option<usize>) -> &mut Self {
+    pub const fn expect_message_count(&mut self, min: usize, max: Option<usize>) -> &mut Self {
         self.expected_message_count = Some((min, max));
         self
     }
@@ -527,15 +520,13 @@ impl TestValidator {
             let count = history.len();
             if count < min {
                 return Err(format!(
-                    "Agent has {} messages, expected at least {}",
-                    count, min
+                    "Agent has {count} messages, expected at least {min}"
                 ));
             }
             if let Some(max) = max {
                 if count > max {
                     return Err(format!(
-                        "Agent has {} messages, expected at most {}",
-                        count, max
+                        "Agent has {count} messages, expected at most {max}"
                     ));
                 }
             }
@@ -556,12 +547,12 @@ impl TestValidator {
             {
                 let role = actual["role"]
                     .as_str()
-                    .ok_or_else(|| format!("Message {} missing role", index))?;
+                    .ok_or_else(|| format!("Message {index} missing role"))?;
 
                 if role != expected.role {
                     return Err(format!(
-                        "Message {} has role '{}', expected '{}'",
-                        index, role, expected.role
+                        "Message {index} has role '{role}', expected '{}'",
+                        expected.role
                     ));
                 }
 
@@ -570,32 +561,30 @@ impl TestValidator {
                     "user" | "assistant" => {
                         let content = actual["content"]
                             .as_str()
-                            .ok_or_else(|| format!("Message {} missing content", index))?;
+                            .ok_or_else(|| format!("Message {index} missing content"))?;
                         if !expected.content_pattern.matches(content) {
-                            return Err(format!("Message {} content doesn't match pattern", index));
+                            return Err(format!("Message {index} content doesn't match pattern"));
                         }
                     }
                     "tool" => {
                         if let Some(ref expected_tool) = expected.tool_name {
                             let tool_name = actual["name"]
                                 .as_str()
-                                .ok_or_else(|| format!("Tool message {} missing name", index))?;
+                                .ok_or_else(|| format!("Tool message {index} missing name"))?;
                             if tool_name != expected_tool {
                                 return Err(format!(
-                                    "Message {} has tool '{}', expected '{}'",
-                                    index, tool_name, expected_tool
+                                    "Message {index} has tool '{tool_name}', expected '{expected_tool}'"
                                 ));
                             }
                         }
 
                         let result_message =
                             actual["result"]["message"].as_str().ok_or_else(|| {
-                                format!("Tool message {} missing result.message", index)
+                                format!("Tool message {index} missing result.message")
                             })?;
                         if !expected.content_pattern.matches(result_message) {
                             return Err(format!(
-                                "Tool message {} result doesn't match pattern",
-                                index
+                                "Tool message {index} result doesn't match pattern"
                             ));
                         }
                     }
@@ -612,7 +601,7 @@ impl TestValidator {
         Ok(())
     }
 
-    /// Validate graph_registry.json
+    /// Validate `graph_registry.json`
     fn validate_registry(&self) -> Result<(), String> {
         let registry = JsonReader::read_graph_registry(&self.data_dir)?;
 
@@ -629,15 +618,15 @@ impl TestValidator {
             let id_str = id.to_string();
             let graph_info = graphs
                 .get(&id_str)
-                .ok_or_else(|| format!("Expected graph {} not in registry", id_str))?;
+                .ok_or_else(|| format!("Expected graph {id_str} not in registry"))?;
 
             let name = graph_info["name"]
                 .as_str()
-                .ok_or_else(|| format!("Graph {} missing name", id_str))?;
+                .ok_or_else(|| format!("Graph {id_str} missing name"))?;
             if name != expected.name {
                 return Err(format!(
-                    "Graph {} has name '{}', expected '{}'",
-                    id_str, name, expected.name
+                    "Graph {id_str} has name '{name}', expected '{}'",
+                    expected.name
                 ));
             }
         }
@@ -646,20 +635,20 @@ impl TestValidator {
         for id in &self.deleted_graphs {
             let id_str = id.to_string();
             if graphs.contains_key(&id_str) {
-                return Err(format!("Deleted graph {} still in registry", id_str));
+                return Err(format!("Deleted graph {id_str} still in registry"));
             }
         }
 
         // Validate open graphs
         let open_set: HashSet<String> = open_graphs
             .iter()
-            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
             .collect();
 
         for id in &self.expected_open_graphs {
             let id_str = id.to_string();
             if !open_set.contains(&id_str) {
-                return Err(format!("Expected graph {} to be open", id_str));
+                return Err(format!("Expected graph {id_str} to be open"));
             }
         }
 
@@ -669,7 +658,7 @@ impl TestValidator {
     /// Validate individual graph JSON files and graph operations
     fn validate_graphs(&self) -> Result<(), String> {
         // Validate expected graphs exist with proper schema
-        for (id, _) in &self.expected_graphs {
+        for id in self.expected_graphs.keys() {
             let id_str = id.to_string();
 
             // Try to read the graph file
@@ -677,15 +666,15 @@ impl TestValidator {
 
             // Basic schema validation
             if graph_data["version"].as_u64() != Some(1) {
-                return Err(format!("Graph {} missing or invalid version", id_str));
+                return Err(format!("Graph {id_str} missing or invalid version"));
             }
 
             if graph_data["graph"].is_null() {
-                return Err(format!("Graph {} missing graph data", id_str));
+                return Err(format!("Graph {id_str} missing graph data"));
             }
 
             if graph_data["node_index"].is_null() {
-                return Err(format!("Graph {} missing node_index mapping", id_str));
+                return Err(format!("Graph {id_str} missing node_index mapping"));
             }
         }
 
@@ -706,12 +695,12 @@ impl TestValidator {
         for op in &self.expected_graph_ops {
             ops_by_graph
                 .entry(op.graph_id.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(op);
         }
 
         // Handle operations with explicit graph IDs
-        for (graph_id, ops) in ops_by_graph.iter() {
+        for (graph_id, ops) in &ops_by_graph {
             if let Some(gid) = graph_id {
                 self.validate_ops_for_graph(gid, ops)?;
             }
@@ -739,6 +728,163 @@ impl TestValidator {
         Ok(())
     }
 
+    /// Helper to validate a `CreatePage` operation
+    fn validate_create_page(
+        &self,
+        expected: &ExpectedGraphOp,
+        nodes: &[Value],
+        node_index: &serde_json::Map<String, Value>,
+        graph_id: &str,
+    ) -> Result<(), String> {
+        let page_name = expected
+            .content
+            .as_ref()
+            .ok_or("CreatePage expectation missing page name")?;
+
+        let page_name_lower = page_name.to_lowercase();
+        let found_node = node_index
+            .iter()
+            .find(|(key, _)| key.to_lowercase() == page_name_lower)
+            .map(|(_, idx)| idx);
+
+        if let Some(node_idx) = found_node {
+            #[allow(clippy::cast_possible_truncation)]
+            let node_idx = node_idx.as_u64().ok_or("Invalid node index")? as usize;
+            let node = nodes
+                .get(node_idx)
+                .ok_or_else(|| format!("Node index {node_idx} out of bounds"))?;
+
+            if node["node_type"].as_str() != Some("Page") {
+                return Err(format!(
+                    "Expected page '{}' in graph {} but found {}",
+                    page_name, graph_id, node["node_type"]
+                ));
+            }
+
+            if let Some(expected_props) = &expected.properties {
+                let actual_props = &node["properties"];
+                if actual_props != expected_props {
+                    return Err(format!(
+                        "Page '{page_name}' in graph {graph_id} properties mismatch"
+                    ));
+                }
+            }
+        } else if !self.deleted_nodes.contains(page_name) {
+            return Err(format!(
+                "Expected page '{page_name}' not found in graph {graph_id}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Helper to validate a `CreateBlock` operation
+    fn validate_create_block(
+        &self,
+        expected: &ExpectedGraphOp,
+        nodes: &[Value],
+        edges: &[Value],
+        node_index: &serde_json::Map<String, Value>,
+        graph_id: &str,
+    ) -> Result<(), String> {
+        let block_id = expected
+            .block_id
+            .as_ref()
+            .ok_or("CreateBlock expectation missing block_id")?;
+        let content = expected
+            .content
+            .as_ref()
+            .ok_or("CreateBlock expectation missing content")?;
+
+        if let Some(node_idx) = node_index.get(block_id) {
+            #[allow(clippy::cast_possible_truncation)]
+            let node_idx = node_idx.as_u64().ok_or("Invalid node index")? as usize;
+            let node = nodes
+                .get(node_idx)
+                .ok_or_else(|| format!("Node index {node_idx} out of bounds"))?;
+
+            if node["node_type"].as_str() != Some("Block") {
+                return Err(format!(
+                    "Expected block '{block_id}' in graph {graph_id} but found {}",
+                    node["node_type"]
+                ));
+            }
+
+            if node["content"].as_str() != Some(content) {
+                return Err(format!("Block '{block_id}' in graph {graph_id} content mismatch: expected '{content}', got '{:?}'",
+                    node["content"]));
+            }
+
+            if let Some(page_name) = &expected.page_name {
+                let page_connected = edges.iter().any(|edge| {
+                    if let (Some(source_idx), Some(target_idx)) =
+                        (edge[0].as_u64(), edge[1].as_u64())
+                    {
+                        #[allow(clippy::cast_possible_truncation)]
+                        let source_node = &nodes[source_idx as usize];
+                        #[allow(clippy::cast_possible_truncation)]
+                        let target_node = &nodes[target_idx as usize];
+
+                        source_node["id"].as_str() == Some(page_name)
+                            && target_node["id"].as_str() == Some(block_id)
+                            && edge[2]["edge_type"].as_str() == Some("PageToBlock")
+                    } else {
+                        false
+                    }
+                });
+
+                if !page_connected {
+                    return Err(format!(
+                        "Block '{block_id}' in graph {graph_id} not connected to page '{page_name}'"
+                    ));
+                }
+            }
+        } else if !self.deleted_nodes.contains(block_id) {
+            return Err(format!(
+                "Expected block '{block_id}' not found in graph {graph_id}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Helper to validate an `UpdateBlock` operation
+    #[allow(clippy::unused_self)]
+    fn validate_update_block(
+        &self,
+        expected: &ExpectedGraphOp,
+        nodes: &[Value],
+        node_index: &serde_json::Map<String, Value>,
+        graph_id: &str,
+    ) -> Result<(), String> {
+        let block_id = expected
+            .block_id
+            .as_ref()
+            .ok_or("UpdateBlock expectation missing block_id")?;
+        let content = expected
+            .content
+            .as_ref()
+            .ok_or("UpdateBlock expectation missing content")?;
+
+        if let Some(node_idx) = node_index.get(block_id) {
+            #[allow(clippy::cast_possible_truncation)]
+            let node_idx = node_idx.as_u64().ok_or("Invalid node index")? as usize;
+            let node = nodes
+                .get(node_idx)
+                .ok_or_else(|| format!("Node index {node_idx} out of bounds"))?;
+
+            if node["content"].as_str() != Some(content) {
+                return Err(format!(
+                    "Block '{}' in graph {} not updated: expected '{}', got '{:?}'",
+                    block_id, graph_id, content, node["content"]
+                ));
+            }
+        } else {
+            return Err(format!(
+                "Updated block '{block_id}' not found in graph {graph_id}"
+            ));
+        }
+        Ok(())
+    }
+
     /// Validate a set of operations against a specific graph
     fn validate_ops_for_graph(
         &self,
@@ -749,155 +895,26 @@ impl TestValidator {
 
         let nodes = graph_data["graph"]["nodes"]
             .as_array()
-            .ok_or_else(|| format!("Graph {} has no nodes", graph_id))?;
+            .ok_or_else(|| format!("Graph {graph_id} has no nodes"))?;
 
         let edges = graph_data["graph"]["edges"]
             .as_array()
-            .ok_or_else(|| format!("Graph {} has no edges", graph_id))?;
+            .ok_or_else(|| format!("Graph {graph_id} has no edges"))?;
 
         let node_index = graph_data["node_index"]
             .as_object()
-            .ok_or_else(|| format!("Graph {} has no node_index mapping", graph_id))?;
+            .ok_or_else(|| format!("Graph {graph_id} has no node_index mapping"))?;
 
         for expected in ops {
             match expected.op_type {
                 GraphOpType::CreatePage => {
-                    let page_name = expected
-                        .content
-                        .as_ref()
-                        .ok_or("CreatePage expectation missing page name")?;
-
-                    // Check if page exists in node_index (case-insensitive for pages)
-                    // PKMs typically treat page names case-insensitively
-                    let page_name_lower = page_name.to_lowercase();
-                    let found_node = node_index
-                        .iter()
-                        .find(|(key, _)| key.to_lowercase() == page_name_lower)
-                        .map(|(_, idx)| idx);
-
-                    if let Some(node_idx) = found_node {
-                        let node_idx = node_idx.as_u64().ok_or("Invalid node index")? as usize;
-                        let node = nodes
-                            .get(node_idx)
-                            .ok_or_else(|| format!("Node index {} out of bounds", node_idx))?;
-
-                        // Verify it's a Page node
-                        if node["node_type"].as_str() != Some("Page") {
-                            return Err(format!(
-                                "Expected page '{}' in graph {} but found {}",
-                                page_name, graph_id, node["node_type"]
-                            ));
-                        }
-
-                        // Verify properties if specified
-                        if let Some(expected_props) = &expected.properties {
-                            let actual_props = &node["properties"];
-                            if actual_props != expected_props {
-                                return Err(format!(
-                                    "Page '{}' in graph {} properties mismatch",
-                                    page_name, graph_id
-                                ));
-                            }
-                        }
-                    } else if !self.deleted_nodes.contains(page_name) {
-                        return Err(format!(
-                            "Expected page '{}' not found in graph {}",
-                            page_name, graph_id
-                        ));
-                    }
+                    self.validate_create_page(expected, nodes, node_index, graph_id)?;
                 }
                 GraphOpType::CreateBlock => {
-                    let block_id = expected
-                        .block_id
-                        .as_ref()
-                        .ok_or("CreateBlock expectation missing block_id")?;
-                    let content = expected
-                        .content
-                        .as_ref()
-                        .ok_or("CreateBlock expectation missing content")?;
-
-                    // Find block by ID
-                    if let Some(node_idx) = node_index.get(block_id) {
-                        let node_idx = node_idx.as_u64().ok_or("Invalid node index")? as usize;
-                        let node = nodes
-                            .get(node_idx)
-                            .ok_or_else(|| format!("Node index {} out of bounds", node_idx))?;
-
-                        // Verify it's a Block node
-                        if node["node_type"].as_str() != Some("Block") {
-                            return Err(format!(
-                                "Expected block '{}' in graph {} but found {}",
-                                block_id, graph_id, node["node_type"]
-                            ));
-                        }
-
-                        // Verify content
-                        if node["content"].as_str() != Some(content) {
-                            return Err(format!("Block '{}' in graph {} content mismatch: expected '{}', got '{:?}'",
-                                block_id, graph_id, content, node["content"]));
-                        }
-
-                        // Verify page connection if specified
-                        if let Some(page_name) = &expected.page_name {
-                            let page_connected = edges.iter().any(|edge| {
-                                if let (Some(source_idx), Some(target_idx)) =
-                                    (edge[0].as_u64(), edge[1].as_u64())
-                                {
-                                    let source_node = &nodes[source_idx as usize];
-                                    let target_node = &nodes[target_idx as usize];
-
-                                    source_node["id"].as_str() == Some(page_name)
-                                        && target_node["id"].as_str() == Some(block_id)
-                                        && edge[2]["edge_type"].as_str() == Some("PageToBlock")
-                                } else {
-                                    false
-                                }
-                            });
-
-                            if !page_connected {
-                                return Err(format!(
-                                    "Block '{}' in graph {} not connected to page '{}'",
-                                    block_id, graph_id, page_name
-                                ));
-                            }
-                        }
-                    } else if !self.deleted_nodes.contains(block_id) {
-                        return Err(format!(
-                            "Expected block '{}' not found in graph {}",
-                            block_id, graph_id
-                        ));
-                    }
+                    self.validate_create_block(expected, nodes, edges, node_index, graph_id)?;
                 }
                 GraphOpType::UpdateBlock => {
-                    let block_id = expected
-                        .block_id
-                        .as_ref()
-                        .ok_or("UpdateBlock expectation missing block_id")?;
-                    let content = expected
-                        .content
-                        .as_ref()
-                        .ok_or("UpdateBlock expectation missing content")?;
-
-                    // Find block by ID and verify content
-                    if let Some(node_idx) = node_index.get(block_id) {
-                        let node_idx = node_idx.as_u64().ok_or("Invalid node index")? as usize;
-                        let node = nodes
-                            .get(node_idx)
-                            .ok_or_else(|| format!("Node index {} out of bounds", node_idx))?;
-
-                        // Verify content was updated
-                        if node["content"].as_str() != Some(content) {
-                            return Err(format!(
-                                "Block '{}' in graph {} not updated: expected '{}', got '{:?}'",
-                                block_id, graph_id, content, node["content"]
-                            ));
-                        }
-                    } else {
-                        return Err(format!(
-                            "Updated block '{}' not found in graph {}",
-                            block_id, graph_id
-                        ));
-                    }
+                    self.validate_update_block(expected, nodes, node_index, graph_id)?;
                 }
                 GraphOpType::DeleteBlock => {
                     let block_id = expected
@@ -905,11 +922,9 @@ impl TestValidator {
                         .as_ref()
                         .ok_or("DeleteBlock expectation missing block_id")?;
 
-                    // Verify block doesn't exist
                     if node_index.contains_key(block_id) {
                         return Err(format!(
-                            "Block '{}' should be deleted but still exists in graph {}",
-                            block_id, graph_id
+                            "Block '{block_id}' should be deleted but still exists in graph {graph_id}"
                         ));
                     }
                 }
@@ -919,11 +934,9 @@ impl TestValidator {
                         .as_ref()
                         .ok_or("DeletePage expectation missing page name")?;
 
-                    // Verify page doesn't exist
                     if node_index.contains_key(page_name) {
                         return Err(format!(
-                            "Page '{}' should be deleted but still exists in graph {}",
-                            page_name, graph_id
+                            "Page '{page_name}' should be deleted but still exists in graph {graph_id}"
                         ));
                     }
                 }

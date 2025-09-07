@@ -355,11 +355,13 @@ auth:
 |----------|---------|-------------|
 | **Server** | `--server` | Run as HTTP/WebSocket server |
 | **Graph** | `--import-logseq <PATH>` | Import Logseq directory |
+| | `--create-graph <NAME>` | Create new graph |
 | | `--delete-graph <NAME/ID>` | Archive graph |
 | | `--list-graphs` | List all graphs |
 | **Runtime** | `--data-dir <PATH>` | Override data directory |
 | | `--config <PATH>` | Use specific config |
 | | `--duration <SECONDS>` | Run duration limit |
+| **Supporting** | `--description <DESC>` | Graph description (with --create-graph) |
 
 ## Graceful Shutdown
 - **First Ctrl+C**: Graceful shutdown, saves all state to JSON

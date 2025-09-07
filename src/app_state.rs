@@ -1,39 +1,39 @@
 //! Application State Management - CQRS Resource Container
 //!
-//! AppState is the central resource container for Cymbiont's CQRS-based knowledge
+//! `AppState` is the central resource container for Cymbiont's CQRS-based knowledge
 //! graph engine. It provides read-only access to graphs and agent state while routing all mutations
-//! through the CommandQueue for deadlock-free operation.
+//! through the `CommandQueue` for deadlock-free operation.
 //!
 //! ## CQRS Architecture
 //!
 //! ### Command-Query Responsibility Segregation
 //! - **Mutations**: All state changes go through `command_queue.execute()`
 //! - **Queries**: Direct read access to `graph_managers` and `agent`
-//! - **Ownership**: CommandProcessor owns mutable state, AppState holds Arc references
+//! - **Ownership**: `CommandProcessor` owns mutable state, `AppState` holds Arc references
 //! - **Concurrency**: Single-threaded command processing eliminates deadlocks
 //!
 //! ### Resource Container Pattern
-//! AppState is a **pure resource container** - all fields are public for direct access.
+//! `AppState` is a **pure resource container** - all fields are public for direct access.
 //! Business logic belongs in domain modules:
-//! - Graph operations → GraphOps trait (via CommandQueue)
-//! - Agent operations → Agent methods (via CommandQueue for mutations)
-//! - Registry operations → Registry methods (via CommandQueue for mutations)
-//! - Recovery → CommandProcessor startup
+//! - Graph operations → `GraphOps` trait (via `CommandQueue`)
+//! - Agent operations → Agent methods (via `CommandQueue` for mutations)
+//! - Registry operations → Registry methods (via `CommandQueue` for mutations)
+//! - Recovery → `CommandProcessor` startup
 //!
 //! ## Core Resources
 //!
 //! ### CQRS Command System
 //! - **`command_queue`**: Primary interface for all mutations
-//! - **CommandProcessor**: Single-threaded owner of all mutable state
-//! - **CommandLog**: CQRS command persistence
+//! - **`CommandProcessor`**: Single-threaded owner of all mutable state
+//! - **`CommandLog`**: CQRS command persistence
 //!
 //! ### Knowledge Graphs
-//! - **`graph_managers`**: HashMap of active graph managers (read-only from AppState)
+//! - **`graph_managers`**: `HashMap` of active graph managers (read-only from `AppState`)
 //! - **`graph_registry`**: Metadata and persistence for graph lifecycle
 //! - **Multi-graph**: Isolated knowledge domains with lazy loading
 //!
 //! ### Agent System  
-//! - **`agent`**: Agent state and conversation management (read-only from AppState)
+//! - **`agent`**: Agent state and conversation management (read-only from `AppState`)
 //! - **Persistence**: Automatically loaded/created on startup
 //!
 //! ### Server Infrastructure
@@ -72,15 +72,15 @@
 //! ## Architecture Benefits
 //!
 //! ### Deadlock Prevention
-//! - **Single-threaded mutations**: CommandProcessor owns all mutable state
-//! - **Lock-free reads**: Direct HashMap access for queries
+//! - **Single-threaded mutations**: `CommandProcessor` owns all mutable state
+//! - **Lock-free reads**: Direct `HashMap` access for queries
 //! - **No lock ordering**: Eliminates complex lock hierarchies
 //!
 //! ### ACID Guarantees
 //! - **Atomicity**: Each command is atomic
-//! - **Consistency**: CommandProcessor enforces invariants
+//! - **Consistency**: `CommandProcessor` enforces invariants
 //! - **Isolation**: Sequential command processing
-//! - **Durability**: CommandLog persists all mutations
+//! - **Durability**: `CommandLog` persists all mutations
 
 use axum::extract::ws::Message;
 use std::collections::HashMap;
@@ -96,7 +96,7 @@ use tracing::{error, warn};
 use uuid::Uuid;
 
 use crate::cqrs::{Command, SystemCommand};
-use crate::error::*;
+use crate::error::{CymbiontError, Result};
 use crate::utils::{save_all_system_data, AsyncRwLockExt};
 
 use crate::{
@@ -110,9 +110,9 @@ use crate::{
 
 /// Central application state that coordinates all Cymbiont components
 ///
-/// ARCHITECTURAL RULE: AppState is a pure resource container.
+/// ARCHITECTURAL RULE: `AppState` is a pure resource container.
 /// DO NOT add helper methods here. All fields are public.
-/// Business logic belongs in domain modules (GraphOps, Agent, registries).
+/// Business logic belongs in domain modules (`GraphOps`, Agent, registries).
 pub struct AppState {
     // CQRS command queue - all mutations go through here
     pub command_queue: CommandQueue,
@@ -137,7 +137,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Create new AppState with pre-loaded config (avoids duplicate config loading)
+    /// Create new `AppState` with pre-loaded config (avoids duplicate config loading)
     pub async fn new_with_config(
         mut config: Config,
         data_dir_override: Option<String>,
@@ -145,7 +145,7 @@ impl AppState {
     ) -> Result<Arc<Self>> {
         // Apply data_dir override if provided
         if let Some(cli_data_dir) = &data_dir_override {
-            config.data_dir = cli_data_dir.clone();
+            config.data_dir.clone_from(cli_data_dir);
         }
 
         Self::new_internal_with_config(config, with_server).await
@@ -180,7 +180,7 @@ impl AppState {
             CommandProcessor::new(graph_registry.clone(), agent.clone(), data_dir.clone());
 
         // Start the processor
-        let (command_queue, resources) = processor.start().await?;
+        let (command_queue, resources) = processor.start();
 
         // Create WebSocket connections if server mode
         let ws_connections = if with_server {
@@ -189,7 +189,7 @@ impl AppState {
             None
         };
 
-        let app_state = Arc::new(AppState {
+        let app_state = Arc::new(Self {
             command_queue,
             graph_managers: resources.graph_managers,
             agent,
@@ -270,7 +270,8 @@ impl AppState {
             .await
         {
             if let Some(data) = result.data {
-                if let Some(count) = data.get("active_count").and_then(|v| v.as_u64()) {
+                if let Some(count) = data.get("active_count").and_then(serde_json::Value::as_u64) {
+                    #[allow(clippy::cast_possible_truncation)] // active command count is small
                     return count as usize;
                 }
             }
@@ -279,7 +280,7 @@ impl AppState {
         0
     }
 
-    /// Wait for active transactions to complete
+    /// Wait for active commands to complete
     pub async fn wait_for_transactions(&self, timeout: Duration) -> bool {
         if let Ok(result) = self
             .command_queue
@@ -289,7 +290,7 @@ impl AppState {
             .await
         {
             if let Some(data) = result.data {
-                if let Some(completed) = data.get("completed").and_then(|v| v.as_bool()) {
+                if let Some(completed) = data.get("completed").and_then(serde_json::Value::as_bool) {
                     return completed;
                 }
             }

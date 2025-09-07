@@ -85,7 +85,7 @@
 //! from `import_utils.rs` during HTTP import requests and CLI import commands.
 
 use super::pkm_data::{resolve_block_references, PKMBlockData, PKMPageData, PKMReference};
-use crate::error::*;
+use crate::error::{ImportError, Result};
 use chrono::Utc;
 use regex::Regex;
 use serde_json::json;
@@ -109,7 +109,7 @@ struct LogseqBlock {
 pub fn import_graph(logseq_dir: &Path) -> Result<(Vec<PKMPageData>, Vec<PKMBlockData>)> {
     if !logseq_dir.exists() {
         return Err(
-            ImportError::path(format!("Logseq directory not found: {:?}", logseq_dir)).into(),
+            ImportError::path(format!("Logseq directory not found: {}", logseq_dir.display())).into(),
         );
     }
 
@@ -119,13 +119,13 @@ pub fn import_graph(logseq_dir: &Path) -> Result<(Vec<PKMPageData>, Vec<PKMBlock
     // Import pages
     let pages_dir = logseq_dir.join("pages");
     if pages_dir.exists() {
-        import_directory(&pages_dir, &mut pages, &mut blocks, false)?;
+        import_directory(&pages_dir, &mut pages, &mut blocks)?;
     }
 
     // Import journals
     let journals_dir = logseq_dir.join("journals");
     if journals_dir.exists() {
-        import_directory(&journals_dir, &mut pages, &mut blocks, true)?;
+        import_directory(&journals_dir, &mut pages, &mut blocks)?;
     }
 
     // Build block ID -> content map for reference resolution
@@ -150,14 +150,13 @@ fn import_directory(
     dir: &Path,
     pages: &mut Vec<PKMPageData>,
     blocks: &mut Vec<PKMBlockData>,
-    _is_journal: bool,
 ) -> Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
 
         if path.extension().and_then(|s| s.to_str()) == Some("md") {
-            if let Err(e) = import_file(&path, pages, blocks, _is_journal) {
+            if let Err(e) = import_file(&path, pages, blocks) {
                 error!("Failed to import {:?}: {}", path, e);
             }
         }
@@ -170,7 +169,6 @@ fn import_file(
     path: &Path,
     pages: &mut Vec<PKMPageData>,
     blocks: &mut Vec<PKMBlockData>,
-    _is_journal: bool,
 ) -> Result<()> {
     let content = fs::read_to_string(path)?;
     let page_name = path
@@ -232,10 +230,8 @@ fn parse_logseq_file(content: &str) -> Result<Vec<LogseqBlock>> {
     // First pass: parse all blocks without hierarchy
     for line in content.lines() {
         // Skip page-level properties at the start
-        if !line.starts_with('-') && !line.starts_with('\t') && !line.starts_with(' ') {
-            if parse_property(line).is_some() {
-                continue;
-            }
+        if !line.starts_with('-') && !line.starts_with('\t') && !line.starts_with(' ') && parse_property(line).is_some() {
+            continue;
         }
 
         // Check if this is a block line
@@ -289,13 +285,13 @@ fn parse_logseq_file(content: &str) -> Result<Vec<LogseqBlock>> {
     }
 
     // Second pass: build hierarchy
-    build_block_hierarchy(all_blocks)
+    Ok(build_block_hierarchy(all_blocks))
 }
 
 /// Build hierarchy from a flat list of blocks based on indentation
-fn build_block_hierarchy(blocks: Vec<LogseqBlock>) -> Result<Vec<LogseqBlock>> {
+fn build_block_hierarchy(blocks: Vec<LogseqBlock>) -> Vec<LogseqBlock> {
     if blocks.is_empty() {
-        return Ok(Vec::new());
+        return Vec::new();
     }
 
     // Convert to a format we can work with
@@ -342,9 +338,9 @@ fn build_block_hierarchy(blocks: Vec<LogseqBlock>) -> Result<Vec<LogseqBlock>> {
     }
 
     // Collect remaining root blocks
-    let root_blocks: Vec<LogseqBlock> = nodes.into_iter().filter_map(|node| node).collect();
+    let root_blocks: Vec<LogseqBlock> = nodes.into_iter().flatten().collect();
 
-    Ok(root_blocks)
+    root_blocks
 }
 
 /// Get the indentation level of a line (number of tabs or spaces / 2)
@@ -367,7 +363,7 @@ fn get_indent_level(line: &str) -> Option<usize> {
     Some(level / 2)
 }
 
-/// Parse a property line (key:: value)
+/// Parse a property line (`key:: value`)
 fn parse_property(line: &str) -> Option<(String, String)> {
     let re = Regex::new(r"^([a-zA-Z0-9_-]+)::\s*(.+)$").unwrap();
     re.captures(line)
@@ -379,7 +375,7 @@ fn convert_blocks_to_pkm(
     logseq_blocks: &[LogseqBlock],
     page_name: &str,
     all_blocks: &mut Vec<PKMBlockData>,
-    parent_id: Option<String>,
+    parent_id: Option<&str>,
 ) -> Result<Vec<String>> {
     let mut block_ids = Vec::new();
 
@@ -425,7 +421,7 @@ fn convert_blocks_to_pkm(
             &logseq_block.children,
             page_name,
             all_blocks,
-            Some(block_id.clone()),
+            Some(&block_id),
         )?;
 
         let block = PKMBlockData {
@@ -433,7 +429,7 @@ fn convert_blocks_to_pkm(
             content: logseq_block.content.clone(),
             created,
             updated,
-            parent: parent_id.clone(),
+            parent: parent_id.map(ToString::to_string),
             children: children.clone(),
             page: Some(page_name.to_string()),
             properties,
@@ -548,8 +544,8 @@ mod tests {
 
     #[test]
     fn test_parse_block_with_id() {
-        let content = r#"- This is a block
-  id:: 12345-67890"#;
+        let content = r"- This is a block
+  id:: 12345-67890";
         let blocks = parse_logseq_file(content).unwrap();
 
         assert_eq!(blocks.len(), 1);
@@ -582,10 +578,10 @@ mod tests {
 
     #[test]
     fn test_parse_block_with_multiple_properties() {
-        let content = r#"- Block with properties
+        let content = r"- Block with properties
   id:: test-id
   created:: 2024-01-01
-  tags:: #rust #testing"#;
+  tags:: #rust #testing";
         let blocks = parse_logseq_file(content).unwrap();
 
         assert_eq!(blocks.len(), 1);
@@ -603,9 +599,9 @@ mod tests {
 
     #[test]
     fn test_parse_multiline_block() {
-        let content = r#"- First line of block
+        let content = r"- First line of block
   This is the second line
-  And a third line"#;
+  And a third line";
         let blocks = parse_logseq_file(content).unwrap();
 
         assert_eq!(blocks.len(), 1);
@@ -758,7 +754,7 @@ mod tests {
     #[test]
     fn test_resolve_empty_block_reference() {
         let mut block_map = HashMap::new();
-        block_map.insert("empty-block".to_string(), "".to_string());
+        block_map.insert("empty-block".to_string(), String::new());
 
         let content = "Empty: ((empty-block)) here";
         let mut visited = HashSet::new();
@@ -895,10 +891,10 @@ mod tests {
 
     #[test]
     fn test_parse_page_properties() {
-        let content = r#"title:: My Page
+        let content = r"title:: My Page
 created:: 2024-01-01
 
-- First block"#;
+- First block";
         let blocks = parse_logseq_file(content).unwrap();
 
         // Page properties are skipped by the block parser

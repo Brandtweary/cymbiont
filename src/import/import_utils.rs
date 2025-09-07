@@ -1,4 +1,4 @@
-//! @module import_utils
+//! `@module import_utils`
 //! @description High-level import coordination for knowledge graphs
 //!
 //! This module provides the main entry point for importing external knowledge graphs
@@ -57,7 +57,7 @@
 
 use super::logseq;
 use crate::app_state::AppState;
-use crate::error::*;
+use crate::error::{ImportError, Result};
 use crate::graph::graph_operations::GraphOps;
 use serde_json;
 use std::collections::HashMap;
@@ -76,7 +76,61 @@ pub struct ImportResult {
     pub errors: Vec<String>,
 }
 
+/// Helper function to update content with new block IDs
+fn update_block_references(content: &str, id_mapping: &HashMap<String, String>) -> String {
+    let mut updated = content.to_string();
+    for (old_id, new_id) in id_mapping {
+        updated = updated.replace(&format!("(({old_id}))"), &format!("(({new_id}))"));
+    }
+    updated
+}
+
+/// Helper function to import a single block
+async fn import_block(
+    app_state: &Arc<AppState>,
+    block: crate::import::pkm_data::PKMBlockData,
+    id_mapping: &HashMap<String, String>,
+    graph_id: &Uuid,
+) -> Result<()> {
+    let our_block_id = id_mapping
+        .get(&block.id)
+        .expect("Block ID should exist in mapping")
+        .clone();
+
+    let parent_id = block
+        .parent
+        .as_ref()
+        .and_then(|pid| id_mapping.get(pid))
+        .cloned();
+
+    let properties = if block.properties.is_null() || block.properties == serde_json::json!({}) {
+        None
+    } else {
+        Some(block.properties.clone())
+    };
+
+    let updated_ref_content = block
+        .reference_content
+        .map(|content| update_block_references(&content, id_mapping));
+
+    let updated_content = update_block_references(&block.content, id_mapping);
+
+    app_state
+        .add_block(
+            Some(our_block_id),
+            updated_content,
+            parent_id,
+            block.page,
+            properties,
+            updated_ref_content,
+            graph_id,
+        )
+        .await
+        .map(|_| ())
+}
+
 /// Import a Logseq graph into Cymbiont
+#[allow(clippy::cognitive_complexity)]
 pub async fn import_logseq_graph(
     app_state: &Arc<AppState>,
     logseq_path: &Path,
@@ -101,9 +155,7 @@ pub async fn import_logseq_graph(
             .to_string()
     });
 
-    // Use the centralized create_graph function which handles:
-    // 1. Graph registration
-    // 3. Graph manager creation
+    // Use the centralized create_graph function
     let graph_info = app_state
         .create_graph(
             Some(graph_name.clone()),
@@ -116,7 +168,7 @@ pub async fn import_logseq_graph(
             .as_str()
             .ok_or_else(|| ImportError::validation("Graph ID not found in response"))?,
     )
-    .map_err(|e| ImportError::validation(format!("Invalid graph ID: {}", e)))?;
+    .map_err(|e| ImportError::validation(format!("Invalid graph ID: {e}")))?;
 
     info!("📊 Using graph: {} ({})", graph_name, graph_id);
 
@@ -127,7 +179,6 @@ pub async fn import_logseq_graph(
 
     // Import pages first
     for page in pages {
-        // Convert properties for GraphOps
         let properties = if page.properties.is_null() || page.properties == serde_json::json!({}) {
             None
         } else {
@@ -138,7 +189,7 @@ pub async fn import_logseq_graph(
             .create_page(page.name.clone(), properties, &graph_id)
             .await
         {
-            Ok(_) => page_count += 1,
+            Ok(()) => page_count += 1,
             Err(e) => {
                 let err_msg = format!("Failed to import page {}: {}", page.name, e);
                 error!("{}", err_msg);
@@ -149,70 +200,16 @@ pub async fn import_logseq_graph(
 
     // Build a mapping from original IDs to new UUIDs
     let mut id_mapping: HashMap<String, String> = HashMap::new();
-
-    // First pass: generate new UUIDs for all blocks
     for block in &blocks {
-        let new_id = Uuid::new_v4().to_string();
-        id_mapping.insert(block.id.clone(), new_id);
+        id_mapping.insert(block.id.clone(), Uuid::new_v4().to_string());
     }
 
     // Import blocks after pages (so parent pages exist)
     for block in blocks {
-        // Generate our own UUID instead of using Logseq's
-        let our_block_id = id_mapping
-            .get(&block.id)
-            .expect("Block ID should exist in mapping")
-            .clone();
-
-        // Update parent reference to use new UUID if it exists
-        let parent_id = block
-            .parent
-            .as_ref()
-            .and_then(|pid| id_mapping.get(pid))
-            .cloned();
-
-        // Convert properties for GraphOps
-        let properties = if block.properties.is_null() || block.properties == serde_json::json!({})
-        {
-            None
-        } else {
-            Some(block.properties.clone())
-        };
-
-        // Update reference_content to use new IDs
-        let updated_ref_content = if let Some(ref_content) = block.reference_content {
-            let mut content = ref_content;
-            // Replace all old block IDs with new ones in reference content
-            for (old_id, new_id) in &id_mapping {
-                content = content.replace(&format!("(({}))", old_id), &format!("(({}))", new_id));
-            }
-            Some(content)
-        } else {
-            None
-        };
-
-        // Update block content to use new IDs in block references
-        let mut updated_content = block.content.clone();
-        for (old_id, new_id) in &id_mapping {
-            updated_content =
-                updated_content.replace(&format!("(({}))", old_id), &format!("(({}))", new_id));
-        }
-
-        match app_state
-            .add_block(
-                Some(our_block_id.clone()), // Use our generated UUID
-                updated_content,            // Content with updated block references
-                parent_id,                  // Use mapped parent ID
-                block.page.clone(),         // Page name (will create page if needed)
-                properties,
-                updated_ref_content, // Reference content with updated IDs
-                &graph_id,
-            )
-            .await
-        {
-            Ok(_) => block_count += 1,
+        match import_block(app_state, block, &id_mapping, &graph_id).await {
+            Ok(()) => block_count += 1,
             Err(e) => {
-                let err_msg = format!("Failed to import block {}: {}", block.id, e);
+                let err_msg = format!("Failed to import block: {e}");
                 error!("{}", err_msg);
                 errors.push(err_msg);
             }
@@ -224,7 +221,6 @@ pub async fn import_logseq_graph(
         page_count, block_count
     );
 
-    // Return the import result
     Ok(ImportResult {
         graph_id: graph_id.to_string(),
         graph_name,

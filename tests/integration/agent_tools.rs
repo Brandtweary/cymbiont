@@ -1,7 +1,7 @@
 //! Integration tests for agent tool execution through the knowledge graph tools system.
 //!
 //! These tests verify that agents can successfully execute all available tools via
-//! WebSocket commands using the MockLLM's echo_tool functionality. Each tool is tested
+//! WebSocket commands using the `MockLLM`'s `echo_tool` functionality. Each tool is tested
 //! for correct execution, validation, authorization, and result formatting.
 
 use crate::common::test_harness::{
@@ -15,6 +15,7 @@ use uuid::Uuid;
 use crate::common::test_harness::agent_chat_sync;
 
 /// Test graph management tools (create, list, open, close, delete graphs)
+#[allow(clippy::too_many_lines)]
 pub fn test_agent_graph_management_tools() {
     let test_env = setup_test_env();
     let cleanup_env = test_env.clone();
@@ -57,7 +58,7 @@ pub fn test_agent_graph_management_tools() {
         }
 
         // Test create_graph tool
-        let _new_graph_uuid = {
+        let new_graph_uuid = {
             let data = agent_chat_sync(&mut ws, "Create a new graph", None, Some("create_graph"));
 
             // MockLLM returns the tool invocation message
@@ -77,8 +78,8 @@ pub fn test_agent_graph_management_tools() {
 
             // Get the new graph ID by listing all graphs
             let list_cmd = json!({ "type": "list_graphs" });
-            let list_response = send_command(&mut ws, list_cmd);
-            let list_data = expect_success(list_response).unwrap();
+            let list_response = send_command(&mut ws, &list_cmd);
+            let list_data = expect_success(&list_response).unwrap();
             let graphs = list_data["graphs"].as_array().unwrap();
 
             // Find the graph that isn't the initial one
@@ -130,11 +131,11 @@ pub fn test_agent_graph_management_tools() {
             // Close the new graph first to make initial the only open graph
             let close_cmd = json!({
                 "type": "close_graph",
-                "graph_id": _new_graph_uuid.to_string()
+                "graph_id": new_graph_uuid.to_string()
             });
-            let close_response = send_command(&mut ws, close_cmd);
-            expect_success(close_response);
-            validator.expect_graph_closed(_new_graph_uuid);
+            let close_response = send_command(&mut ws, &close_cmd);
+            expect_success(&close_response);
+            validator.expect_graph_closed(new_graph_uuid);
 
             // Now test agent close_graph with smart default (only one graph open)
             let data = agent_chat_sync(&mut ws, "Close the open graph", None, Some("close_graph"));
@@ -163,8 +164,8 @@ pub fn test_agent_graph_management_tools() {
                 "type": "open_graph",
                 "graph_id": initial_graph_id
             });
-            let open_response = send_command(&mut ws, open_cmd);
-            expect_success(open_response);
+            let open_response = send_command(&mut ws, &open_cmd);
+            expect_success(&open_response);
             validator.expect_graph_open(initial_uuid);
         }
 
@@ -207,15 +208,16 @@ pub fn test_agent_graph_management_tools() {
     });
 
     match result {
-        Ok(test_env) => cleanup_test_env(test_env),
+        Ok(test_env) => cleanup_test_env(&test_env),
         Err(panic) => {
-            cleanup_test_env(cleanup_env);
+            cleanup_test_env(&cleanup_env);
             std::panic::resume_unwind(panic);
         }
     }
 }
 
 /// Test block operations (add, update, delete blocks)
+#[allow(clippy::too_many_lines)]
 pub fn test_agent_block_operations() {
     let test_env = setup_test_env();
     let cleanup_env = test_env.clone();
@@ -237,9 +239,6 @@ pub fn test_agent_block_operations() {
         let mut ws = connect_websocket(port);
         let auth_token = read_auth_token(&data_dir);
         assert!(authenticate_websocket(&mut ws, &auth_token));
-
-        // Add debug logging to see conversation history
-        use tracing::debug;
 
         // Test add_block tool - simple content
         {
@@ -279,14 +278,14 @@ pub fn test_agent_block_operations() {
                 "content": "Block to be updated by agent",
                 "page_name": "agent-test-page"
             });
-            let response = send_command(&mut ws, create_cmd);
-            let data = expect_success(response).expect("No data in create_block response");
+            let response = send_command(&mut ws, &create_cmd);
+            let data = expect_success(&response).expect("No data in create_block response");
             let block_id = data["block_id"].as_str().expect("No block_id").to_string();
             // Don't track the create since we're testing update - the final state matters
 
             // Now test update - include the block_id in the message
             // MockLLM extracts the UUID from the message content
-            let message = format!("Update block {} with new content", block_id);
+            let message = format!("Update block {block_id} with new content");
             let data = agent_chat_sync(&mut ws, &message, None, Some("update_block"));
 
             // MockLLM returns the tool invocation message
@@ -360,14 +359,14 @@ pub fn test_agent_block_operations() {
                 "content": "Block to be deleted by agent",
                 "page_name": "agent-test-page"
             });
-            let response = send_command(&mut ws, create_cmd);
-            let data = expect_success(response).expect("No data in create_block response");
+            let response = send_command(&mut ws, &create_cmd);
+            let data = expect_success(&response).expect("No data in create_block response");
             let block_id = data["block_id"].as_str().expect("No block_id").to_string();
             // Don't track the create since we're testing delete
 
             // Now test delete - include the block_id in the message
             // MockLLM extracts the UUID from the message content
-            let message = format!("Delete block {}", block_id);
+            let message = format!("Delete block {block_id}");
             let data = agent_chat_sync(&mut ws, &message, None, Some("delete_block"));
 
             assert!(data["response"]
@@ -389,24 +388,6 @@ pub fn test_agent_block_operations() {
             validator.expect_delete_block(&block_id, Some(&graph_id));
         }
 
-        // Debug: print conversation history before validation
-        {
-            let cmd = json!({
-                "type": "agent_history"
-            });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
-            let messages = data["messages"].as_array().unwrap();
-            for (i, msg) in messages.iter().enumerate() {
-                debug!(
-                    "Message {}: role={}, content={}",
-                    i,
-                    msg["role"].as_str().unwrap_or("unknown"),
-                    msg["content"].as_str().unwrap_or("(not a string)")
-                );
-            }
-        }
-
         let _ = ws.close(None);
         let test_env = server.shutdown();
 
@@ -419,9 +400,9 @@ pub fn test_agent_block_operations() {
     });
 
     match result {
-        Ok(test_env) => cleanup_test_env(test_env),
+        Ok(test_env) => cleanup_test_env(&test_env),
         Err(panic) => {
-            cleanup_test_env(cleanup_env);
+            cleanup_test_env(&cleanup_env);
             std::panic::resume_unwind(panic);
         }
     }
@@ -483,15 +464,15 @@ pub fn test_agent_page_operations() {
     });
 
     match result {
-        Ok(test_env) => cleanup_test_env(test_env),
+        Ok(test_env) => cleanup_test_env(&test_env),
         Err(panic) => {
-            cleanup_test_env(cleanup_env);
+            cleanup_test_env(&cleanup_env);
             std::panic::resume_unwind(panic);
         }
     }
 }
 
-/// Test query operations (get_node and query_graph_bfs)
+/// Test query operations (`get_node` and `query_graph_bfs`)
 pub fn test_agent_query_operations() {
     let test_env = setup_test_env();
     let cleanup_env = test_env.clone();
@@ -536,9 +517,9 @@ pub fn test_agent_query_operations() {
     });
 
     match result {
-        Ok(test_env) => cleanup_test_env(test_env),
+        Ok(test_env) => cleanup_test_env(&test_env),
         Err(panic) => {
-            cleanup_test_env(cleanup_env);
+            cleanup_test_env(&cleanup_env);
             std::panic::resume_unwind(panic);
         }
     }
@@ -594,9 +575,9 @@ pub fn test_agent_tool_validation_errors() {
     });
 
     match result {
-        Ok(test_env) => cleanup_test_env(test_env),
+        Ok(test_env) => cleanup_test_env(&test_env),
         Err(panic) => {
-            cleanup_test_env(cleanup_env);
+            cleanup_test_env(&cleanup_env);
             std::panic::resume_unwind(panic);
         }
     }
@@ -636,8 +617,8 @@ pub fn test_agent_tool_chaining() {
 
             // Get the new graph ID by listing graphs
             let list_cmd = json!({ "type": "list_graphs" });
-            let list_response = send_command(&mut ws, list_cmd);
-            let list_data = expect_success(list_response).unwrap();
+            let list_response = send_command(&mut ws, &list_cmd);
+            let list_data = expect_success(&list_response).unwrap();
             let graphs = list_data["graphs"].as_array().unwrap();
 
             // Should have exactly one graph (the new one we just created)
@@ -704,8 +685,8 @@ pub fn test_agent_tool_chaining() {
             let cmd = json!({
                 "type": "agent_history"
             });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).unwrap();
+            let response = send_command(&mut ws, &cmd);
+            let data = expect_success(&response).unwrap();
 
             let messages = data["messages"].as_array().unwrap();
             // Should have 4 user messages and 4 assistant responses minimum
@@ -726,9 +707,9 @@ pub fn test_agent_tool_chaining() {
     });
 
     match result {
-        Ok(test_env) => cleanup_test_env(test_env),
+        Ok(test_env) => cleanup_test_env(&test_env),
         Err(panic) => {
-            cleanup_test_env(cleanup_env);
+            cleanup_test_env(&cleanup_env);
             std::panic::resume_unwind(panic);
         }
     }

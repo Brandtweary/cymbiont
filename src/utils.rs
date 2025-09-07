@@ -14,7 +14,7 @@
 //! ## Data Processing
 //!
 //! Utilities for parsing and converting data formats:
-//! - `parse_properties()`: JSON to HashMap conversion for metadata
+//! - `parse_properties()`: JSON to `HashMap` conversion for metadata
 //!
 //! ## Process Coordination
 //!
@@ -54,10 +54,9 @@
 
 use crate::app_state::AppState;
 use crate::config::BackendConfig;
-use crate::error::*;
+use crate::error::{Result, ServerError};
 use crate::graph::graph_manager::GraphManager;
 use serde::{Deserialize, Serialize};
-use serde_json;
 use std::collections::HashMap;
 use std::fs;
 use std::net::TcpListener;
@@ -74,24 +73,28 @@ use tracing::{error, info, trace, warn};
 
 // ===== Async Lock Utilities =====
 
-/// Extension trait for tokio::sync::RwLock
+/// Extension trait for `tokio::sync::RwLock`
 ///
 /// Provides consistent API with panic-on-poison semantics for sync locks.
 /// Note that async locks cannot be poisoned.
 pub trait AsyncRwLockExt<T: 'static> {
     /// Read the lock asynchronously
+    #[allow(clippy::future_not_send)]
     async fn read_or_panic(&self, context: &str) -> AsyncRwLockReadGuard<'_, T>;
 
     /// Write to the lock asynchronously with contention detection
+    #[allow(clippy::future_not_send)]
     async fn write_or_panic(&self, context: &str) -> AsyncRwLockWriteGuard<'_, T>;
 }
 
 impl<T: 'static> AsyncRwLockExt<T> for AsyncRwLock<T> {
+    #[allow(clippy::future_not_send)]
     async fn read_or_panic(&self, _context: &str) -> AsyncRwLockReadGuard<'_, T> {
         // Async locks can't be poisoned, just await
         self.read().await
     }
 
+    #[allow(clippy::future_not_send)]
     async fn write_or_panic(&self, context: &str) -> AsyncRwLockWriteGuard<'_, T> {
         // Check for lock contention in debug builds and warn (not panic)
         #[cfg(debug_assertions)]
@@ -110,10 +113,12 @@ impl<T: 'static> AsyncRwLockExt<T> for AsyncRwLock<T> {
 }
 
 impl<T: 'static> AsyncRwLockExt<T> for Arc<AsyncRwLock<T>> {
+    #[allow(clippy::future_not_send)]
     async fn read_or_panic(&self, context: &str) -> AsyncRwLockReadGuard<'_, T> {
         self.as_ref().read_or_panic(context).await
     }
 
+    #[allow(clippy::future_not_send)]
     async fn write_or_panic(&self, context: &str) -> AsyncRwLockWriteGuard<'_, T> {
         self.as_ref().write_or_panic(context).await
     }
@@ -136,6 +141,96 @@ pub fn is_port_available(port: u16) -> bool {
     TcpListener::bind(("127.0.0.1", port)).is_ok()
 }
 
+#[cfg(target_family = "unix")]
+fn terminate_process_unix(pid: &str) -> bool {
+    // Check if process exists using kill -0 (doesn't actually kill)
+    let check_result = Command::new("kill").arg("-0").arg(pid).output();
+
+    match check_result {
+        Ok(output) => {
+            if !output.status.success() {
+                trace!("🔧 Process {pid} no longer exists, cleaning up stale PID file");
+                return false;
+            }
+        }
+        Err(e) => {
+            error!("Error checking process: {e}");
+            return false;
+        }
+    }
+
+    // Process exists, try to terminate it
+    trace!("🔧 Process {pid} is running, attempting to terminate");
+    let kill_result = Command::new("kill")
+        .arg("-2") // SIGINT for graceful shutdown (matches ctrlc handler)
+        .arg(pid)
+        .output();
+
+    match kill_result {
+        Ok(output) => {
+            if output.status.success() {
+                trace!("🔧 Successfully terminated previous instance");
+                thread::sleep(Duration::from_millis(500));
+                return true;
+            }
+            error!(
+                "Failed to terminate process: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Err(e) => {
+            error!("Error terminating process: {e}");
+        }
+    }
+    false
+}
+
+#[cfg(target_family = "windows")]
+fn terminate_process_windows(pid: &str) -> bool {
+    // Check if process exists using tasklist
+    let check_result = Command::new("tasklist")
+        .args(&["/FI", &format!("PID eq {pid}")])
+        .output();
+
+    match check_result {
+        Ok(output) => {
+            let output_str = String::from_utf8_lossy(&output.stdout);
+            if !output_str.contains(pid) {
+                trace!("🔧 Process {pid} no longer exists, cleaning up stale PID file");
+                return false;
+            }
+        }
+        Err(e) => {
+            error!("Error checking process: {}", e);
+            return false;
+        }
+    }
+
+    // Process exists, try to terminate it
+    trace!("🔧 Process {pid} is running, attempting to terminate");
+    let kill_result = Command::new("taskkill")
+        .args(&["/PID", pid, "/F"])
+        .output();
+
+    match kill_result {
+        Ok(output) => {
+            if output.status.success() {
+                trace!("🔧 Successfully terminated previous instance");
+                thread::sleep(Duration::from_millis(500));
+                return true;
+            }
+            error!(
+                "Failed to terminate process: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Err(e) => {
+            error!("Error terminating process: {}", e);
+        }
+    }
+    false
+}
+
 // Try to terminate a previous instance of our server
 pub fn terminate_previous_instance(filename: &str) -> bool {
     trace!("[TERMINATE] Looking for server info file: {}", filename);
@@ -143,100 +238,13 @@ pub fn terminate_previous_instance(filename: &str) -> bool {
     if let Ok(info_str) = fs::read_to_string(filename) {
         if let Ok(info) = serde_json::from_str::<ServerInfo>(&info_str) {
             let pid = info.pid.to_string();
-
             trace!("🔧 Found server info file with PID: {pid}");
 
-            // First check if the process actually exists
             #[cfg(target_family = "unix")]
-            {
-                // Check if process exists using kill -0 (doesn't actually kill)
-                let check_result = Command::new("kill").arg("-0").arg(&pid).output();
-
-                match check_result {
-                    Ok(output) => {
-                        if !output.status.success() {
-                            trace!("🔧 Process {pid} no longer exists, cleaning up stale PID file");
-                            return false;
-                        }
-                    }
-                    Err(e) => {
-                        error!("Error checking process: {e}");
-                        return false;
-                    }
-                }
-
-                // Process exists, try to terminate it
-                trace!("🔧 Process {pid} is running, attempting to terminate");
-                let kill_result = Command::new("kill")
-                    .arg("-2") // SIGINT for graceful shutdown (matches ctrlc handler)
-                    .arg(&pid)
-                    .output();
-
-                match kill_result {
-                    Ok(output) => {
-                        if output.status.success() {
-                            trace!("🔧 Successfully terminated previous instance");
-                            // Give the process time to shut down
-                            thread::sleep(Duration::from_millis(500));
-                            return true;
-                        }
-                        error!(
-                            "Failed to terminate process: {}",
-                            String::from_utf8_lossy(&output.stderr)
-                        );
-                    }
-                    Err(e) => {
-                        error!("Error terminating process: {e}");
-                    }
-                }
-            }
+            return terminate_process_unix(&pid);
 
             #[cfg(target_family = "windows")]
-            {
-                // Check if process exists using tasklist
-                let check_result = Command::new("tasklist")
-                    .args(&["/FI", &format!("PID eq {}", pid)])
-                    .output();
-
-                match check_result {
-                    Ok(output) => {
-                        let output_str = String::from_utf8_lossy(&output.stdout);
-                        if !output_str.contains(&pid) {
-                            trace!("🔧 Process {pid} no longer exists, cleaning up stale PID file");
-                            return false;
-                        }
-                    }
-                    Err(e) => {
-                        error!("Error checking process: {}", e);
-                        return false;
-                    }
-                }
-
-                // Process exists, try to terminate it
-                trace!("🔧 Process {pid} is running, attempting to terminate");
-                let kill_result = Command::new("taskkill")
-                    .args(&["/PID", &pid, "/F"])
-                    .output();
-
-                match kill_result {
-                    Ok(output) => {
-                        if output.status.success() {
-                            trace!("🔧 Successfully terminated previous instance");
-                            // Give the process time to shut down
-                            thread::sleep(Duration::from_millis(500));
-                            return true;
-                        } else {
-                            error!(
-                                "Failed to terminate process: {}",
-                                String::from_utf8_lossy(&output.stderr)
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        error!("Error terminating process: {}", e);
-                    }
-                }
-            }
+            return terminate_process_windows(&pid);
         }
     }
 
@@ -292,7 +300,7 @@ pub fn find_available_port(config: &BackendConfig) -> Result<u16> {
 // ===== JSON Utilities =====
 
 /// Save all system data to JSON
-pub async fn save_all_system_data(app_state: &Arc<AppState>) -> crate::error::Result<()> {
+pub async fn save_all_system_data(app_state: &Arc<AppState>) -> Result<()> {
     info!("Saving all system data to JSON");
 
     // Save graph registry
@@ -378,7 +386,7 @@ pub async fn save_all_system_data(app_state: &Arc<AppState>) -> crate::error::Re
     Ok(())
 }
 
-/// Parse properties from a JSON value into a HashMap
+/// Parse properties from a JSON value into a `HashMap`
 pub fn parse_properties(properties_json: &serde_json::Value) -> HashMap<String, String> {
     let mut properties = HashMap::new();
 
@@ -448,7 +456,7 @@ mod tests {
 
 /// Custom serialization modules for UUID collections
 ///
-/// These helpers allow HashMaps, HashSets, and Vecs containing UUIDs
+/// These helpers allow `HashMap`s, `HashSet`s, and `Vec`s containing UUIDs
 /// to be serialized as human-readable strings in JSON format.
 pub mod uuid_serde {
     use serde::de::Error as SerdeError;
@@ -457,7 +465,7 @@ pub mod uuid_serde {
     use uuid::Uuid;
 
     pub mod uuid_hashmap_serde {
-        use super::*;
+        use super::{Serializer, Serialize, HashMap, Uuid, Deserializer, Deserialize, SerdeError};
 
         pub fn serialize<S, V>(map: &HashMap<Uuid, V>, serializer: S) -> Result<S::Ok, S::Error>
         where
@@ -487,13 +495,13 @@ pub mod uuid_serde {
     }
 
     pub mod uuid_hashset_serde {
-        use super::*;
+        use super::{Serializer, HashSet, Uuid, Serialize, Deserializer, Deserialize, SerdeError};
 
         pub fn serialize<S>(set: &HashSet<Uuid>, serializer: S) -> Result<S::Ok, S::Error>
         where
             S: Serializer,
         {
-            let string_vec: Vec<String> = set.iter().map(|uuid| uuid.to_string()).collect();
+            let string_vec: Vec<String> = set.iter().map(std::string::ToString::to_string).collect();
             string_vec.serialize(serializer)
         }
 

@@ -1,4 +1,4 @@
-//! Doctests for CYMBIONT_EMERGENCY_DEPLOYMENT.md
+//! Doctests for `CYMBIONT_EMERGENCY_DEPLOYMENT.md`
 //! 
 //! This file validates that all commands shown in the deployment manual
 //! actually work with the current cymbiont codebase.
@@ -68,7 +68,7 @@ mod tests {
             // We don't require all to exist (some might not be installed)
             // But we document which ones are missing
             if !output.status.success() {
-                eprintln!("Standard command '{}' not found on this system", cmd);
+                tracing::warn!("Standard command '{}' not found on this system", cmd);
             }
         }
     }

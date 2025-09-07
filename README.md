@@ -208,6 +208,8 @@ cargo run -- --server --duration 60        # Run server for 60 seconds
 
 # Graph management
 cargo run -- --import-logseq ~/Documents/notes  # Import Logseq graph
+cargo run -- --create-graph my-graph            # Create a new graph
+cargo run -- --create-graph my-graph --description "My personal notes"  # With description
 cargo run -- --delete-graph my-notes       # Delete a graph by name
 cargo run -- --list-graphs                  # List all graphs with metadata
 

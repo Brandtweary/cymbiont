@@ -1,3 +1,5 @@
+#![allow(clippy::module_inception)]
+
 pub mod agent;
 pub mod kg_tools;
 pub mod llm;

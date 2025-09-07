@@ -1,6 +1,6 @@
 //! Command Processor - The Beating Heart of CQRS
 //!
-//! The CommandProcessor is the single-threaded owner of all mutable state in Cymbiont.
+//! The `CommandProcessor` is the single-threaded owner of all mutable state in Cymbiont.
 //! It runs as a background task, processing commands sequentially to guarantee
 //! deadlock-free operation while enabling unlimited concurrent reads. This is the
 //! architectural keystone that makes multi-agent operations safe and predictable.
@@ -13,7 +13,7 @@
 //! - Active agents (AI assistants)
 //! - Registries (metadata)
 //!
-//! External code receives Arc<RwLock<>> references for read-only access, but
+//! External code receives Arc<`RwLock`<>> references for read-only access, but
 //! only the processor can modify state through command execution.
 //!
 //! ### Command Processing Pipeline
@@ -43,8 +43,8 @@
 //! // Now proceed with command execution
 //! ```
 //!
-//! ### RouterToken Authorization
-//! The processor creates RouterTokens that prove commands came through CQRS:
+//! ### `RouterToken` Authorization
+//! The processor creates `RouterToken`s that prove commands came through CQRS:
 //! ```rust
 //! let token = router::create_router_token();
 //! router::apply_graph_command(token, command, &mut self.graph_managers)?;
@@ -122,7 +122,7 @@ use super::commands::{Command, CommandResult, GraphCommand};
 use super::queue::CommandQueue;
 use super::router;
 use crate::agent::agent::Agent;
-use crate::error::*;
+use crate::error::{ProcessorError, Result};
 use crate::graph::graph_manager::GraphManager;
 use crate::graph::graph_registry::GraphRegistry;
 
@@ -132,7 +132,7 @@ pub struct CommandEnvelope {
     pub response: oneshot::Sender<Result<CommandResult>>,
 }
 
-/// References to resources owned by CommandProcessor for direct query access
+/// References to resources owned by `CommandProcessor` for direct query access
 pub struct ProcessorResources {
     pub graph_managers: Arc<RwLock<HashMap<Uuid, Arc<RwLock<GraphManager>>>>>,
 }
@@ -151,9 +151,9 @@ pub enum ProcessorState {
 impl From<u8> for ProcessorState {
     fn from(value: u8) -> Self {
         match value {
-            1 => ProcessorState::Draining,
-            2 => ProcessorState::Shutdown,
-            _ => ProcessorState::Accepting,
+            1 => Self::Draining,
+            2 => Self::Shutdown,
+            _ => Self::Accepting,
         }
     }
 }
@@ -195,8 +195,8 @@ impl CommandProcessor {
     }
 
     /// Start the command processor in a background task
-    /// Returns a CommandQueue for submitting commands and ProcessorResources for queries
-    pub async fn start(self) -> Result<(CommandQueue, ProcessorResources)> {
+    /// Returns a `CommandQueue` for submitting commands and `ProcessorResources` for queries
+    pub fn start(self) -> (CommandQueue, ProcessorResources) {
         info!("🚀 Command processor started");
 
         // Create channel for command submission
@@ -213,7 +213,7 @@ impl CommandProcessor {
         });
 
         // Return queue with sender and resources
-        Ok((CommandQueue::new_with_sender(sender), resources))
+        (CommandQueue::new_with_sender(sender), resources)
     }
 
     /// Run the command processing loop
@@ -282,7 +282,7 @@ impl CommandProcessor {
     }
 
     /// Apply a mutation command
-    async fn apply_command(&mut self, command: Command) -> Result<CommandResult> {
+    async fn apply_command(&self, command: Command) -> Result<CommandResult> {
         match command {
             Command::Graph(graph_cmd) => {
                 // Extract graph_id for loading
@@ -318,7 +318,7 @@ impl CommandProcessor {
 
     /// Handle system-level commands for lifecycle management
     async fn handle_system_command(
-        &mut self,
+        &self,
         command: super::commands::SystemCommand,
     ) -> Result<CommandResult> {
         use super::commands::SystemCommand;
@@ -369,7 +369,7 @@ impl CommandProcessor {
     }
 
     /// Ensure a graph is loaded in memory
-    async fn ensure_graph_loaded(&mut self, graph_id: Uuid) -> Result<()> {
+    async fn ensure_graph_loaded(&self, graph_id: Uuid) -> Result<()> {
         // Check if already loaded
         {
             let managers = self.graph_managers.read().await;
@@ -385,9 +385,7 @@ impl CommandProcessor {
         {
             let mut managers = self.graph_managers.write().await;
             // Double-check in case another task loaded it
-            if !managers.contains_key(&graph_id) {
-                managers.insert(graph_id, Arc::new(RwLock::new(graph_manager)));
-            }
+            managers.entry(graph_id).or_insert_with(|| Arc::new(RwLock::new(graph_manager)));
         }
 
         Ok(())

@@ -22,18 +22,18 @@
 //! ### Config (root)
 //! Top-level container aggregating all configuration sections.
 //!
-//! ### BackendConfig
+//! ### `BackendConfig`
 //! - `port`: Base port for HTTP server (default: 8888)
 //! - `max_port_attempts`: Port search range (default: 10)
-//! - `server_info_file`: Filename for server discovery info (default: "cymbiont_server.json")
+//! - `server_info_file`: Filename for server discovery info (default: "`cymbiont_server.json`")
 //!   
 //! When port 8888 is busy, the server tries 8889, 8890, etc., up to
-//! 8888 + max_port_attempts. This enables multiple instances during development.
+//! 8888 + `max_port_attempts`. This enables multiple instances during development.
 //!
-//! The server_info_file allows multiple Cymbiont instances to run simultaneously
+//! The `server_info_file` allows multiple Cymbiont instances to run simultaneously
 //! without interfering with each other's discovery mechanisms.
 //!
-//! ### DevelopmentConfig
+//! ### `DevelopmentConfig`
 //! - `default_duration`: Auto-exit after N seconds (default: None)
 //!
 //! Useful for automated testing and development workflows. Production
@@ -57,7 +57,7 @@
 //! All configuration structures implement Default trait for robustness:
 //! - Missing sections use defaults via serde(default)
 //! - Individual fields use field-level defaults where appropriate
-//! - Entire config falls back to Config::default() if file errors occur
+//! - Entire config falls back to `Config::default()` if file errors occur
 //!
 //! ## Error Handling
 //!
@@ -98,13 +98,13 @@ pub struct BackendConfig {
     pub server_info_file: String,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 pub struct DevelopmentConfig {
     #[serde(default)]
     pub default_duration: Option<u64>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 pub struct AuthConfig {
     #[serde(default)]
     pub token: Option<String>,
@@ -132,6 +132,7 @@ pub struct TransactionLogConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[allow(clippy::struct_field_names)]
 pub struct VerbosityConfig {
     #[serde(default = "default_info_threshold")]
     pub info_threshold: usize,
@@ -149,42 +150,42 @@ fn default_server_info_file() -> String {
     "cymbiont_server.json".to_string()
 }
 
-fn default_fsync_interval_ms() -> u64 {
+const fn default_fsync_interval_ms() -> u64 {
     100
 }
 
-fn default_compaction_threshold_mb() -> u64 {
+const fn default_compaction_threshold_mb() -> u64 {
     100
 }
 
-fn default_retention_days() -> u64 {
+const fn default_retention_days() -> u64 {
     7
 }
 
-fn default_redundant_copies() -> usize {
+const fn default_redundant_copies() -> usize {
     10
 }
 
-fn default_integrity_check_on_startup() -> bool {
+const fn default_integrity_check_on_startup() -> bool {
     true
 }
 
-fn default_info_threshold() -> usize {
+const fn default_info_threshold() -> usize {
     50
 }
 
-fn default_debug_threshold() -> usize {
+const fn default_debug_threshold() -> usize {
     100
 }
 
-fn default_trace_threshold() -> usize {
+const fn default_trace_threshold() -> usize {
     200
 }
 
 // Default configuration
 impl Default for Config {
     fn default() -> Self {
-        Config {
+        Self {
             backend: BackendConfig {
                 port: 8888,
                 max_port_attempts: 10,
@@ -201,26 +202,10 @@ impl Default for Config {
     }
 }
 
-impl Default for DevelopmentConfig {
-    fn default() -> Self {
-        DevelopmentConfig {
-            default_duration: None,
-        }
-    }
-}
-
-impl Default for AuthConfig {
-    fn default() -> Self {
-        AuthConfig {
-            token: None,
-            disabled: false,
-        }
-    }
-}
 
 impl Default for TransactionLogConfig {
     fn default() -> Self {
-        TransactionLogConfig {
+        Self {
             fsync_interval_ms: default_fsync_interval_ms(),
             compaction_threshold_mb: default_compaction_threshold_mb(),
             retention_days: default_retention_days(),
@@ -232,7 +217,7 @@ impl Default for TransactionLogConfig {
 
 impl Default for VerbosityConfig {
     fn default() -> Self {
-        VerbosityConfig {
+        Self {
             info_threshold: default_info_threshold(),
             debug_threshold: default_debug_threshold(),
             trace_threshold: default_trace_threshold(),
@@ -348,23 +333,23 @@ mod tests {
 
     #[test]
     fn test_data_dir_serde_default() {
-        let yaml = r#"
+        let yaml = r"
 backend:
   port: 8888
   max_port_attempts: 10
-"#;
+";
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.data_dir, "data");
     }
 
     #[test]
     fn test_data_dir_custom() {
-        let yaml = r#"
+        let yaml = r"
 backend:
   port: 8888
   max_port_attempts: 10
 data_dir: /custom/path
-"#;
+";
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.data_dir, "/custom/path");
     }

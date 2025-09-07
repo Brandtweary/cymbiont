@@ -9,14 +9,14 @@
 //!
 //! The WebSocket server follows a layered architecture:
 //! - **Protocol Layer** (this module): Connection handling, message parsing, command routing
-//! - **Utility Layer** (websocket_utils): Shared helpers for auth, responses, resolution
-//! - **Handler Layer** (websocket_commands/): Domain-specific command implementations
+//! - **Utility Layer** (`websocket_utils`): Shared helpers for auth, responses, resolution
+//! - **Handler Layer** (`websocket_commands/`): Domain-specific command implementations
 //!
 //! ## Connection Lifecycle
 //!
 //! 1. **Upgrade**: HTTP connection upgraded to WebSocket at `/ws` endpoint
 //! 2. **Authentication**: Client sends `Auth { token }` command to authenticate
-//! //! 4. **Command Processing**: Commands routed to appropriate handlers
+//! 4. **Command Processing**: Commands routed to appropriate handlers
 //! 5. **Cleanup**: Graceful disconnection with task cancellation
 //!
 //! ## Protocol Design
@@ -39,7 +39,7 @@
 //! - WebSocket upgrade is public (no auth required at upgrade time)
 //! - Authentication happens post-connection via Auth command
 //! - All commands except Auth/Test/Heartbeat require authentication
-//! - Graph access validated at GraphOps layer
+//! - Graph access validated at `GraphOps` layer
 //!
 //! ## Key Types
 //!
@@ -50,15 +50,15 @@
 //! ## Error Handling
 //!
 //! Commands use idiomatic Rust error propagation with the `?` operator.
-//! Handlers return errors that bubble up to handle_message() where they're
+//! Handlers return errors that bubble up to `handle_message()` where they're
 //! sent to clients as error responses. This provides clean, consistent error
 //! handling without explicit error response calls in most handlers.
 //!
 //! ## Integration Points
 //!
-//! - **AppState**: Central state coordination
-//! - **GraphOps**: Graph operation validation
-//! - **Command Handlers**: Domain-specific implementations in websocket_commands/
+//! - **`AppState`**: Central state coordination
+//! - **`GraphOps`**: Graph operation validation
+//! - **Command Handlers**: Domain-specific implementations in `websocket_commands/`
 
 use axum::{
     extract::{
@@ -75,7 +75,7 @@ use tokio::time::interval;
 use tracing::{error, warn};
 use uuid::Uuid;
 
-use crate::error::*;
+use crate::error::Result;
 use crate::server::{
     websocket_commands::{agent_commands, graph_commands, misc_commands},
     websocket_utils::{is_authenticated, send_error_response},
@@ -94,6 +94,7 @@ pub struct WsConnection {
 /// Command protocol definitions
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(clippy::enum_variant_names)]
 pub enum Command {
     CreateBlock {
         content: String,
@@ -185,6 +186,7 @@ pub enum Command {
 /// Response protocol definitions
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(clippy::enum_variant_names)]
 pub enum Response {
     Success {
         data: Option<serde_json::Value>,
@@ -193,7 +195,7 @@ pub enum Response {
         message: String,
     },
     Heartbeat,
-    /// Immediate ACK for agent chat with request_id
+    /// Immediate ACK for agent chat with `request_id`
     AgentChatAck {
         request_id: String,
     },
@@ -316,23 +318,17 @@ pub async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
 
 /// Handle individual WebSocket message
 async fn handle_message(msg: Message, connection_id: &str, state: &Arc<AppState>) -> Result<()> {
-    match msg {
-        Message::Text(text) => match serde_json::from_str::<Command>(&text) {
+    if let Message::Text(text) = msg {
+        match serde_json::from_str::<Command>(&text) {
             Ok(command) => {
                 route_command(command, connection_id, state).await?;
             }
             Err(e) => {
                 return Err(e.into());
             }
-        },
-        Message::Close(_) => {
-            // Connection closing
         }
-        Message::Pong(_) => {
-            // Pong received
-        }
-        _ => {}
     }
+    // Connection closing, pong received, or other message types - no action needed
     Ok(())
 }
 
@@ -347,21 +343,19 @@ async fn route_command(command: Command, connection_id: &str, state: &Arc<AppSta
     if !matches!(
         command,
         Command::Auth { .. } | Command::Heartbeat | Command::Test { .. }
-    ) && !is_test_cli_command
+    ) && !is_test_cli_command && !is_authenticated(connection_id, state).await
     {
-        if !is_authenticated(connection_id, state).await {
-            warn!(
-                "Rejecting command from unauthenticated connection {}: {:?}",
-                connection_id, command
-            );
-            send_error_response(
-                connection_id,
-                state,
-                "Failed to execute command: not authenticated",
-            )
-            .await?;
-            return Ok(());
-        }
+        warn!(
+            "Rejecting command from unauthenticated connection {}: {:?}",
+            connection_id, command
+        );
+        send_error_response(
+            connection_id,
+            state,
+            "Failed to execute command: not authenticated",
+        )
+        .await?;
+        return Ok(());
     }
 
     // Route to appropriate handler based on command type
@@ -376,18 +370,18 @@ async fn route_command(command: Command, connection_id: &str, state: &Arc<AppSta
 }
 
 /// Check if command is agent-related
-fn is_agent_command(command: &Command) -> bool {
+const fn is_agent_command(command: &Command) -> bool {
     matches!(
         command,
         Command::AgentChat { .. }
             | Command::AgentHistory { .. }
-            | Command::AgentReset { .. }
-            | Command::AgentInfo { .. }
+            | Command::AgentReset
+            | Command::AgentInfo
     )
 }
 
 /// Check if command is graph-related
-fn is_graph_command(command: &Command) -> bool {
+const fn is_graph_command(command: &Command) -> bool {
     matches!(
         command,
         Command::CreateBlock { .. }

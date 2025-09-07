@@ -3,6 +3,8 @@
 //! This module contains HTTP API and WebSocket functionality for the
 //! cymbiont-server binary.
 
+#![allow(clippy::module_inception)]
+
 pub mod auth;
 pub mod http_api;
 pub mod server;

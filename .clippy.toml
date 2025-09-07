@@ -1,0 +1,6 @@
+# Clippy configuration
+
+# Cognitive complexity threshold
+# Default is 25, but that's too sensitive for Rust's functional patterns
+# (pattern matching, closures, iterators all add "complexity" points)
+cognitive-complexity-threshold = 50

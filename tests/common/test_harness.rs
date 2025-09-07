@@ -4,13 +4,13 @@
 //! It enforces clear separation between test phases to prevent common mistakes like
 //! trying to validate persisted data before the server has shut down.
 //!
-//! For test validation, use TestValidator from test_validator.rs
+//! For test validation, use `TestValidator` from `test_validator.rs`
 //! to validate that expected operations resulted in correct JSON persistence.
 //!
 //! ## Universal Test Infrastructure
 //!
 //! All integration tests use this harness to ensure consistent server lifecycle management
-//! and reliable shutdown behavior. The TestServer supports both CLI and server modes
+//! and reliable shutdown behavior. The `TestServer` supports both CLI and server modes
 //! through flexible argument passing while maintaining identical shutdown detection.
 //!
 //! ## Comprehensive Example: WebSocket Test with Graph Operations
@@ -82,7 +82,7 @@
 //! **Environment Setup:**
 //! - `setup_test_env()` - Creates isolated test environment with unique ports/directories
 //! - `cleanup_test_env()` - Removes all test artifacts
-//! - `setup_with_graph()` - Combines import_dummy_graph() and TestServer::start()
+//! - `setup_with_graph()` - Combines `import_dummy_graph()` and `TestServer::start()`
 //!
 //! **Server Control:**
 //! - `TestServer::start()` - Start server mode and wait for HTTP ready
@@ -161,7 +161,7 @@ pub fn setup_test_env() -> TestEnv {
 
     // Create unique test ID
     let test_id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let test_dir = format!("test_data_{}", test_id);
+    let test_dir = format!("test_data_{test_id}");
     let test_data_dir = Path::new(&test_dir);
 
     // Clean up if it exists (shouldn't happen but be safe)
@@ -173,17 +173,18 @@ pub fn setup_test_env() -> TestEnv {
     fs::create_dir_all(test_data_dir).expect("Failed to create test data directory");
 
     // Create unique config file with unique port
+    #[allow(clippy::cast_possible_truncation)] // test_id is small, port range is u16
     let test_port = 8888 + test_id as u16;
-    let config_path = PathBuf::from(format!("config.test.{}.yaml", test_id));
+    let config_path = PathBuf::from(format!("config.test.{test_id}.yaml"));
     let config_content = format!(
-        r#"# Cymbiont Test Configuration for test {}
+        r#"# Cymbiont Test Configuration for test {test_id}
 
 # Backend server configuration
 backend:
   host: 127.0.0.1
-  port: {}
+  port: {test_port}
   max_port_attempts: 10
-  server_info_file: "cymbiont_server_test_{}.json"
+  server_info_file: "cymbiont_server_test_{test_id}.json"
 
 # Development-only settings
 development:
@@ -192,9 +193,8 @@ development:
   default_duration: 3
 
 # Data storage directory - unique per test
-data_dir: {}
-"#,
-        test_id, test_port, test_id, test_dir
+data_dir: {test_dir}
+"#
     );
 
     fs::write(&config_path, config_content).expect("Failed to write test config");
@@ -227,7 +227,7 @@ fn check_test_verbosity() {
 }
 
 /// Clean up test environment after tests
-pub fn cleanup_test_env(test_env: TestEnv) {
+pub fn cleanup_test_env(test_env: &TestEnv) {
     // Check log verbosity before cleanup
     check_test_verbosity();
 
@@ -248,10 +248,10 @@ pub fn cleanup_test_env(test_env: TestEnv) {
     // Remove test data directory
     if test_env.data_dir.exists() {
         match fs::remove_dir_all(&test_env.data_dir) {
-            Ok(_) => {}
+            Ok(()) => {}
             Err(e) => {
                 use tracing::error;
-                error!("Failed to remove test data directory: {}", e);
+                error!("Failed to remove test data directory: {e}");
             }
         }
     }
@@ -265,7 +265,7 @@ pub fn cleanup_test_env(test_env: TestEnv) {
     if let Some(config_name) = test_env.config_path.file_stem() {
         if let Some(config_str) = config_name.to_str() {
             if let Some(test_id_str) = config_str.strip_prefix("config.test.") {
-                let server_info_file = format!("cymbiont_server_test_{}.json", test_id_str);
+                let server_info_file = format!("cymbiont_server_test_{test_id_str}.json");
                 let _ = fs::remove_file(&server_info_file);
             }
         }
@@ -287,13 +287,13 @@ pub struct TestServer {
 
 impl TestServer {
     /// Start a new test server with custom command line arguments
-    pub fn start_with_args(test_env: TestEnv, args: Vec<&str>) -> Self {
+    pub fn start_with_args(test_env: TestEnv, args: &[&str]) -> Self {
         let config_path = test_env.config_path.to_str().unwrap();
 
         let mut cmd = Command::new(get_cymbiont_binary());
         cmd.env("CYMBIONT_TEST_MODE", "1")
-            .args(&["--config", config_path])
-            .args(&args);
+            .args(["--config", config_path])
+            .args(args);
 
         // Only inherit stdout/stderr if --nocapture was passed
         if !is_nocapture() {
@@ -305,6 +305,8 @@ impl TestServer {
 
         // Different startup detection based on args
         let actual_port = if args.contains(&"--server") {
+            const MAX_ATTEMPTS: u32 = 150; // 15 seconds with 100ms intervals
+            
             // Server mode: Wait for server info file + health check
             // Read config to get server info filename
             let config_content =
@@ -316,18 +318,18 @@ impl TestServer {
                 .expect("server_info_file not found in config");
 
             let mut attempts = 0;
-            const MAX_ATTEMPTS: u32 = 150; // 15 seconds with 100ms intervals
             loop {
                 attempts += 1;
 
                 if let Ok(info_str) = std::fs::read_to_string(server_info_file) {
                     if let Ok(info) = serde_json::from_str::<serde_json::Value>(&info_str) {
                         if let Some(port) = info["port"].as_u64() {
+                            #[allow(clippy::cast_possible_truncation)] // port is always valid u16 range
                             let port = port as u16;
 
                             // Try to connect to verify it's really ready
                             let client = reqwest::blocking::Client::new();
-                            let url = format!("http://localhost:{}/", port);
+                            let url = format!("http://localhost:{port}/");
                             match client.get(&url).timeout(Duration::from_secs(1)).send() {
                                 Ok(response) if response.status().is_success() => {
                                     break port;
@@ -342,7 +344,7 @@ impl TestServer {
 
                 if attempts >= MAX_ATTEMPTS {
                     let _ = process.kill();
-                    panic!("Server failed to start after {} attempts", MAX_ATTEMPTS);
+                    panic!("Server failed to start after {MAX_ATTEMPTS} attempts");
                 }
 
                 thread::sleep(Duration::from_millis(100));
@@ -352,19 +354,19 @@ impl TestServer {
             thread::sleep(Duration::from_millis(100)); // Give it a moment to start
             match process.try_wait() {
                 Ok(Some(status)) => {
-                    panic!("Process exited immediately with status: {:?}", status);
+                    panic!("Process exited immediately with status: {status:?}");
                 }
                 Ok(None) => {
                     // Process is running, good
                 }
                 Err(e) => {
-                    panic!("Failed to check process status: {}", e);
+                    panic!("Failed to check process status: {e}");
                 }
             }
             0 // No port for CLI mode
         };
 
-        TestServer {
+        Self {
             process,
             port: actual_port,
             test_env,
@@ -373,7 +375,7 @@ impl TestServer {
 
     /// Start a new test server (convenience method for server mode)
     pub fn start(test_env: TestEnv) -> Self {
-        Self::start_with_args(test_env, vec!["--server"])
+        Self::start_with_args(test_env, &["--server"])
     }
 
     /// Shutdown the server gracefully
@@ -390,7 +392,7 @@ impl TestServer {
                 #[cfg(target_family = "unix")]
                 {
                     let _ = Command::new("kill")
-                        .args(&["-2", &pid.to_string()])
+                        .args(["-2", &pid.to_string()])
                         .output();
                 }
 
@@ -434,18 +436,16 @@ impl TestServer {
         thread::sleep(Duration::from_millis(1000));
 
         // Clone before moving out (since we implement Drop)
-        let test_env = self.test_env.clone();
-
-        test_env
+        self.test_env.clone()
     }
 
     /// Get the server port
-    pub fn port(&self) -> u16 {
+    pub const fn port(&self) -> u16 {
         self.port
     }
 
     /// Get a reference to the test environment
-    pub fn test_env(&self) -> &TestEnv {
+    pub const fn test_env(&self) -> &TestEnv {
         &self.test_env
     }
 }
@@ -483,23 +483,22 @@ pub type WsConnection = WebSocket<MaybeTlsStream<TcpStream>>;
 
 /// Connect to WebSocket endpoint with retries
 pub fn connect_websocket(port: u16) -> WsConnection {
-    let url = format!("ws://localhost:{}/ws", port);
+    const MAX_ATTEMPTS: u32 = 10;
+    
+    let url = format!("ws://localhost:{port}/ws");
 
     // Retry connection a few times as server may still be initializing WebSocket
     let mut attempts = 0;
-    const MAX_ATTEMPTS: u32 = 10;
 
     loop {
         attempts += 1;
         match connect(&url) {
             Ok((socket, _)) => return socket,
             Err(e) => {
-                if attempts >= MAX_ATTEMPTS {
-                    panic!(
-                        "Failed to connect to WebSocket after {} attempts: {}",
-                        MAX_ATTEMPTS, e
-                    );
-                }
+                assert!(
+                    attempts < MAX_ATTEMPTS,
+                    "Failed to connect to WebSocket after {MAX_ATTEMPTS} attempts: {e}"
+                );
                 thread::sleep(Duration::from_millis(100));
             }
         }
@@ -507,7 +506,7 @@ pub fn connect_websocket(port: u16) -> WsConnection {
 }
 
 /// Send a command and wait for response (skipping heartbeats)
-pub fn send_command(ws: &mut WsConnection, command: Value) -> Value {
+pub fn send_command(ws: &mut WsConnection, command: &Value) -> Value {
     // Send command
     let msg = Message::Text(command.to_string().into());
     ws.send(msg).expect("Failed to send WebSocket message");
@@ -517,18 +516,19 @@ pub fn send_command(ws: &mut WsConnection, command: Value) -> Value {
     let start = Instant::now();
 
     loop {
-        if start.elapsed() > timeout {
-            panic!("Timeout waiting for response to command: {}", command);
-        }
+        assert!(
+            start.elapsed() <= timeout,
+            "Timeout waiting for response to command: {command}"
+        );
 
         match ws.read() {
             Ok(Message::Text(text)) => {
                 let response: Value =
                     serde_json::from_str(&text).expect("Failed to parse WebSocket response");
 
-                // Skip heartbeats
+                // Skip heartbeats - continue is REQUIRED here to loop and get the actual response
                 if response["type"] == "heartbeat" {
-                    continue;
+                    continue; // NOT redundant - needed to skip heartbeat and read next message
                 }
 
                 return response;
@@ -536,25 +536,24 @@ pub fn send_command(ws: &mut WsConnection, command: Value) -> Value {
             Ok(Message::Close(_)) => {
                 panic!("WebSocket connection closed unexpectedly");
             }
-            Ok(_) => continue, // Skip other message types
+            Ok(_) => {} // Skip other message types
             Err(e) => {
                 // Check if this is a timeout/would-block error
                 if e.to_string().contains("would block") {
                     thread::sleep(Duration::from_millis(10));
                     continue;
                 }
-                panic!("WebSocket read error: {}", e);
+                panic!("WebSocket read error: {e}");
             }
         }
     }
 }
 
 /// Expect a success response and return the data
-pub fn expect_success(response: Value) -> Option<Value> {
+pub fn expect_success(response: &Value) -> Option<Value> {
     assert_eq!(
         response["type"], "success",
-        "Expected success response, got: {}",
-        response
+        "Expected success response, got: {response}"
     );
     response.get("data").cloned()
 }
@@ -566,7 +565,7 @@ pub fn authenticate_websocket(ws: &mut WsConnection, token: &str) -> bool {
         "token": token
     });
 
-    let response = send_command(ws, auth_cmd);
+    let response = send_command(ws, &auth_cmd);
     response["type"] == "success"
 }
 
@@ -587,8 +586,8 @@ pub async fn import_dummy_graph_http(
     // Make HTTP POST request to import endpoint
     let client = reqwest::Client::new();
     let response = client
-        .post(format!("http://127.0.0.1:{}/import/logseq", port))
-        .header("Authorization", format!("Bearer {}", token))
+        .post(format!("http://127.0.0.1:{port}/import/logseq"))
+        .header("Authorization", format!("Bearer {token}"))
         .json(&serde_json::json!({
             "path": "logseq_databases/dummy_graph/"
         }))
@@ -598,7 +597,7 @@ pub async fn import_dummy_graph_http(
     // Check status
     if !response.status().is_success() {
         let text = response.text().await?;
-        return Err(format!("Import failed: {}", text).into());
+        return Err(format!("Import failed: {text}").into());
     }
 
     // Parse response
@@ -629,6 +628,8 @@ pub fn read_auth_token(data_dir: &Path) -> String {
 
 /// Get the single open graph ID from registry (panics if not exactly one open graph)
 pub fn get_single_open_graph_id(data_dir: &Path) -> String {
+    const MAX_ATTEMPTS: u32 = 10;
+    
     // Wait a bit for registry to be flushed after import
     thread::sleep(Duration::from_millis(200));
 
@@ -636,7 +637,6 @@ pub fn get_single_open_graph_id(data_dir: &Path) -> String {
 
     // Retry a few times in case the registry isn't written yet
     let mut attempts = 0;
-    const MAX_ATTEMPTS: u32 = 10;
 
     loop {
         attempts += 1;
@@ -660,9 +660,10 @@ pub fn get_single_open_graph_id(data_dir: &Path) -> String {
             }
         }
 
-        if attempts >= MAX_ATTEMPTS {
-            panic!("Failed to find single open graph after {} attempts. Registry may not be flushed yet.", MAX_ATTEMPTS);
-        }
+        assert!(
+            attempts < MAX_ATTEMPTS,
+            "Failed to find single open graph after {MAX_ATTEMPTS} attempts. Registry may not be flushed yet."
+        );
 
         thread::sleep(Duration::from_millis(100));
     }
@@ -690,7 +691,7 @@ pub fn setup_with_graph(test_env: TestEnv) -> (TestServer, String) {
 
 // ===== Agent Chat Utilities =====
 
-/// Send agent chat and get request_id (for async processing)
+/// Send agent chat and get `request_id` (for async processing)
 ///
 /// Send agent chat command and wait for processing ACK
 pub fn send_agent_chat(
@@ -730,14 +731,15 @@ pub fn send_agent_chat(
 
                 // Skip heartbeats
                 if response["type"] == "heartbeat" {
-                    continue;
+                    // Continue to next iteration (implicit)
                 }
             }
-            Ok(_) => continue,
+            Ok(_) => {}
             Err(e) => {
-                if start.elapsed() > timeout {
-                    panic!("Timeout waiting for agent chat ACK: {}", e);
-                }
+                assert!(
+                    start.elapsed() <= timeout,
+                    "Timeout waiting for agent chat ACK: {e}"
+                );
                 thread::sleep(Duration::from_millis(10));
             }
         }
@@ -764,7 +766,7 @@ pub fn wait_for_agent_response(ws: &mut WsConnection) -> Value {
                 }
                 // Skip heartbeats
                 if msg["type"] == "heartbeat" {
-                    continue;
+                    // Continue to next iteration (implicit)
                 }
             }
             Ok(Message::Close(_)) => {
@@ -772,9 +774,10 @@ pub fn wait_for_agent_response(ws: &mut WsConnection) -> Value {
             }
             Ok(_) => {}
             Err(e) => {
-                if start.elapsed() > timeout {
-                    panic!("Timeout waiting for agent response: {}", e);
-                }
+                assert!(
+                    start.elapsed() <= timeout,
+                    "Timeout waiting for agent response: {e}"
+                );
                 thread::sleep(Duration::from_millis(10));
             }
         }

@@ -22,11 +22,11 @@ fn make_import_request(
         body["graph_name"] = json!(name);
     }
 
-    let url = format!("http://localhost:{}/import/logseq", port);
+    let url = format!("http://localhost:{port}/import/logseq");
     let mut request = client.post(&url).json(&body);
 
     if let Some(token) = auth_token {
-        request = request.header("Authorization", format!("Bearer {}", token));
+        request = request.header("Authorization", format!("Bearer {token}"));
     }
 
     let response = request.send()?;
@@ -34,6 +34,7 @@ fn make_import_request(
     Ok(response.json()?)
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn test_http_logseq_import() {
     // Set up test environment
     let test_env = setup_test_env();
@@ -189,7 +190,7 @@ pub fn test_http_logseq_import() {
 
     // Always clean up, even if test failed
     if let Ok(test_env) = result {
-        cleanup_test_env(test_env);
+        cleanup_test_env(&test_env);
     } else if let Err(panic) = result {
         std::panic::resume_unwind(panic);
     }
@@ -253,7 +254,7 @@ pub fn test_http_import_error_cases() {
 
     // Always clean up
     if let Ok(test_env) = result {
-        cleanup_test_env(test_env);
+        cleanup_test_env(&test_env);
     } else if let Err(panic) = result {
         std::panic::resume_unwind(panic);
     }

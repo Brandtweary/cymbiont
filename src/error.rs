@@ -33,12 +33,12 @@
 //!
 //! ## Error Categories
 //!
-//! - **StorageError**: Registry, persistence, and transaction errors
-//! - **AgentError**: LLM backend and tool execution errors
-//! - **GraphError**: Graph operations and lifecycle errors
-//! - **ServerError**: HTTP, WebSocket, and authentication errors
-//! - **ImportError**: Data import and parsing errors
-//! - **ConfigError**: Configuration loading and validation errors
+//! - **`StorageError`**: Registry, persistence, and transaction errors
+//! - **`AgentError`**: LLM backend and tool execution errors
+//! - **`GraphError`**: Graph operations and lifecycle errors
+//! - **`ServerError`**: HTTP, WebSocket, and authentication errors
+//! - **`ImportError`**: Data import and parsing errors
+//! - **`ConfigError`**: Configuration loading and validation errors
 //!
 //! Each category provides convenience constructors for common error patterns,
 //! making it easy to create appropriate errors without verbose boilerplate.
@@ -46,7 +46,7 @@
 //! ## Error Propagation
 //!
 //! The system uses `thiserror` for automatic error derivation and implements
-//! automatic conversions from common external error types (serde_json, sled, etc.)
+//! automatic conversions from common external error types (`serde_json`, `sled`, etc.)
 //! to appropriate domain errors. This enables seamless error propagation using
 //! the `?` operator throughout the codebase.
 
@@ -125,6 +125,7 @@ pub enum StorageError {
 pub enum AgentError {
     /// LLM backend errors
     #[error("LLM error: {message}")]
+    #[allow(clippy::upper_case_acronyms)]
     LLM { message: String },
 
     /// Knowledge graph tool errors
@@ -236,32 +237,32 @@ pub enum ProcessorError {
 
 impl From<String> for CymbiontError {
     fn from(message: String) -> Self {
-        CymbiontError::Other(message)
+        Self::Other(message)
     }
 }
 
 impl From<&str> for CymbiontError {
     fn from(message: &str) -> Self {
-        CymbiontError::Other(message.to_string())
+        Self::Other(message.to_string())
     }
 }
 
 impl From<serde_json::Error> for CymbiontError {
     fn from(error: serde_json::Error) -> Self {
-        CymbiontError::Storage(StorageError::Serialization(error))
+        Self::Storage(StorageError::Serialization(error))
     }
 }
 
 impl From<serde_yaml::Error> for CymbiontError {
     fn from(error: serde_yaml::Error) -> Self {
-        CymbiontError::Config(ConfigError::Yaml(error))
+        Self::Config(ConfigError::Yaml(error))
     }
 }
 
 // Domain error convenience constructors
 impl StorageError {
     pub fn graph_registry(message: impl Into<String>) -> Self {
-        StorageError::GraphRegistry {
+        Self::GraphRegistry {
             message: message.into(),
         }
     }
@@ -271,7 +272,7 @@ impl StorageError {
         identifier_type: impl Into<String>,
         identifier: impl Into<String>,
     ) -> Self {
-        StorageError::NotFound {
+        Self::NotFound {
             entity_type: entity_type.into(),
             identifier_type: identifier_type.into(),
             identifier: identifier.into(),
@@ -281,19 +282,19 @@ impl StorageError {
 
 impl AgentError {
     pub fn llm(message: impl Into<String>) -> Self {
-        AgentError::LLM {
+        Self::LLM {
             message: message.into(),
         }
     }
 
     pub fn tool(message: impl Into<String>) -> Self {
-        AgentError::Tool {
+        Self::Tool {
             message: message.into(),
         }
     }
 
     pub fn serialization(message: impl Into<String>) -> Self {
-        AgentError::Serialization {
+        Self::Serialization {
             message: message.into(),
         }
     }
@@ -301,26 +302,26 @@ impl AgentError {
 
 impl GraphError {
     pub fn lifecycle(message: impl Into<String>) -> Self {
-        GraphError::Lifecycle {
+        Self::Lifecycle {
             message: message.into(),
         }
     }
 
     pub fn not_found(identifier: impl Into<String>) -> Self {
-        GraphError::NotFound {
+        Self::NotFound {
             identifier: identifier.into(),
         }
     }
 
     pub fn node_not_found(node_id: impl Into<String>, graph_id: Uuid) -> Self {
-        GraphError::NodeNotFound {
+        Self::NodeNotFound {
             node_id: node_id.into(),
             graph_id,
         }
     }
 
     pub fn invalid_state(message: impl Into<String>) -> Self {
-        GraphError::InvalidState {
+        Self::InvalidState {
             message: message.into(),
         }
     }
@@ -328,31 +329,31 @@ impl GraphError {
 
 impl ServerError {
     pub fn websocket(message: impl Into<String>) -> Self {
-        ServerError::WebSocket {
+        Self::WebSocket {
             message: message.into(),
         }
     }
 
     pub fn authentication(message: impl Into<String>) -> Self {
-        ServerError::Authentication {
+        Self::Authentication {
             message: message.into(),
         }
     }
 
     pub fn startup(message: impl Into<String>) -> Self {
-        ServerError::Startup {
+        Self::Startup {
             message: message.into(),
         }
     }
 
     pub fn port_binding(message: impl Into<String>) -> Self {
-        ServerError::PortBinding {
+        Self::PortBinding {
             message: message.into(),
         }
     }
 
     pub fn invalid_request(message: impl Into<String>) -> Self {
-        ServerError::InvalidRequest {
+        Self::InvalidRequest {
             message: message.into(),
         }
     }
@@ -360,20 +361,20 @@ impl ServerError {
 
 impl ImportError {
     pub fn parse(file_path: impl Into<String>, message: impl Into<String>) -> Self {
-        ImportError::Parse {
+        Self::Parse {
             file_path: file_path.into(),
             message: message.into(),
         }
     }
 
     pub fn validation(message: impl Into<String>) -> Self {
-        ImportError::Validation {
+        Self::Validation {
             message: message.into(),
         }
     }
 
     pub fn path(message: impl Into<String>) -> Self {
-        ImportError::Path {
+        Self::Path {
             message: message.into(),
         }
     }

@@ -35,11 +35,11 @@
 //!
 //! ## Core Components
 //!
-//! - **CommandQueue**: Thread-safe public API for command submission
-//! - **CommandProcessor**: Single-threaded owner of all mutable state
+//! - **`CommandQueue`**: Thread-safe public API for command submission
+//! - **`CommandProcessor`**: Single-threaded owner of all mutable state
 //! - **Command**: Enum representing all possible mutations
-//! - **RouterToken**: Compile-time enforcement of CQRS routing
-//! - **CommandLog**: Command persistence
+//! - **`RouterToken`**: Compile-time enforcement of CQRS routing
+//! - **`CommandLog`**: Command persistence
 //!
 //! ## Usage Examples
 //!
@@ -79,9 +79,9 @@
 //! - Network I/O dominates response time anyway
 //! - Reads (the majority of operations) are unlimited concurrent
 //!
-//! ### RouterToken Pattern
+//! ### `RouterToken` Pattern
 //! The `RouterToken` is a zero-sized type that can only be constructed within the
-//! router module. All domain logic methods require a RouterToken, making it impossible
+//! router module. All domain logic methods require a `RouterToken`, making it impossible
 //! to bypass CQRS at compile time. This is Rust's type system working as architecture
 //! enforcement.
 //!
@@ -96,7 +96,7 @@
 //! 2. Define a Command variant with all needed parameters
 //! 3. Convert direct calls to `command_queue.execute()`
 //! 4. Move business logic to router handlers
-//! 5. Require RouterToken in helper functions
+//! 5. Require `RouterToken` in helper functions
 //!
 //! ## Future Simplifications
 //!

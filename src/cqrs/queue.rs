@@ -1,13 +1,13 @@
 //! Command Queue - The Public Gateway to State Mutations
 //!
-//! The CommandQueue is the single entry point for all state changes in Cymbiont.
+//! The `CommandQueue` is the single entry point for all state changes in Cymbiont.
 //! It provides a clean, async API that accepts commands and returns futures,
 //! allowing callers to submit mutations without blocking while ensuring all
-//! changes are processed sequentially by the CommandProcessor.
+//! changes are processed sequentially by the `CommandProcessor`.
 //!
 //! ## Architecture Role
 //!
-//! The CommandQueue acts as the boundary between the concurrent outer world
+//! The `CommandQueue` acts as the boundary between the concurrent outer world
 //! and the sequential inner command processor:
 //!
 //! ```text
@@ -65,7 +65,7 @@
 //!
 //! ## Implementation Details
 //!
-//! ### CommandEnvelope
+//! ### `CommandEnvelope`
 //! Each command is wrapped in an envelope containing:
 //! - The command itself
 //! - A oneshot channel for the response
@@ -84,7 +84,7 @@
 //! 1. **Send failure**: The processor has shut down (channel closed)
 //! 2. **Response failure**: The processor crashed before responding
 //!
-//! Both are converted to CymbiontError for consistent error handling.
+//! Both are converted to `CymbiontError` for consistent error handling.
 //!
 //! ## Performance Characteristics
 //!
@@ -103,7 +103,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::commands::{Command, CommandResult};
 use super::processor::CommandEnvelope;
-use crate::error::*;
+use crate::error::{CymbiontError, Result};
 
 /// Public API for submitting commands to the processor
 #[derive(Clone)]
@@ -115,9 +115,9 @@ impl CommandQueue {
     /// Create a new command queue with external channel management
     ///
     /// This variant is used when the processor and channel need to be
-    /// set up separately (e.g., during AppState initialization).
-    pub fn new_with_sender(sender: mpsc::Sender<CommandEnvelope>) -> Self {
-        CommandQueue { sender }
+    /// set up separately (e.g., during `AppState` initialization).
+    pub const fn new_with_sender(sender: mpsc::Sender<CommandEnvelope>) -> Self {
+        Self { sender }
     }
 
     /// Execute a command and wait for the result
@@ -135,10 +135,10 @@ impl CommandQueue {
         self.sender
             .send(envelope)
             .await
-            .map_err(|e| CymbiontError::Other(format!("Failed to send command: {}", e)))?;
+            .map_err(|e| CymbiontError::Other(format!("Failed to send command: {e}")))?;
 
         // Wait for response
         rx.await
-            .map_err(|e| CymbiontError::Other(format!("Command processor dropped: {}", e)))?
+            .map_err(|e| CymbiontError::Other(format!("Command processor dropped: {e}")))?
     }
 }

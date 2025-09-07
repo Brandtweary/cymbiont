@@ -6,6 +6,7 @@ use crate::common::{cleanup_test_env, setup_test_env, MessagePattern, TestValida
 use serde_json::json;
 
 /// Test agent chat commands (chat, history, reset, info)
+#[allow(clippy::too_many_lines)]
 pub fn test_agent_chat_commands() {
     // Set up test environment
     let test_env = setup_test_env();
@@ -39,8 +40,8 @@ pub fn test_agent_chat_commands() {
             let cmd = json!({
                 "type": "agent_info"
             });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).expect("No data in agent_info response");
+            let response = send_command(&mut ws, &cmd);
+            let data = expect_success(&response).expect("No data in agent_info response");
             assert!(
                 data["is_active"].as_bool().unwrap_or(false),
                 "Agent should be active"
@@ -89,8 +90,8 @@ pub fn test_agent_chat_commands() {
             let cmd = json!({
                 "type": "agent_history"
             });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).expect("No data in agent_history response");
+            let response = send_command(&mut ws, &cmd);
+            let data = expect_success(&response).expect("No data in agent_history response");
 
             let messages = data["messages"]
                 .as_array()
@@ -124,8 +125,8 @@ pub fn test_agent_chat_commands() {
                 "type": "agent_history",
                 "limit": 2
             });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).expect("No data in agent_history response");
+            let response = send_command(&mut ws, &cmd);
+            let data = expect_success(&response).expect("No data in agent_history response");
 
             let messages = data["messages"]
                 .as_array()
@@ -142,8 +143,8 @@ pub fn test_agent_chat_commands() {
             let cmd = json!({
                 "type": "agent_reset"
             });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).expect("No data in agent_reset response");
+            let response = send_command(&mut ws, &cmd);
+            let data = expect_success(&response).expect("No data in agent_reset response");
 
             assert!(data["success"].as_bool().unwrap_or(false));
 
@@ -156,8 +157,8 @@ pub fn test_agent_chat_commands() {
             let cmd = json!({
                 "type": "agent_history"
             });
-            let response = send_command(&mut ws, cmd);
-            let data = expect_success(response).expect("No data in agent_history response");
+            let response = send_command(&mut ws, &cmd);
+            let data = expect_success(&response).expect("No data in agent_history response");
 
             let messages = data["messages"]
                 .as_array()
@@ -187,10 +188,10 @@ pub fn test_agent_chat_commands() {
     // Always clean up, even if test failed
     match result {
         Ok(test_env) => {
-            cleanup_test_env(test_env);
+            cleanup_test_env(&test_env);
         }
         Err(panic) => {
-            cleanup_test_env(cleanup_env);
+            cleanup_test_env(&cleanup_env);
             std::panic::resume_unwind(panic);
         }
     }

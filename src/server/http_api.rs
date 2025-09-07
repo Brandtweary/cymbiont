@@ -1,4 +1,4 @@
-//! @module http_api
+//! `@module http_api`
 //! @description HTTP API implementation for the Cymbiont Knowledge Graph backend
 //!
 //! This module provides HTTP endpoints for health checks, one-time import operations,
@@ -60,7 +60,7 @@
 //! ## Integration Points
 //!
 //! The HTTP API integrates with:
-//! - **AppState**: Shared application state for graph management
+//! - **`AppState`**: Shared application state for graph management
 //! - **Import System**: Logseq parsing and graph creation
 //! - **WebSocket Server**: Connection handoff and status reporting
 //! - **Storage Layer**: Graph registry and transaction coordination
@@ -183,7 +183,7 @@ pub async fn import_logseq(
         Err(e) => {
             return Json(LogseqImportResponse {
                 success: false,
-                message: format!("Failed to resolve path: {}", e),
+                message: format!("Failed to resolve path: {e}"),
                 graph_id: String::new(),
                 graph_name: String::new(),
                 pages_imported: 0,
@@ -229,7 +229,7 @@ pub async fn import_logseq(
             error!("Import failed: {}", e);
             Json(LogseqImportResponse {
                 success: false,
-                message: format!("Import failed: {}", e),
+                message: format!("Import failed: {e}"),
                 graph_id: String::new(),
                 graph_name: String::new(),
                 pages_imported: 0,
@@ -260,7 +260,7 @@ pub async fn get_websocket_status(State(state): State<Arc<AppState>>) -> Json<se
         registry
             .get_open_graphs()
             .iter()
-            .map(|id| id.to_string())
+            .map(std::string::ToString::to_string)
             .collect()
     };
 

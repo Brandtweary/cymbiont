@@ -9,29 +9,29 @@
 //!
 //! ### Port Management
 //! - Attempts to bind to configured base port (default: 8888)
-//! - Automatically searches for available ports up to max_port_attempts
+//! - Automatically searches for available ports up to `max_port_attempts`
 //! - Writes server info file for process discovery and management
 //!
 //! ### Previous Instance Handling
-//! - Detects existing server via server_info_file
+//! - Detects existing server via `server_info_file`
 //! - Terminates previous instances gracefully (SIGTERM)
 //! - Cleans up stale server info files
 //!
 //! ### Server Creation
-//! - Creates Axum router with all HTTP/WebSocket routes
+//! - Creates `Axum` router with all HTTP/WebSocket routes
 //! - Binds TCP listener to discovered port
 //! - Spawns server task and returns handle for external control
 //!
 //! ## Multi-Instance Support
 //!
 //! The server supports multiple concurrent instances through configurable
-//! server_info_file paths. Each instance writes its PID and port to a
+//! `server_info_file` paths. Each instance writes its PID and port to a
 //! unique file, enabling independent process management.
 //!
 //! ## Integration
 //!
-//! The `start_server()` function returns a JoinHandle that main.rs uses
-//! to manage the server lifecycle. This separation allows main.rs to
+//! The `start_server()` function returns a `JoinHandle` that `main.rs` uses
+//! to manage the server lifecycle. This separation allows `main.rs` to
 //! coordinate shutdown across both CLI and server modes uniformly.
 //!
 //! ## Error Handling
@@ -42,7 +42,7 @@
 //!
 //! ## Configuration
 //!
-//! Server behavior controlled via BackendConfig:
+//! Server behavior controlled via `BackendConfig`:
 //! - `port`: Base port to attempt binding (default: 8888)
 //! - `max_port_attempts`: Number of ports to try (default: 10)
 //! - `server_info_file`: Path for process discovery file
@@ -58,7 +58,7 @@ use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tracing::info;
 
-use crate::error::*;
+use crate::error::{Result, ServerError};
 use crate::{
     server::http_api::create_router,
     utils::{find_available_port, terminate_previous_instance, write_server_info},
@@ -85,10 +85,10 @@ pub async fn start_server(
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
 
     write_server_info("127.0.0.1", port, server_info_file)
-        .map_err(|e| ServerError::startup(format!("Failed to write server info: {}", e)))?;
+        .map_err(|e| ServerError::startup(format!("Failed to write server info: {e}")))?;
 
     let listener = TcpListener::bind(addr).await.map_err(|e| {
-        ServerError::port_binding(format!("Failed to bind to port {}: {}", port, e))
+        ServerError::port_binding(format!("Failed to bind to port {port}: {e}"))
     })?;
 
     info!("🚀 Cymbiont Server listening on {}", addr);

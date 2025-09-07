@@ -8,10 +8,10 @@
 //!
 //! Commands are organized into logical groups based on what they affect:
 //!
-//! - **GraphCommand**: Mutations to knowledge graph content (blocks, pages)
-//! - **AgentCommand**: Changes to agent state (messages, configuration)
-//! - **RegistryCommand**: Lifecycle operations (create/delete graphs)
-//! - **SystemCommand**: Infrastructure control (shutdown)
+//! - **`GraphCommand`**: Mutations to knowledge graph content (blocks, pages)
+//! - **`AgentCommand`**: Changes to agent state (messages, configuration)
+//! - **`RegistryCommand`**: Lifecycle operations (create/delete graphs)
+//! - **`SystemCommand`**: Infrastructure control (shutdown)
 //!
 //! ## Command Design Patterns
 //!
@@ -143,6 +143,7 @@ pub enum RegistryCommand {
 
 /// Graph registry mutations
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(clippy::enum_variant_names)]
 pub enum GraphRegistryCommand {
     /// Create a new graph
     CreateGraph {
@@ -155,7 +156,7 @@ pub enum GraphRegistryCommand {
         name: Option<String>,
         description: Option<String>,
     },
-    /// Remove a graph (archive to archived_graphs/)
+    /// Remove a graph (archive to `archived_graphs`/)
     RemoveGraph {
         graph_id: Uuid,
     },

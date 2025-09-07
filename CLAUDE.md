@@ -28,6 +28,8 @@ RUST_LOG=debug cargo run         # Run cymbiont with debug logging (do not chang
 
 ### Graph Management
 - `--import-logseq <PATH>`: Import Logseq graph directory (then continues running)
+- `--create-graph <NAME>`: Create a new graph with specified name
+  - `--description <DESCRIPTION>`: Optional description for the graph
 - `--delete-graph <NAME_OR_ID>`: Archive a graph by name or ID
 - `--list-graphs`: List all graphs with metadata
 

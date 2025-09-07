@@ -2,40 +2,40 @@
 //!
 //! This module provides the foundational graph storage and manipulation capabilities
 //! for Cymbiont's knowledge graph system. It implements a generic, high-performance
-//! graph engine using petgraph's StableGraph structure, supporting arbitrary node
+//! graph engine using petgraph's `StableGraph` structure, supporting arbitrary node
 //! and edge types with automatic persistence.
 //!
 //! ## Architecture Overview
 //!
-//! The GraphManager maintains two critical data structures:
+//! The `GraphManager` maintains two critical data structures:
 //! 1. `graph: StableGraph<NodeData, EdgeData>` - The actual graph structure
 //! 2. `node_index: HashMap<String, NodeIndex>` - O(1) node ID → graph node lookup
 //!
 //! ## Key Design Decisions
 //!
-//! ### StableGraph Selection
-//! Petgraph's StableGraph maintains consistent NodeIndex values even after node removals.
-//! This is critical for our HashMap-based ID mapping system, preventing index invalidation
+//! ### `StableGraph` Selection
+//! Petgraph's `StableGraph` maintains consistent `NodeIndex` values even after node removals.
+//! This is critical for our `HashMap`-based ID mapping system, preventing index invalidation
 //! and ensuring reliable node references throughout the application lifetime.
 //!
 //! ### ID System
 //! - **Node ID (id)**: Application-provided identifier (e.g., UUID for blocks, name for pages)
-//! This provides stable references for external operations while maintaining
-//! efficient graph traversal.
+//!   This provides stable references for external operations while maintaining
+//!   efficient graph traversal.
 //!
 //! ### Generic Design
-//! GraphManager is domain-agnostic and accepts any node/edge data that conforms to
-//! the NodeData/EdgeData structures. Domain-specific logic (e.g., PKM operations)
-//! is implemented in separate modules that use GraphManager's generic API.
+//! `GraphManager` is domain-agnostic and accepts any node/edge data that conforms to
+//! the `NodeData`/`EdgeData` structures. Domain-specific logic (e.g., PKM operations)
+//! is implemented in separate modules that use `GraphManager`'s generic API.
 //!
 //! ### Persistence Strategy
 //! Graph state is persisted through the CQRS command log system.
-//! All mutations flow through CommandQueue and are logged before execution.
+//! All mutations flow through `CommandQueue` and are logged before execution.
 //! The graph structure is rebuilt from command replay on startup.
 //!
 //! ## Data Structures
 //!
-//! ### NodeData
+//! ### `NodeData`
 //! - `id`: Node identifier provided by application
 //! - `node_type`: Enum discriminator (Page or Block)
 //! - `content`: Primary node content
@@ -43,17 +43,17 @@
 //! - `properties`: Key-value metadata store
 //! - `created_at` / `updated_at`: Audit timestamps
 //!
-//! ### EdgeData
+//! ### `EdgeData`
 //! - `edge_type`: Enum discriminator for edge semantics
 //! - `weight`: Float weight for graph algorithms (default: 1.0)
 //!
 //! ### Edge Types
-//! - **PageRef**: Reference to a page node
-//! - **BlockRef**: Reference to a block node
-//! - **Tag**: Tag association
-//! - **Property**: Property reference (rarely used as edges)
-//! - **ParentChild**: Hierarchical relationship
-//! - **PageToBlock**: Page ownership relationship
+//! - **`PageRef`**: Reference to a page node
+//! - **`BlockRef`**: Reference to a block node
+//! - **`Tag`**: Tag association
+//! - **`Property`**: Property reference (rarely used as edges)
+//! - **`ParentChild`**: Hierarchical relationship
+//! - **`PageToBlock`**: Page ownership relationship
 //!
 //! ## Core API
 //!
@@ -74,7 +74,7 @@
 //!
 //! ## Performance Characteristics
 //!
-//! - **Node lookup**: O(1) via HashMap index
+//! - **Node lookup**: O(1) via `HashMap` index
 //! - **Node creation**: O(1) amortized
 //! - **Edge creation**: O(1) with duplicate check
 //! - **Full serialization**: O(V + E) where V = vertices, E = edges
@@ -82,10 +82,10 @@
 //!
 //! ## Concurrency Model
 //!
-//! GraphManager is owned exclusively by CommandProcessor in the CQRS architecture:
-//! - All mutations require a RouterToken proving authorization
-//! - Operations are executed sequentially by the CommandProcessor
-//! - No external locking needed as CommandProcessor is single-threaded
+//! `GraphManager` is owned exclusively by `CommandProcessor` in the CQRS architecture:
+//! - All mutations require a `RouterToken` proving authorization
+//! - Operations are executed sequentially by the `CommandProcessor`
+//! - No external locking needed as `CommandProcessor` is single-threaded
 //!
 //! ## Error Handling
 //!
@@ -106,7 +106,7 @@
 //!
 //! ## Integration Points
 //!
-//! - **CQRS Layer**: All mutations go through CommandQueue for durability
+//! - **CQRS Layer**: All mutations go through `CommandQueue` for durability
 //! - **Domain Layer**: Called by domain-specific modules (e.g., `pkm_data`)
 //! - **API Layer**: Wrapped by `graph_operations` for external access
 //! - **Recovery Layer**: State rebuilt from command replay on startup
@@ -120,7 +120,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tracing::info;
 
-use crate::error::*;
+use crate::error::{GraphError, Result};
 
 /// Type alias for our knowledge graph
 pub type KnowledgeGraph = StableGraph<NodeData, EdgeData>;
@@ -227,7 +227,7 @@ impl GraphManager {
     pub fn new<P: AsRef<Path>>(data_dir: P) -> Result<Self> {
         // Ensure directories exist
         fs::create_dir_all(data_dir.as_ref())
-            .map_err(|e| GraphError::lifecycle(format!("Failed to create directories: {}", e)))?;
+            .map_err(|e| GraphError::lifecycle(format!("Failed to create directories: {e}")))?;
 
         let manager = Self {
             graph: StableGraph::new(),
@@ -251,10 +251,10 @@ impl GraphManager {
         });
 
         let json = serde_json::to_string_pretty(&data)
-            .map_err(|e| GraphError::lifecycle(format!("Failed to serialize graph: {}", e)))?;
+            .map_err(|e| GraphError::lifecycle(format!("Failed to serialize graph: {e}")))?;
 
         fs::write(path, json)
-            .map_err(|e| GraphError::lifecycle(format!("Failed to write graph JSON: {}", e)))?;
+            .map_err(|e| GraphError::lifecycle(format!("Failed to write graph JSON: {e}")))?;
 
         Ok(())
     }
@@ -296,6 +296,7 @@ impl GraphManager {
     }
 
     /// Create a new node
+    #[allow(clippy::too_many_arguments)]
     pub fn create_node(
         &mut self,
         node_id: String,
@@ -323,6 +324,7 @@ impl GraphManager {
     }
 
     /// Create or update a node
+    #[allow(clippy::too_many_arguments)]
     pub fn create_or_update_node(
         &mut self,
         node_id: String,
@@ -332,7 +334,7 @@ impl GraphManager {
         properties: HashMap<String, String>,
         created_at: DateTime<Utc>,
         updated_at: DateTime<Utc>,
-    ) -> Result<NodeIndex> {
+    ) -> NodeIndex {
         let node_data = NodeData {
             id: node_id.clone(),
             node_type,
@@ -357,7 +359,7 @@ impl GraphManager {
         };
 
         self.track_operation();
-        Ok(idx)
+        idx
     }
 
     /// Add an edge between two nodes if it doesn't already exist
@@ -369,20 +371,20 @@ impl GraphManager {
         edge_type: EdgeType,
         weight: f32,
     ) -> bool {
-        if !self.has_edge(source, target, &edge_type) {
+        if self.has_edge(source, target, &edge_type) {
+            false
+        } else {
             self.graph
                 .add_edge(source, target, EdgeData { edge_type, weight });
             self.track_operation();
             true
-        } else {
-            false
         }
     }
 
     /// Delete nodes from the graph
     ///
     /// Removes nodes and all their edges from the graph.
-    pub fn delete_nodes(&mut self, nodes: Vec<(String, NodeIndex)>) -> Result<usize> {
+    pub fn delete_nodes(&mut self, nodes: Vec<(String, NodeIndex)>) -> usize {
         let mut deleted_count = 0;
 
         for (node_id, node_idx) in nodes {
@@ -395,7 +397,7 @@ impl GraphManager {
             self.track_operation();
         }
 
-        Ok(deleted_count)
+        deleted_count
     }
 
     /// Check if an edge of a specific type exists between two nodes
@@ -418,7 +420,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    /// Create a test GraphManager with a temporary directory
+    /// Create a test `GraphManager` with a temporary directory
     fn create_test_manager() -> (GraphManager, TempDir) {
         let temp_dir = TempDir::new().unwrap();
         let manager = GraphManager::new(temp_dir.path()).unwrap();
@@ -455,30 +457,26 @@ mod tests {
         let (mut manager, _temp_dir) = create_test_manager();
 
         // Create initial node
-        let idx1 = manager
-            .create_or_update_node(
-                "test-node-1".to_string(),
-                NodeType::Page,
-                "Original content".to_string(),
-                None,
-                HashMap::new(),
-                Utc::now(),
-                Utc::now(),
-            )
-            .unwrap();
+        let idx1 = manager.create_or_update_node(
+            "test-node-1".to_string(),
+            NodeType::Page,
+            "Original content".to_string(),
+            None,
+            HashMap::new(),
+            Utc::now(),
+            Utc::now(),
+        );
 
         // Update the same node
-        let idx2 = manager
-            .create_or_update_node(
-                "test-node-1".to_string(),
-                NodeType::Page,
-                "Updated content".to_string(),
-                Some("Updated resolved".to_string()),
-                HashMap::new(),
-                Utc::now(),
-                Utc::now(),
-            )
-            .unwrap();
+        let idx2 = manager.create_or_update_node(
+            "test-node-1".to_string(),
+            NodeType::Page,
+            "Updated content".to_string(),
+            Some("Updated resolved".to_string()),
+            HashMap::new(),
+            Utc::now(),
+            Utc::now(),
+        );
 
         // Should be the same node index
         assert_eq!(idx1, idx2);

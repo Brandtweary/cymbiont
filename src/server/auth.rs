@@ -77,7 +77,7 @@ use uuid::Uuid;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use crate::error::*;
+use crate::error::{Result, ServerError};
 use crate::utils::AsyncRwLockExt;
 use crate::AppState;
 
@@ -115,7 +115,7 @@ pub async fn initialize_auth(app_state: &AppState) -> Result<String> {
         save_auth_token(&app_state.data_dir, configured_token)
             .await
             .map_err(|e| {
-                ServerError::startup(format!("Failed to save configured auth token: {}", e))
+                ServerError::startup(format!("Failed to save configured auth token: {e}"))
             })?;
         info!("");
         info!("Warning: Token rotation is disabled when using a configured token");
@@ -128,7 +128,7 @@ pub async fn initialize_auth(app_state: &AppState) -> Result<String> {
     let new_token = generate_auth_token();
     save_auth_token(&app_state.data_dir, &new_token)
         .await
-        .map_err(|e| ServerError::startup(format!("Failed to save generated auth token: {}", e)))?;
+        .map_err(|e| ServerError::startup(format!("Failed to save generated auth token: {e}")))?;
 
     info!(
         "🔐 Auth token: {} (saved to {}/auth_token)",
@@ -151,13 +151,14 @@ pub async fn auth_middleware(
     }
 
     // Get the stored auth token
-    let token_guard = state
-        .auth_token
-        .read_or_panic("auth middleware - read token")
-        .await;
-    let expected_token = match &*token_guard {
-        Some(token) => token,
-        None => {
+    let expected_token = {
+        let token_guard = state
+            .auth_token
+            .read_or_panic("auth middleware - read token")
+            .await;
+        if let Some(token) = &*token_guard {
+            token.clone()
+        } else {
             error!("No auth token configured but auth is enabled");
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
@@ -171,11 +172,7 @@ pub async fn auth_middleware(
 
     if let Some(auth_value) = auth_header {
         // Support both "Bearer TOKEN" and just "TOKEN"
-        let token = if auth_value.starts_with("Bearer ") {
-            &auth_value[7..]
-        } else {
-            auth_value
-        };
+        let token = auth_value.strip_prefix("Bearer ").unwrap_or(auth_value);
 
         if token == expected_token {
             return Ok(next.run(request).await);
@@ -197,13 +194,13 @@ pub async fn validate_token(app_state: &AppState, token: &str) -> bool {
         .auth_token
         .read_or_panic("verify websocket auth - read token")
         .await;
-    match &*token_guard {
-        Some(expected_token) => token == expected_token,
-        None => {
+    (*token_guard).as_ref().map_or_else(
+        || {
             error!("No auth token configured but auth is enabled");
             false
-        }
-    }
+        },
+        |expected_token| token == expected_token,
+    )
 }
 
 #[cfg(test)]

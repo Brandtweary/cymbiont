@@ -80,7 +80,7 @@
 //! The recovery process:
 //! - Startup: Iterates all graphs, temporarily opens closed ones for recovery
 //! - Finds all Active transactions in each graph's WAL
-//! - RecoveryContext replays each pending operation
+//! - `RecoveryContext` replays each pending operation
 //! - Updates transaction state based on result
 //! - No PKM reconstruction needed - exact API replay
 //! - Closed graphs are closed again after recovery
@@ -94,29 +94,29 @@
 //!    - Include all data needed to replay the command during recovery
 //!
 //! 2. **Add the trait method** to `GraphOps` trait in this file:
-//!    - Add graph_id: &Uuid parameter for graph targeting
+//!    - Add `graph_id: &Uuid` parameter for graph targeting
 //!    - Return appropriate Result<T> type
 //!    - Route to `command_queue.execute()` internally
 //!
 //! 3. **Implement command handling** in `cqrs/router.rs`:
 //!    - Add match arm in `apply_graph_command()` method
-//!    - Call helper function with RouterToken for validation
+//!    - Call helper function with `RouterToken` for validation
 //!    - All mutations automatically logged to WAL
 //!
 //! 4. **Create helper function** in this file:
-//!    - Takes RouterToken as first parameter (enforces CQRS routing)
+//!    - Takes `RouterToken` as first parameter (enforces CQRS routing)
 //!    - Implements the actual graph operation logic
 //!    - Handles PKM-specific concerns (reference resolution, etc.)
 //!
 //! 5. **Register in tool registry** (optional) in `agent/kg_tools.rs`:
 //!    - Add tool registration in appropriate category
 //!    - Parse parameters from JSON args
-//!    - Call GraphOps method with parsed params
+//!    - Call `GraphOps` method with parsed params
 //!
 //! 6. **Add WebSocket command** (optional) in `server/websocket.rs`:
 //!    - Define command variant in Command enum
 //!    - Add handler that processes the command
-//!    - Call GraphOps method and return success/error response
+//!    - Call `GraphOps` method and return success/error response
 //!
 //! ## Error Handling
 //!
@@ -124,7 +124,7 @@
 //! - `GraphError` - General graph operation failures
 //! - `NodeNotFound` - Specific node lookup failures
 
-use crate::error::*;
+use crate::error::{GraphError, Result};
 use crate::{
     cqrs::{Command, GraphCommand, GraphRegistryCommand, RegistryCommand},
     AppState,
@@ -138,6 +138,7 @@ use uuid::Uuid;
 /// This is the single source of truth for all graph operations.
 pub trait GraphOps {
     /// Add a new block
+    #[allow(clippy::too_many_arguments)]
     async fn add_block(
         &self,
         block_id: Option<String>,
@@ -289,19 +290,24 @@ impl GraphOps for Arc<AppState> {
 
     async fn get_node(&self, node_id: &str, graph_id: &Uuid) -> Result<serde_json::Value> {
         // Direct read from graph manager
-        let managers = self.graph_managers.read().await;
-        let manager_arc = managers
-            .get(graph_id)
-            .ok_or_else(|| GraphError::not_found(*graph_id))?;
-        let manager = manager_arc.read().await;
-
+        let manager_arc = {
+            let managers = self.graph_managers.read().await;
+            managers
+                .get(graph_id)
+                .ok_or_else(|| GraphError::not_found(*graph_id))?
+                .clone()
+        };
         // Find and return the node
-        let node_idx = manager
-            .find_node(node_id)
-            .ok_or_else(|| GraphError::node_not_found(node_id, *graph_id))?;
-        let node_data = manager
-            .get_node(node_idx)
-            .ok_or_else(|| GraphError::node_not_found(node_id, *graph_id))?;
+        let node_data = {
+            let manager = manager_arc.read().await;
+            let node_idx = manager
+                .find_node(node_id)
+                .ok_or_else(|| GraphError::node_not_found(node_id, *graph_id))?;
+            manager
+                .get_node(node_idx)
+                .ok_or_else(|| GraphError::node_not_found(node_id, *graph_id))?
+                .clone()
+        };
 
         Ok(serde_json::to_value(node_data)?)
     }
@@ -335,7 +341,7 @@ impl GraphOps for Arc<AppState> {
                 GraphError::invalid_state("No data returned from OpenGraph command").into()
             })
         } else {
-            Err(GraphError::invalid_state(format!("OpenGraph failed: {:?}", result.error)).into())
+            Err(GraphError::invalid_state(format!("OpenGraph failed: {error:?}", error = result.error)).into())
         }
     }
 
@@ -360,12 +366,14 @@ impl GraphOps for Arc<AppState> {
     /// List all available graphs
     async fn list_graphs(&self) -> Result<Vec<serde_json::Value>> {
         // Direct read from graph registry
-        let registry = self.graph_registry.read().await;
-        let graphs: Vec<serde_json::Value> = registry
-            .get_all_graphs()
-            .into_iter()
-            .map(|info| serde_json::to_value(info).unwrap())
-            .collect();
+        let graphs = {
+            let registry = self.graph_registry.read().await;
+            registry
+                .get_all_graphs()
+                .into_iter()
+                .map(|info| serde_json::to_value(info).unwrap())
+                .collect()
+        };
         Ok(graphs)
     }
 
@@ -389,7 +397,7 @@ impl GraphOps for Arc<AppState> {
                 GraphError::invalid_state("No data returned from CreateGraph command").into()
             })
         } else {
-            Err(GraphError::invalid_state(format!("CreateGraph failed: {:?}", result.error)).into())
+            Err(GraphError::invalid_state(format!("CreateGraph failed: {error:?}", error = result.error)).into())
         }
     }
 
@@ -420,18 +428,19 @@ use crate::graph::graph_manager::GraphManager;
 use crate::import::pkm_data;
 
 /// Execute the create block operation
-/// This contains the business logic extracted from the old add_block implementation
-/// REQUIRES RouterToken to ensure this is only called through CQRS
-pub async fn execute_create_block(
+/// This contains the business logic extracted from the old `add_block` implementation
+/// REQUIRES `RouterToken` to ensure this is only called through CQRS
+#[allow(clippy::too_many_arguments)]
+pub fn execute_create_block(
     _token: &RouterToken,
     graph_manager: &mut GraphManager,
     block_id: Option<String>,
     content: String,
-    parent_id: Option<String>,
-    page_name: Option<String>,
-    properties: Option<serde_json::Value>,
+    parent_id: Option<&str>,
+    page_name: Option<&str>,
+    properties: Option<&serde_json::Value>,
     reference_content: Option<String>,
-) -> Result<String> {
+) -> String {
     // Use provided block_id if available, otherwise generate new one
     let final_block_id = block_id.unwrap_or_else(|| Uuid::new_v4().to_string());
 
@@ -440,21 +449,18 @@ pub async fn execute_create_block(
         // Use pre-resolved content from import
         let now = chrono::Utc::now();
         let props = properties
-            .as_ref()
-            .map(|p| crate::utils::parse_properties(p))
+            .map(crate::utils::parse_properties)
             .unwrap_or_default();
 
-        graph_manager
-            .create_or_update_node(
-                final_block_id.clone(),
-                crate::graph::graph_manager::NodeType::Block,
-                content.clone(),
-                Some(ref_content.clone()),
-                props,
-                now,
-                now,
-            )
-            .map_err(|e| GraphError::lifecycle(e.to_string()))?;
+        graph_manager.create_or_update_node(
+            final_block_id.clone(),
+            crate::graph::graph_manager::NodeType::Block,
+            content,
+            Some(ref_content.clone()),
+            props,
+            now,
+            now,
+        );
 
         (final_block_id, Some(ref_content))
     } else {
@@ -463,25 +469,25 @@ pub async fn execute_create_block(
             graph_manager,
             Some(final_block_id),
             content,
-            properties.as_ref(),
-        )?
+            properties,
+        )
     };
 
     // Setup relationships
     pkm_data::setup_block_relationships(
         graph_manager,
         &block_id,
-        parent_id.as_deref(),
-        page_name.as_deref(),
-    )?;
+        parent_id,
+        page_name,
+    );
 
-    Ok(block_id)
+    block_id
 }
 
 /// Execute the update block operation
-/// This contains the business logic extracted from the old update_block implementation
-/// REQUIRES RouterToken to ensure this is only called through CQRS
-pub async fn execute_update_block(
+/// This contains the business logic extracted from the old `update_block` implementation
+/// REQUIRES `RouterToken` to ensure this is only called through CQRS
+pub fn execute_update_block(
     _token: &RouterToken,
     graph_manager: &mut GraphManager,
     block_id: &str,
@@ -495,9 +501,9 @@ pub async fn execute_update_block(
 }
 
 /// Execute the delete block operation
-/// This contains the business logic extracted from the old delete_block implementation
-/// REQUIRES RouterToken to ensure this is only called through CQRS
-pub async fn execute_delete_block(
+/// This contains the business logic extracted from the old `delete_block` implementation
+/// REQUIRES `RouterToken` to ensure this is only called through CQRS
+pub fn execute_delete_block(
     _token: &RouterToken,
     graph_manager: &mut GraphManager,
     block_id: &str,
@@ -505,9 +511,7 @@ pub async fn execute_delete_block(
 ) -> Result<()> {
     if let Some(node_idx) = graph_manager.find_node(block_id) {
         // Archive the node
-        graph_manager
-            .delete_nodes(vec![(block_id.to_string(), node_idx)])
-            .map_err(|e| GraphError::lifecycle(e.to_string()))?;
+        graph_manager.delete_nodes(vec![(block_id.to_string(), node_idx)]);
     } else {
         return Err(GraphError::node_not_found(block_id, graph_id).into());
     }
@@ -516,24 +520,22 @@ pub async fn execute_delete_block(
 }
 
 /// Execute the create page operation
-/// This contains the business logic extracted from the old create_page implementation
-/// REQUIRES RouterToken to ensure this is only called through CQRS
-pub async fn execute_create_page(
+/// This contains the business logic extracted from the old `create_page` implementation
+/// REQUIRES `RouterToken` to ensure this is only called through CQRS
+pub fn execute_create_page(
     _token: &RouterToken,
     graph_manager: &mut GraphManager,
-    page_name: String,
-    properties: Option<serde_json::Value>,
-) -> Result<()> {
+    page_name: &str,
+    properties: Option<&serde_json::Value>,
+) {
     // Create or update page with properties
-    pkm_data::create_or_update_page(graph_manager, &page_name, properties.as_ref())?;
-
-    Ok(())
+    pkm_data::create_or_update_page(graph_manager, page_name, properties);
 }
 
 /// Execute the delete page operation
-/// This contains the business logic extracted from the old delete_page implementation
-/// REQUIRES RouterToken to ensure this is only called through CQRS
-pub async fn execute_delete_page(
+/// This contains the business logic extracted from the old `delete_page` implementation
+/// REQUIRES `RouterToken` to ensure this is only called through CQRS
+pub fn execute_delete_page(
     _token: &RouterToken,
     graph_manager: &mut GraphManager,
     page_name: &str,
@@ -545,8 +547,7 @@ pub async fn execute_delete_page(
 
     // Archive the node
     graph_manager
-        .delete_nodes(vec![(normalized_name, node_idx)])
-        .map_err(|e| GraphError::lifecycle(e.to_string()))?;
+        .delete_nodes(vec![(normalized_name, node_idx)]);
 
     Ok(())
 }
@@ -555,6 +556,7 @@ pub async fn execute_delete_page(
 mod tests {
     use super::*;
     use crate::cqrs::{Command, GraphCommand};
+    use crate::error::CymbiontError;
     use serde_json::json;
 
     #[test]
@@ -568,7 +570,7 @@ mod tests {
         let node_err = GraphError::node_not_found("block-123", graph_id);
         assert_eq!(
             node_err.to_string(),
-            format!("Node not found: block-123 in graph {}", graph_id)
+            format!("Node not found: block-123 in graph {graph_id}")
         );
     }
 

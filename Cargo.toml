@@ -6,6 +6,8 @@ authors = ["Brandt Weary"]
 description = "A knowledge graph-enhanced AI agent for personal knowledge management"
 repository = "https://github.com/Brandtweary/cymbiont"
 license = "AGPL-3.0"
+keywords = ["knowledge-graph", "pkm", "agent", "ai", "logseq"]
+categories = ["command-line-utilities", "science"]
 
 
 

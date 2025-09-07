@@ -7,7 +7,7 @@
 //!
 //! ## Core Data Types
 //!
-//! ### PKMBlockData
+//! ### `PKMBlockData`
 //! Represents a single knowledge block with rich metadata:
 //! - **Content**: The actual text content with markdown formatting
 //! - **Hierarchy**: Parent-child relationships within the knowledge structure
@@ -15,13 +15,13 @@
 //! - **Properties**: Structured metadata (status, priority, dates, etc.)
 //! - **Timestamps**: Creation and modification tracking with flexible deserialization
 //!
-//! ### PKMPageData
+//! ### `PKMPageData`
 //! Represents a knowledge page that organizes and contains blocks:
 //! - **Naming**: Both original and normalized names for consistent referencing
 //! - **Block Organization**: Lists of root-level blocks belonging to the page
 //! - **Metadata**: Page-level properties and timestamps
 //!
-//! ### PKMReference
+//! ### `PKMReference`
 //! Typed references extracted from content during parsing:
 //! - **Page References**: `[[Page Name]]` - Links to other pages
 //! - **Block References**: `((block-id))` - Direct block citations
@@ -39,8 +39,8 @@
 //!
 //! ### Separation of Concerns
 //! - PKM logic is isolated from graph operations
-//! - Helper functions work directly with GraphManager, not AppState
-//! - GraphOps handles transactions and command routing
+//! - Helper functions work directly with `GraphManager`, not `AppState`
+//! - `GraphOps` handles transactions and command routing
 //!
 //! ### Reference Resolution
 //! - Block references `((block-id))` are expanded to actual content
@@ -63,9 +63,9 @@
 //! - `resolve_block_references()`: Core resolution with circular protection
 //! - `build_block_map()`: Generate block ID to content mapping
 
-use crate::error::*;
+use crate::error::{GraphError, Result};
 use crate::graph::graph_manager::{EdgeType, GraphManager, NodeType};
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use petgraph::stable_graph::NodeIndex;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -74,7 +74,7 @@ use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 // Regex for matching block references like ((block-id))
-static BLOCK_REF_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\(\(([a-zA-Z0-9-]+)\)\)").unwrap());
+static BLOCK_REF_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\(\(([a-zA-Z0-9-]+)\)\)").unwrap());
 
 /// PKM block data received from the frontend
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -133,7 +133,7 @@ where
 {
     struct TimestampVisitor;
 
-    impl<'de> serde::de::Visitor<'de> for TimestampVisitor {
+    impl serde::de::Visitor<'_> for TimestampVisitor {
         type Value = String;
 
         fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -206,26 +206,26 @@ pub fn resolve_block_references(
                 return caps[0].to_string(); // Keep original reference
             }
 
-            if let Some(referenced_content) = block_map.get(block_id) {
-                // Mark this block as visited before recursing
-                visited.insert(block_id.to_string());
+            block_map.get(block_id).map_or_else(
+                || caps[0].to_string(), // Keep the original reference if we can't find the block
+                |referenced_content| {
+                    // Mark this block as visited before recursing
+                    visited.insert(block_id.to_string());
 
-                // Recursively resolve any references in the referenced content
-                let expanded = resolve_block_references(
-                    referenced_content,
-                    block_map,
-                    visited,
-                    Some(block_id),
-                );
+                    // Recursively resolve any references in the referenced content
+                    let expanded = resolve_block_references(
+                        referenced_content,
+                        block_map,
+                        visited,
+                        Some(block_id),
+                    );
 
-                // Remove from visited after processing (allows the same block to be referenced multiple times in different contexts)
-                visited.remove(block_id);
+                    // Remove from visited after processing (allows the same block to be referenced multiple times in different contexts)
+                    visited.remove(block_id);
 
-                expanded
-            } else {
-                // Keep the original reference if we can't find the block
-                caps[0].to_string()
-            }
+                    expanded
+                },
+            )
         })
         .to_string();
 
@@ -262,13 +262,13 @@ pub fn create_block_with_resolution_and_id(
     block_id: Option<String>,
     content: String,
     properties: Option<&serde_json::Value>,
-) -> Result<(String, Option<String>)> {
+) -> (String, Option<String>) {
     let block_id = block_id.unwrap_or_else(|| Uuid::new_v4().to_string());
     let now = chrono::Utc::now();
 
     // Parse properties
     let props = properties
-        .map(|p| crate::utils::parse_properties(p))
+        .map(crate::utils::parse_properties)
         .unwrap_or_default();
 
     // Resolve references if content contains them
@@ -286,19 +286,17 @@ pub fn create_block_with_resolution_and_id(
     };
 
     // Create the node
-    manager
-        .create_or_update_node(
-            block_id.clone(),
-            NodeType::Block,
-            content,
-            reference_content.clone(),
-            props,
-            now,
-            now,
-        )
-        .map_err(|e| GraphError::lifecycle(e.to_string()))?;
+    manager.create_or_update_node(
+        block_id.clone(),
+        NodeType::Block,
+        content,
+        reference_content.clone(),
+        props,
+        now,
+        now,
+    );
 
-    Ok((block_id, reference_content))
+    (block_id, reference_content)
 }
 
 /// Update a block with reference resolution
@@ -309,11 +307,11 @@ pub fn update_block_with_resolution(
 ) -> Result<Option<String>> {
     let node_idx = manager
         .find_node(block_id)
-        .ok_or_else(|| GraphError::not_found(format!("Block not found: {}", block_id)))?;
+        .ok_or_else(|| GraphError::not_found(format!("Block not found: {block_id}")))?;
 
     let existing_node = manager
         .get_node(node_idx)
-        .ok_or_else(|| GraphError::not_found(format!("Block not found: {}", block_id)))?
+        .ok_or_else(|| GraphError::not_found(format!("Block not found: {block_id}")))?
         .clone();
 
     // Resolve references if content changed and contains them
@@ -339,8 +337,7 @@ pub fn update_block_with_resolution(
             existing_node.properties,
             existing_node.created_at,
             chrono::Utc::now(),
-        )
-        .map_err(|e| GraphError::lifecycle(e.to_string()))?;
+        );
 
     Ok(reference_content)
 }
@@ -351,7 +348,7 @@ pub fn setup_block_relationships(
     block_id: &str,
     parent_id: Option<&str>,
     page_name: Option<&str>,
-) -> Result<()> {
+) {
     // Handle parent-child relationship
     if let Some(parent) = parent_id {
         if let Some(parent_idx) = manager.find_node(parent) {
@@ -363,13 +360,11 @@ pub fn setup_block_relationships(
 
     // Handle page relationship
     if let Some(page) = page_name {
-        let page_idx = ensure_page_exists(manager, page)?;
+        let page_idx = ensure_page_exists(manager, page);
         if let Some(block_idx) = manager.find_node(block_id) {
             manager.add_edge(page_idx, block_idx, EdgeType::PageToBlock, 1.0);
         }
     }
-
-    Ok(())
 }
 
 // ============================================================================
@@ -377,7 +372,7 @@ pub fn setup_block_relationships(
 // ============================================================================
 
 /// Ensure a page exists, creating if necessary
-pub fn ensure_page_exists(manager: &mut GraphManager, page_name: &str) -> Result<NodeIndex> {
+pub fn ensure_page_exists(manager: &mut GraphManager, page_name: &str) -> NodeIndex {
     let normalized_name = page_name.to_lowercase();
 
     // Check both original and normalized names
@@ -385,11 +380,11 @@ pub fn ensure_page_exists(manager: &mut GraphManager, page_name: &str) -> Result
         .find_node(page_name)
         .or_else(|| manager.find_node(&normalized_name))
     {
-        return Ok(idx);
+        return idx;
     }
 
     // Create the page if it doesn't exist
-    let idx = manager.create_node(
+    manager.create_node(
         normalized_name,
         NodeType::Page,
         page_name.to_string(),
@@ -397,8 +392,7 @@ pub fn ensure_page_exists(manager: &mut GraphManager, page_name: &str) -> Result
         HashMap::new(),
         chrono::Utc::now(),
         chrono::Utc::now(),
-    );
-    Ok(idx)
+    )
 }
 
 /// Create or update a page with properties
@@ -406,7 +400,7 @@ pub fn create_or_update_page(
     manager: &mut GraphManager,
     page_name: &str,
     properties: Option<&serde_json::Value>,
-) -> Result<()> {
+) {
     let normalized_name = page_name.to_lowercase();
     let now = chrono::Utc::now();
 
@@ -423,17 +417,15 @@ pub fn create_or_update_page(
                 node_data.properties = crate::utils::parse_properties(props);
                 node_data.updated_at = now;
 
-                manager
-                    .create_or_update_node(
-                        node_data.id,
-                        node_data.node_type,
-                        node_data.content,
-                        node_data.reference_content,
-                        node_data.properties,
-                        node_data.created_at,
-                        node_data.updated_at,
-                    )
-                    .map_err(|e| GraphError::lifecycle(e.to_string()))?;
+                manager.create_or_update_node(
+                    node_data.id,
+                    node_data.node_type,
+                    node_data.content,
+                    node_data.reference_content,
+                    node_data.properties,
+                    node_data.created_at,
+                    node_data.updated_at,
+                );
             }
         }
     } else {
@@ -441,20 +433,16 @@ pub fn create_or_update_page(
         let default_props = json!({});
         let props = properties.unwrap_or(&default_props);
 
-        manager
-            .create_or_update_node(
-                normalized_name,
-                NodeType::Page,
-                page_name.to_string(),
-                None, // Pages don't have reference content
-                crate::utils::parse_properties(props),
-                now,
-                now,
-            )
-            .map_err(|e| GraphError::lifecycle(e.to_string()))?;
+        manager.create_or_update_node(
+            normalized_name,
+            NodeType::Page,
+            page_name.to_string(),
+            None, // Pages don't have reference content
+            crate::utils::parse_properties(props),
+            now,
+            now,
+        );
     }
-
-    Ok(())
 }
 
 /// Find a page for deletion by original or normalized name
@@ -468,7 +456,7 @@ pub fn find_page_for_deletion(
     let node_idx = manager
         .find_node(page_name)
         .or_else(|| manager.find_node(&normalized_name))
-        .ok_or_else(|| GraphError::not_found(format!("Page not found: {}", page_name)))?;
+        .ok_or_else(|| GraphError::not_found(format!("Page not found: {page_name}")))?;
 
     Ok((normalized_name, node_idx))
 }

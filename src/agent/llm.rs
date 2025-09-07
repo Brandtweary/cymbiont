@@ -1,26 +1,26 @@
 //! LLM Backend Abstraction Layer
 //!
 //! This module provides the trait and configuration for different LLM backends.
-//! It enables agents to use various LLM providers (Mock, Ollama, OpenAI, etc.)
+//! It enables agents to use various LLM providers (Mock, Ollama, `OpenAI`, etc.)
 //! while maintaining a consistent interface.
 //!
 //! ## Design Philosophy
 //!
 //! Each agent owns its LLM configuration, which is persisted as part of the agent state.
 //! This allows different agents to use different models or providers, enabling:
-//! - Testing with MockLLM while production uses real providers
+//! - Testing with `MockLLM` while production uses real providers
 //! - Specialized agents with different models for different tasks
 //! - Seamless migration between providers without code changes
 //!
 //! ## Backend Types
 //!
-//! ### MockLLM
+//! ### `MockLLM`
 //! The default backend for testing and development. Provides deterministic responses
 //! through an echo mechanism where tests can specify exact responses. This ensures
 //! full testability of agent interactions without external dependencies.
 //!
 //! ### Future Backends
-//! The architecture supports additional backends through the LLMBackend trait.
+//! The architecture supports additional backends through the `LLMBackend` trait.
 //! Each backend implementation handles its own connection management, error handling,
 //! and response formatting while maintaining the common interface.
 //!
@@ -34,7 +34,7 @@
 //!
 //! ## Tool Integration
 //!
-//! The LLM backend interfaces with Cymbiont's tool system through ToolDefinition
+//! The LLM backend interfaces with Cymbiont's tool system through `ToolDefinition`
 //! schemas that describe available graph operations. Future implementations will
 //! support function calling where LLMs can request specific tool executions based
 //! on conversation context, enabling autonomous agent behavior with knowledge graph
@@ -43,13 +43,13 @@
 //! ## Persistence Integration
 //!
 //! Agent configurations and conversation histories are automatically persisted
-//! through the storage layer. The LLMConfig enum serializes cleanly to JSON,
+//! through the storage layer. The `LLMConfig` enum serializes cleanly to JSON,
 //! allowing agents to maintain their model preferences across restarts. Auto-save
 //! thresholds ensure conversation data is preserved without excessive disk I/O.
 //!
 //! ## Testing Strategy
 //!
-//! The MockLLM implementation provides deterministic behavior for integration tests.
+//! The `MockLLM` implementation provides deterministic behavior for integration tests.
 //! Tests can specify exact responses through the echo mechanism, ensuring predictable
 //! agent behavior without external LLM dependencies. This enables comprehensive
 //! testing of agent workflows, conversation management, and tool integration.
@@ -60,7 +60,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::agent::schemas::ToolDefinition;
-use crate::error::*;
+use crate::error::Result;
 
 /// Configuration for different LLM backends
 ///
@@ -80,7 +80,7 @@ pub enum LLMConfig {
     Ollama {
         /// Model name (e.g., "llama3.2", "mistral")
         model: String,
-        /// API endpoint (e.g., "http://localhost:11434")
+        /// API endpoint (e.g., `<http://localhost:11434>`)
         endpoint: String,
         /// Temperature for response generation (0.0 to 1.0)
         #[serde(default = "default_temperature")]
@@ -98,18 +98,18 @@ fn default_mock_response() -> String {
     "I'll help you with that task.".to_string()
 }
 
-fn default_temperature() -> f32 {
+const fn default_temperature() -> f32 {
     0.7
 }
 
-fn default_max_tokens() -> usize {
+const fn default_max_tokens() -> usize {
     2048
 }
 
 impl Default for LLMConfig {
     fn default() -> Self {
         // Default to mock for testing
-        LLMConfig::Mock {
+        Self::Mock {
             default_response: default_mock_response(),
         }
     }
@@ -224,7 +224,7 @@ pub struct MockLLM {
 /// Generate mock arguments for a tool based on its schema
 ///
 /// This creates valid test arguments with required fields filled in
-/// with reasonable test values. Used by MockLLM to generate realistic
+/// with reasonable test values. Used by `MockLLM` to generate realistic
 /// tool calls for integration testing.
 fn generate_mock_args(tool_name: &str, tools: &[ToolDefinition]) -> serde_json::Value {
     // Find the tool schema
@@ -248,11 +248,9 @@ fn generate_mock_args(tool_name: &str, tools: &[ToolDefinition]) -> serde_json::
                             serde_json::Value::String("Test content from MockLLM".to_string())
                         }
                         // Generate fresh UUIDs for ID fields - tests should create their own blocks
-                        "block_id" => serde_json::Value::String(Uuid::new_v4().to_string()),
-                        "node_id" => serde_json::Value::String(Uuid::new_v4().to_string()),
+                        "block_id" | "node_id" | "start_id" => serde_json::Value::String(Uuid::new_v4().to_string()),
                         "page_name" => serde_json::Value::String("Test Page".to_string()),
-                        "start_id" => serde_json::Value::String(Uuid::new_v4().to_string()),
-                        _ => serde_json::Value::String(format!("test-{}", required_param)),
+                        _ => serde_json::Value::String(format!("test-{required_param}")),
                     }
                 }
                 "number" => serde_json::Value::Number(serde_json::Number::from(3)),
@@ -316,7 +314,7 @@ impl LLMBackend for MockLLM {
                 }
 
                 return Ok(LLMResponse {
-                    content: format!("I've executed the {} tool for you", tool_name),
+                    content: format!("I've executed the {tool_name} tool for you"),
                     tool_call: Some(ToolCall {
                         name: tool_name.clone(),
                         arguments: mock_args,
@@ -413,7 +411,7 @@ mod tests {
             LLMConfig::Mock { default_response } => {
                 assert_eq!(default_response, "Default");
             }
-            _ => panic!("Wrong config type"),
+            LLMConfig::Ollama { .. } => panic!("Wrong config type"),
         }
     }
 
@@ -479,7 +477,7 @@ mod tests {
         let json = serde_json::to_string(&context).unwrap();
         let deserialized: AgentContext = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(deserialized.success, true);
+        assert!(deserialized.success);
         assert_eq!(deserialized.message, "Operation completed");
         assert!(deserialized.data.is_some());
     }

@@ -16,8 +16,8 @@ fn test_create_block(ws: &mut WsConnection) -> String {
         "page_name": "test-websocket-page"
     });
 
-    let response = send_command(ws, cmd);
-    let data = expect_success(response).expect("No data in create_block response");
+    let response = send_command(ws, &cmd);
+    let data = expect_success(&response).expect("No data in create_block response");
 
     let block_id = data["block_id"]
         .as_str()
@@ -35,8 +35,8 @@ fn test_update_block(ws: &mut WsConnection, block_id: &str) {
         "content": "## Types of Knowledge Graphs (Updated via WebSocket)"
     });
 
-    let response = send_command(ws, cmd);
-    let data = expect_success(response);
+    let response = send_command(ws, &cmd);
+    let data = expect_success(&response);
 
     assert_eq!(
         data.as_ref().and_then(|d| d["block_id"].as_str()),
@@ -52,8 +52,8 @@ fn test_delete_block(ws: &mut WsConnection, block_id: &str) {
         "block_id": block_id
     });
 
-    let response = send_command(ws, cmd);
-    let data = expect_success(response);
+    let response = send_command(ws, &cmd);
+    let data = expect_success(&response);
 
     assert_eq!(
         data.as_ref().and_then(|d| d["block_id"].as_str()),
@@ -73,8 +73,8 @@ fn test_create_page(ws: &mut WsConnection, page_name: &str) {
         }
     });
 
-    let response = send_command(ws, cmd);
-    let data = expect_success(response);
+    let response = send_command(ws, &cmd);
+    let data = expect_success(&response);
 
     assert_eq!(
         data.as_ref().and_then(|d| d["page_name"].as_str()),
@@ -90,8 +90,8 @@ fn test_delete_page(ws: &mut WsConnection, page_name: &str) {
         "page_name": page_name
     });
 
-    let response = send_command(ws, cmd);
-    let data = expect_success(response);
+    let response = send_command(ws, &cmd);
+    let data = expect_success(&response);
 
     assert_eq!(
         data.as_ref().and_then(|d| d["page_name"].as_str()),
@@ -113,8 +113,8 @@ fn test_multiple_block_updates(
         "page_name": "test-update-page"
     });
 
-    let response = send_command(ws, parent_cmd);
-    let data = expect_success(response).expect("No data in create_block response");
+    let response = send_command(ws, &parent_cmd);
+    let data = expect_success(&response).expect("No data in create_block response");
     let parent_id = data["block_id"]
         .as_str()
         .expect("No block_id in response")
@@ -137,8 +137,8 @@ fn test_multiple_block_updates(
         "page_name": "test-update-page"
     });
 
-    let response = send_command(ws, child_cmd);
-    let data = expect_success(response).expect("No data in create_block response");
+    let response = send_command(ws, &child_cmd);
+    let data = expect_success(&response).expect("No data in create_block response");
     let child_id = data["block_id"]
         .as_str()
         .expect("No block_id in response")
@@ -156,8 +156,8 @@ fn test_multiple_block_updates(
         "content": "First update - content changed"
     });
 
-    let response = send_command(ws, update1_cmd);
-    expect_success(response);
+    let response = send_command(ws, &update1_cmd);
+    expect_success(&response);
     // Don't validate intermediate states
     // validator.expect_update_block(&child_id, "First update - content changed", Some(graph_id));
 
@@ -168,8 +168,8 @@ fn test_multiple_block_updates(
         "content": "Second update - content changed again"
     });
 
-    let response = send_command(ws, update2_cmd);
-    expect_success(response);
+    let response = send_command(ws, &update2_cmd);
+    expect_success(&response);
     // Don't validate intermediate states
     // validator.expect_update_block(&child_id, "Second update - content changed again", Some(graph_id));
 
@@ -180,8 +180,8 @@ fn test_multiple_block_updates(
         "content": "Final update - this should be the final content"
     });
 
-    let response = send_command(ws, update3_cmd);
-    expect_success(response);
+    let response = send_command(ws, &update3_cmd);
+    expect_success(&response);
     // Validate the final update
     validator.expect_update_block(
         &child_id,
@@ -203,8 +203,8 @@ fn test_graph_operations(
 
     // Test list_graphs with one graph
     let list_cmd = json!({"type": "list_graphs"});
-    let response = send_command(ws, list_cmd.clone());
-    let data = expect_success(response).expect("No data in list_graphs response");
+    let response = send_command(ws, &list_cmd);
+    let data = expect_success(&response).expect("No data in list_graphs response");
     let graphs = data["graphs"].as_array().expect("Should have graphs array");
     assert_eq!(graphs.len(), 1, "Should have exactly one graph initially");
     assert_eq!(
@@ -220,8 +220,8 @@ fn test_graph_operations(
         "description": "Created via WebSocket test"
     });
 
-    let response = send_command(ws, create_cmd);
-    let data = expect_success(response).expect("No data in create_graph response");
+    let response = send_command(ws, &create_cmd);
+    let data = expect_success(&response).expect("No data in create_graph response");
 
     let new_graph_id = data["id"]
         .as_str()
@@ -234,8 +234,8 @@ fn test_graph_operations(
     validator.expect_graph_open(new_graph_uuid);
 
     // Test list_graphs with two graphs
-    let response = send_command(ws, list_cmd.clone());
-    let data = expect_success(response).expect("No data in list_graphs response");
+    let response = send_command(ws, &list_cmd);
+    let data = expect_success(&response).expect("No data in list_graphs response");
     let graphs = data["graphs"].as_array().expect("Should have graphs array");
     assert_eq!(graphs.len(), 2, "Should have two graphs after creation");
 
@@ -270,8 +270,8 @@ fn test_graph_operations(
         "graph_id": &new_graph_id
     });
 
-    let response = send_command(ws, delete_cmd);
-    let data = expect_success(response).expect("No data in delete_graph response");
+    let response = send_command(ws, &delete_cmd);
+    let data = expect_success(&response).expect("No data in delete_graph response");
 
     assert_eq!(
         data["deleted_graph_id"].as_str(),
@@ -283,8 +283,8 @@ fn test_graph_operations(
     validator.expect_graph_deleted(new_graph_uuid);
 
     // Test list_graphs after deletion - should be back to one graph
-    let response = send_command(ws, list_cmd);
-    let data = expect_success(response).expect("No data in list_graphs response");
+    let response = send_command(ws, &list_cmd);
+    let data = expect_success(&response).expect("No data in list_graphs response");
     let graphs = data["graphs"].as_array().expect("Should have graphs array");
     assert_eq!(graphs.len(), 1, "Should have one graph after deletion");
     assert_eq!(
@@ -305,7 +305,7 @@ fn test_error_cases(ws: &mut WsConnection, port: u16, _original_graph_id: &str) 
         "content": "This should fail"
     });
 
-    let response = send_command(ws, cmd);
+    let response = send_command(ws, &cmd);
     assert_eq!(
         response["type"], "error",
         "Expected error response for invalid block ID"
@@ -328,7 +328,7 @@ fn test_error_cases(ws: &mut WsConnection, port: u16, _original_graph_id: &str) 
         "content": "Should fail - not authenticated"
     });
 
-    let response = send_command(&mut unauth_ws, cmd);
+    let response = send_command(&mut unauth_ws, &cmd);
     assert_eq!(
         response["type"], "error",
         "Expected error response for unauthenticated command"
@@ -382,6 +382,7 @@ fn validate_registry_state(data_dir: &std::path::Path, original_graph_id: &str) 
     );
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn test_websocket_commands() {
     // Set up test environment
     let test_env = setup_test_env();
@@ -427,8 +428,8 @@ pub fn test_websocket_commands() {
             "content": "Original content for update test",
             "page_name": "test-websocket-page"
         });
-        let response = send_command(&mut ws, update_test_cmd);
-        let data = expect_success(response).expect("No data in create_block response");
+        let response = send_command(&mut ws, &update_test_cmd);
+        let data = expect_success(&response).expect("No data in create_block response");
         let block_to_update = data["block_id"]
             .as_str()
             .expect("No block_id in response")
@@ -455,8 +456,8 @@ pub fn test_websocket_commands() {
             "content": "Block to be deleted",
             "page_name": "test-websocket-page"
         });
-        let response = send_command(&mut ws, delete_test_cmd);
-        let data = expect_success(response).expect("No data in create_block response");
+        let response = send_command(&mut ws, &delete_test_cmd);
+        let data = expect_success(&response).expect("No data in create_block response");
         let block_to_delete = data["block_id"]
             .as_str()
             .expect("No block_id in response")
@@ -528,10 +529,10 @@ pub fn test_websocket_commands() {
     // Always clean up, even if test failed
     match result {
         Ok(test_env) => {
-            cleanup_test_env(test_env);
+            cleanup_test_env(&test_env);
         }
         Err(panic) => {
-            cleanup_test_env(cleanup_env);
+            cleanup_test_env(&cleanup_env);
             std::panic::resume_unwind(panic);
         }
     }

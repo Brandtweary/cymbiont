@@ -1,10 +1,10 @@
-//! @module websocket_utils
+//! `@module websocket_utils`
 //! @description Utility functions for WebSocket operations
 //!
 //! This module contains shared helper functions used by command handlers,
 //! including graph resolution, authentication checks, and response sending.
 
-use crate::error::*;
+use crate::error::{Result, ServerError};
 use crate::server::websocket::Response;
 use crate::utils::AsyncRwLockExt;
 use crate::AppState;
@@ -12,7 +12,7 @@ use axum::extract::ws::Message;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// Helper to resolve graph ID from optional graph_id and graph_name
+/// Helper to resolve graph ID from optional `graph_id` and `graph_name`
 pub async fn resolve_graph_for_command(
     state: &Arc<AppState>,
     graph_id: Option<&str>,
@@ -27,17 +27,17 @@ pub async fn resolve_graph_for_command(
     let graph_uuid =
         if let Some(id_str) = graph_id {
             Some(Uuid::parse_str(id_str).map_err(|_| {
-                ServerError::invalid_request(format!("Invalid graph UUID: {}", id_str))
+                ServerError::invalid_request(format!("Invalid graph UUID: {id_str}"))
             })?)
         } else {
             None
         };
 
-    Ok(registry.resolve_graph_target(
+    registry.resolve_graph_target(
         graph_uuid.as_ref(),
-        graph_name.as_deref(),
+        graph_name,
         allow_smart_default,
-    )?)
+    )
 }
 
 /// Check if a connection is authenticated (safe, read-only)
@@ -79,6 +79,7 @@ pub async fn get_connection_stats(state: &Arc<AppState>) -> (usize, usize) {
             .await;
         let total = conns.len();
         let authenticated = conns.values().filter(|c| c.authenticated).count();
+        drop(conns);
         (total, authenticated)
     } else {
         (0, 0)

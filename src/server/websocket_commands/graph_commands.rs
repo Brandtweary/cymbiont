@@ -58,8 +58,8 @@ use crate::graph::graph_operations::GraphOps;
 use crate::server::websocket::Command;
 use crate::server::websocket_utils::{resolve_graph_for_command, send_success_response};
 use crate::AppState;
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 // ===== Individual Command Handlers =====
 
@@ -91,7 +91,7 @@ async fn handle_create_block(
             &resolved_graph_id,
         )
         .await?;
-    
+
     let data = serde_json::json!({ "block_id": block_id });
     send_success_response(connection_id, state, Some(data)).await
 }
@@ -115,7 +115,7 @@ async fn handle_update_block(
     state
         .update_block(block_id.clone(), content, &resolved_graph_id)
         .await?;
-    
+
     let data = serde_json::json!({ "block_id": block_id });
     send_success_response(connection_id, state, Some(data)).await
 }
@@ -138,7 +138,7 @@ async fn handle_delete_block(
     state
         .delete_block(block_id.clone(), &resolved_graph_id)
         .await?;
-    
+
     let data = serde_json::json!({ "block_id": block_id });
     send_success_response(connection_id, state, Some(data)).await
 }
@@ -172,7 +172,7 @@ async fn handle_create_page(
     state
         .create_page(name.clone(), properties_json, &resolved_graph_id)
         .await?;
-    
+
     let data = serde_json::json!({ "page_name": name });
     send_success_response(connection_id, state, Some(data)).await
 }
@@ -195,7 +195,7 @@ async fn handle_delete_page(
     state
         .delete_page(page_name.clone(), &resolved_graph_id)
         .await?;
-    
+
     let data = serde_json::json!({ "page_name": page_name });
     send_success_response(connection_id, state, Some(data)).await
 }
@@ -265,10 +265,7 @@ async fn handle_delete_graph(
     send_success_response(connection_id, state, Some(data)).await
 }
 
-async fn handle_list_graphs(
-    connection_id: &str,
-    state: &Arc<AppState>,
-) -> Result<()> {
+async fn handle_list_graphs(connection_id: &str, state: &Arc<AppState>) -> Result<()> {
     let graphs = state.list_graphs().await?;
     let data = serde_json::json!({ "graphs": graphs });
     send_success_response(connection_id, state, Some(data)).await
@@ -278,35 +275,74 @@ async fn handle_list_graphs(
 pub async fn handle(command: Command, connection_id: &str, state: &Arc<AppState>) -> Result<()> {
     #[allow(clippy::enum_glob_use)]
     use Command::*;
-    
+
     match command {
-        CreateBlock { content, parent_id, page_name, temp_id: _, graph_id, graph_name } => {
-            handle_create_block(connection_id, state, content, parent_id, page_name, graph_id, graph_name).await
+        CreateBlock {
+            content,
+            parent_id,
+            page_name,
+            temp_id: _,
+            graph_id,
+            graph_name,
+        } => {
+            handle_create_block(
+                connection_id,
+                state,
+                content,
+                parent_id,
+                page_name,
+                graph_id,
+                graph_name,
+            )
+            .await
         }
-        UpdateBlock { block_id, content, graph_id, graph_name } => {
-            handle_update_block(connection_id, state, block_id, content, graph_id, graph_name).await
+        UpdateBlock {
+            block_id,
+            content,
+            graph_id,
+            graph_name,
+        } => {
+            handle_update_block(
+                connection_id,
+                state,
+                block_id,
+                content,
+                graph_id,
+                graph_name,
+            )
+            .await
         }
-        DeleteBlock { block_id, graph_id, graph_name } => {
-            handle_delete_block(connection_id, state, block_id, graph_id, graph_name).await
-        }
-        CreatePage { name, properties, graph_id, graph_name } => {
-            handle_create_page(connection_id, state, name, properties, graph_id, graph_name).await
-        }
-        DeletePage { page_name, graph_id, graph_name } => {
-            handle_delete_page(connection_id, state, page_name, graph_id, graph_name).await
-        }
-        OpenGraph { graph_id, graph_name } => {
-            handle_open_graph(connection_id, state, graph_id, graph_name).await
-        }
-        CloseGraph { graph_id, graph_name } => {
-            handle_close_graph(connection_id, state, graph_id, graph_name).await
-        }
+        DeleteBlock {
+            block_id,
+            graph_id,
+            graph_name,
+        } => handle_delete_block(connection_id, state, block_id, graph_id, graph_name).await,
+        CreatePage {
+            name,
+            properties,
+            graph_id,
+            graph_name,
+        } => handle_create_page(connection_id, state, name, properties, graph_id, graph_name).await,
+        DeletePage {
+            page_name,
+            graph_id,
+            graph_name,
+        } => handle_delete_page(connection_id, state, page_name, graph_id, graph_name).await,
+        OpenGraph {
+            graph_id,
+            graph_name,
+        } => handle_open_graph(connection_id, state, graph_id, graph_name).await,
+        CloseGraph {
+            graph_id,
+            graph_name,
+        } => handle_close_graph(connection_id, state, graph_id, graph_name).await,
         CreateGraph { name, description } => {
             handle_create_graph(connection_id, state, name, description).await
         }
-        DeleteGraph { graph_id, graph_name } => {
-            handle_delete_graph(connection_id, state, graph_id, graph_name).await
-        }
+        DeleteGraph {
+            graph_id,
+            graph_name,
+        } => handle_delete_graph(connection_id, state, graph_id, graph_name).await,
         ListGraphs => handle_list_graphs(connection_id, state).await,
         _ => Err(ServerError::websocket("Command routed to wrong handler").into()),
     }

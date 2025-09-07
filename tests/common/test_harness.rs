@@ -306,7 +306,7 @@ impl TestServer {
         // Different startup detection based on args
         let actual_port = if args.contains(&"--server") {
             const MAX_ATTEMPTS: u32 = 150; // 15 seconds with 100ms intervals
-            
+
             // Server mode: Wait for server info file + health check
             // Read config to get server info filename
             let config_content =
@@ -324,7 +324,8 @@ impl TestServer {
                 if let Ok(info_str) = std::fs::read_to_string(server_info_file) {
                     if let Ok(info) = serde_json::from_str::<serde_json::Value>(&info_str) {
                         if let Some(port) = info["port"].as_u64() {
-                            #[allow(clippy::cast_possible_truncation)] // port is always valid u16 range
+                            #[allow(clippy::cast_possible_truncation)]
+                            // port is always valid u16 range
                             let port = port as u16;
 
                             // Try to connect to verify it's really ready
@@ -391,9 +392,7 @@ impl TestServer {
 
                 #[cfg(target_family = "unix")]
                 {
-                    let _ = Command::new("kill")
-                        .args(["-2", &pid.to_string()])
-                        .output();
+                    let _ = Command::new("kill").args(["-2", &pid.to_string()]).output();
                 }
 
                 #[cfg(not(target_family = "unix"))]
@@ -484,7 +483,7 @@ pub type WsConnection = WebSocket<MaybeTlsStream<TcpStream>>;
 /// Connect to WebSocket endpoint with retries
 pub fn connect_websocket(port: u16) -> WsConnection {
     const MAX_ATTEMPTS: u32 = 10;
-    
+
     let url = format!("ws://localhost:{port}/ws");
 
     // Retry connection a few times as server may still be initializing WebSocket
@@ -629,7 +628,7 @@ pub fn read_auth_token(data_dir: &Path) -> String {
 /// Get the single open graph ID from registry (panics if not exactly one open graph)
 pub fn get_single_open_graph_id(data_dir: &Path) -> String {
     const MAX_ATTEMPTS: u32 = 10;
-    
+
     // Wait a bit for registry to be flushed after import
     thread::sleep(Duration::from_millis(200));
 

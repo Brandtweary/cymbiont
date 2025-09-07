@@ -87,9 +87,9 @@ pub async fn start_server(
     write_server_info("127.0.0.1", port, server_info_file)
         .map_err(|e| ServerError::startup(format!("Failed to write server info: {e}")))?;
 
-    let listener = TcpListener::bind(addr).await.map_err(|e| {
-        ServerError::port_binding(format!("Failed to bind to port {port}: {e}"))
-    })?;
+    let listener = TcpListener::bind(addr)
+        .await
+        .map_err(|e| ServerError::port_binding(format!("Failed to bind to port {port}: {e}")))?;
 
     info!("🚀 Cymbiont Server listening on {}", addr);
 

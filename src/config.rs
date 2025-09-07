@@ -202,7 +202,6 @@ impl Default for Config {
     }
 }
 
-
 impl Default for TransactionLogConfig {
     fn default() -> Self {
         Self {

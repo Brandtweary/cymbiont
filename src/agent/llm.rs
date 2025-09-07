@@ -248,7 +248,9 @@ fn generate_mock_args(tool_name: &str, tools: &[ToolDefinition]) -> serde_json::
                             serde_json::Value::String("Test content from MockLLM".to_string())
                         }
                         // Generate fresh UUIDs for ID fields - tests should create their own blocks
-                        "block_id" | "node_id" | "start_id" => serde_json::Value::String(Uuid::new_v4().to_string()),
+                        "block_id" | "node_id" | "start_id" => {
+                            serde_json::Value::String(Uuid::new_v4().to_string())
+                        }
                         "page_name" => serde_json::Value::String("Test Page".to_string()),
                         _ => serde_json::Value::String(format!("test-{required_param}")),
                     }

@@ -108,9 +108,11 @@ struct LogseqBlock {
 /// Import a Logseq graph from a directory
 pub fn import_graph(logseq_dir: &Path) -> Result<(Vec<PKMPageData>, Vec<PKMBlockData>)> {
     if !logseq_dir.exists() {
-        return Err(
-            ImportError::path(format!("Logseq directory not found: {}", logseq_dir.display())).into(),
-        );
+        return Err(ImportError::path(format!(
+            "Logseq directory not found: {}",
+            logseq_dir.display()
+        ))
+        .into());
     }
 
     let mut pages = Vec::new();
@@ -230,7 +232,11 @@ fn parse_logseq_file(content: &str) -> Result<Vec<LogseqBlock>> {
     // First pass: parse all blocks without hierarchy
     for line in content.lines() {
         // Skip page-level properties at the start
-        if !line.starts_with('-') && !line.starts_with('\t') && !line.starts_with(' ') && parse_property(line).is_some() {
+        if !line.starts_with('-')
+            && !line.starts_with('\t')
+            && !line.starts_with(' ')
+            && parse_property(line).is_some()
+        {
             continue;
         }
 

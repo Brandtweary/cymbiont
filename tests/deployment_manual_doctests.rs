@@ -1,5 +1,5 @@
 //! Doctests for `CYMBIONT_EMERGENCY_DEPLOYMENT.md`
-//! 
+//!
 //! This file validates that all commands shown in the deployment manual
 //! actually work with the current cymbiont codebase.
 
@@ -14,15 +14,15 @@ mod tests {
         let mut cmd_args = vec!["run", "--bin", "cymbiont", "--"];
         cmd_args.extend_from_slice(args);
         cmd_args.push("--help"); // Add help flag to prevent actual execution
-        
+
         let output = Command::new("cargo")
             .args(&cmd_args)
             .output()
             .expect("Failed to run cargo");
-        
+
         // If --help works with these args, the command structure is valid
-        output.status.success() || 
-            String::from_utf8_lossy(&output.stderr).contains("unexpected argument")
+        output.status.success()
+            || String::from_utf8_lossy(&output.stderr).contains("unexpected argument")
     }
 
     #[test]
@@ -56,7 +56,7 @@ mod tests {
         // These are standard Unix commands mentioned in the manual
         // We just verify they're commonly available
         let standard_commands = vec![
-            "ls", "cd", "uname", "free", "df", "wget", "git", "rustc", "cargo", "find"
+            "ls", "cd", "uname", "free", "df", "wget", "git", "rustc", "cargo", "find",
         ];
 
         for cmd in standard_commands {
@@ -64,7 +64,7 @@ mod tests {
                 .arg(cmd)
                 .output()
                 .expect("Failed to run which");
-            
+
             // We don't require all to exist (some might not be installed)
             // But we document which ones are missing
             if !output.status.success() {

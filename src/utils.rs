@@ -208,9 +208,7 @@ fn terminate_process_windows(pid: &str) -> bool {
 
     // Process exists, try to terminate it
     trace!("🔧 Process {pid} is running, attempting to terminate");
-    let kill_result = Command::new("taskkill")
-        .args(&["/PID", pid, "/F"])
-        .output();
+    let kill_result = Command::new("taskkill").args(&["/PID", pid, "/F"]).output();
 
     match kill_result {
         Ok(output) => {
@@ -465,7 +463,7 @@ pub mod uuid_serde {
     use uuid::Uuid;
 
     pub mod uuid_hashmap_serde {
-        use super::{Serializer, Serialize, HashMap, Uuid, Deserializer, Deserialize, SerdeError};
+        use super::{Deserialize, Deserializer, HashMap, SerdeError, Serialize, Serializer, Uuid};
 
         pub fn serialize<S, V>(map: &HashMap<Uuid, V>, serializer: S) -> Result<S::Ok, S::Error>
         where
@@ -495,13 +493,14 @@ pub mod uuid_serde {
     }
 
     pub mod uuid_hashset_serde {
-        use super::{Serializer, HashSet, Uuid, Serialize, Deserializer, Deserialize, SerdeError};
+        use super::{Deserialize, Deserializer, HashSet, SerdeError, Serialize, Serializer, Uuid};
 
         pub fn serialize<S>(set: &HashSet<Uuid>, serializer: S) -> Result<S::Ok, S::Error>
         where
             S: Serializer,
         {
-            let string_vec: Vec<String> = set.iter().map(std::string::ToString::to_string).collect();
+            let string_vec: Vec<String> =
+                set.iter().map(std::string::ToString::to_string).collect();
             string_vec.serialize(serializer)
         }
 

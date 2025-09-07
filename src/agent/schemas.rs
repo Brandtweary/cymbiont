@@ -110,7 +110,10 @@ fn tool(
                 .into_iter()
                 .map(|(k, v)| (k.to_string(), v))
                 .collect(),
-            required: required.into_iter().map(std::string::ToString::to_string).collect(),
+            required: required
+                .into_iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
         },
     }
 }

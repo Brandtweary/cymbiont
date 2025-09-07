@@ -343,7 +343,8 @@ async fn route_command(command: Command, connection_id: &str, state: &Arc<AppSta
     if !matches!(
         command,
         Command::Auth { .. } | Command::Heartbeat | Command::Test { .. }
-    ) && !is_test_cli_command && !is_authenticated(connection_id, state).await
+    ) && !is_test_cli_command
+        && !is_authenticated(connection_id, state).await
     {
         warn!(
             "Rejecting command from unauthenticated connection {}: {:?}",

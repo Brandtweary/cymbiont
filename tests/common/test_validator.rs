@@ -80,8 +80,7 @@ impl JsonReader {
             .join("knowledge_graph.json");
         let content = fs::read_to_string(&graph_path)
             .map_err(|e| format!("Failed to read graph {graph_id}: {e}"))?;
-        serde_json::from_str(&content)
-            .map_err(|e| format!("Failed to parse graph {graph_id}: {e}"))
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse graph {graph_id}: {e}"))
     }
 }
 
@@ -164,9 +163,7 @@ impl MessageOrderValidator {
                     ));
                 }
                 if timestamp == last {
-                    return Err(format!(
-                        "Duplicate timestamp at index {index}: {timestamp}"
-                    ));
+                    return Err(format!("Duplicate timestamp at index {index}: {timestamp}"));
                 }
             }
 
@@ -186,9 +183,7 @@ impl MessageOrderValidator {
             match role {
                 "user" | "assistant" => {
                     if message["content"].is_null() {
-                        return Err(format!(
-                            "{role} message at index {index} missing content"
-                        ));
+                        return Err(format!("{role} message at index {index} missing content"));
                     }
                 }
                 "tool" => {
@@ -199,9 +194,7 @@ impl MessageOrderValidator {
                     }
                 }
                 _ => {
-                    return Err(format!(
-                        "Unknown message role '{role}' at index {index}"
-                    ));
+                    return Err(format!("Unknown message role '{role}' at index {index}"));
                 }
             }
 
@@ -214,9 +207,7 @@ impl MessageOrderValidator {
         for i in 0..self.messages.len() {
             for j in (i + 1)..self.messages.len() {
                 if self.messages[i] == self.messages[j] {
-                    return Err(format!(
-                        "Duplicate messages found at indices {i} and {j}"
-                    ));
+                    return Err(format!("Duplicate messages found at indices {i} and {j}"));
                 }
             }
         }

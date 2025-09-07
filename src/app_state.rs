@@ -290,7 +290,8 @@ impl AppState {
             .await
         {
             if let Some(data) = result.data {
-                if let Some(completed) = data.get("completed").and_then(serde_json::Value::as_bool) {
+                if let Some(completed) = data.get("completed").and_then(serde_json::Value::as_bool)
+                {
                     return completed;
                 }
             }

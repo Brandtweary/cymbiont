@@ -64,12 +64,12 @@ use crate::app_state::AppState;
 use crate::error::{AgentError, Result};
 use crate::graph::graph_operations::GraphOps;
 use crate::utils::AsyncRwLockExt;
-use std::sync::LazyLock;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use uuid::Uuid;
 
 /// Type alias for async tool functions
@@ -158,9 +158,7 @@ async fn parse_graph_target(
                 });
         }
         // No default graph available
-        return Err(
-            AgentError::tool("No graph specified and no default graph available").into(),
-        );
+        return Err(AgentError::tool("No graph specified and no default graph available").into());
     }
 
     // Use the registry to resolve the target
@@ -385,7 +383,10 @@ fn query_graph_bfs<'a>(
             .ok_or_else(|| AgentError::tool("Missing required parameter: start_id"))?;
 
         #[allow(clippy::cast_possible_truncation)] // max_depth is a small BFS parameter
-        let max_depth = args.get("max_depth").and_then(serde_json::Value::as_u64).unwrap_or(3) as usize;
+        let max_depth = args
+            .get("max_depth")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(3) as usize;
 
         let graph_id = parse_graph_target(app_state, &args, true).await?;
 

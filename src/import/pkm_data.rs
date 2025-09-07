@@ -65,16 +65,17 @@
 
 use crate::error::{GraphError, Result};
 use crate::graph::graph_manager::{EdgeType, GraphManager, NodeType};
-use std::sync::LazyLock;
 use petgraph::stable_graph::NodeIndex;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
+use std::sync::LazyLock;
 use uuid::Uuid;
 
 // Regex for matching block references like ((block-id))
-static BLOCK_REF_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\(\(([a-zA-Z0-9-]+)\)\)").unwrap());
+static BLOCK_REF_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\(\(([a-zA-Z0-9-]+)\)\)").unwrap());
 
 /// PKM block data received from the frontend
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -328,16 +329,15 @@ pub fn update_block_with_resolution(
         existing_node.reference_content
     };
 
-    manager
-        .create_or_update_node(
-            existing_node.id,
-            existing_node.node_type,
-            new_content,
-            reference_content.clone(),
-            existing_node.properties,
-            existing_node.created_at,
-            chrono::Utc::now(),
-        );
+    manager.create_or_update_node(
+        existing_node.id,
+        existing_node.node_type,
+        new_content,
+        reference_content.clone(),
+        existing_node.properties,
+        existing_node.created_at,
+        chrono::Utc::now(),
+    );
 
     Ok(reference_content)
 }

@@ -88,7 +88,7 @@ pub fn test_all_cli_commands() {
                 }),
             );
             expect_success(&response).expect("Import should succeed");
-            
+
             // Get graph info using list_graphs to get ID and name
             let cmd = json!({"type": "list_graphs"});
             let response = send_command(&mut ws, &cmd);
@@ -107,7 +107,7 @@ pub fn test_all_cli_commands() {
 
         // Set up expectations for the imported graph
         validator.expect_dummy_graph(Some(&graph_id));
-        
+
         // Add registry expectations
         let imported_uuid = Uuid::parse_str(&graph_id).expect("Invalid UUID");
         validator.expect_graph_created(imported_uuid, &graph_name);
@@ -130,7 +130,7 @@ pub fn test_all_cli_commands() {
             let response = send_command(&mut ws, &cmd);
             let data = expect_success(&response).expect("Create graph should succeed");
             let delete_graph_id = data["id"].as_str().unwrap().to_string();
-            
+
             // Parse UUID and add expectations for creation
             let delete_graph_uuid = Uuid::parse_str(&delete_graph_id).expect("Invalid UUID");
             validator.expect_graph_created(delete_graph_uuid, "test-graph-to-delete");
@@ -145,7 +145,7 @@ pub fn test_all_cli_commands() {
                 }),
             );
             expect_success(&response).expect("Delete graph should succeed");
-            
+
             // Add expectation for deletion
             validator.expect_graph_deleted(delete_graph_uuid);
         }
@@ -161,19 +161,20 @@ pub fn test_all_cli_commands() {
                 }),
             );
             expect_success(&response).expect("Create graph should succeed");
-            
+
             // Get the created graph ID from listing
             let cmd = json!({"type": "list_graphs"});
             let response = send_command(&mut ws, &cmd);
             let data = expect_success(&response).unwrap();
             let graphs = data["graphs"].as_array().unwrap();
-            
+
             // Find the newly created graph
-            let created_graph = graphs.iter()
+            let created_graph = graphs
+                .iter()
                 .find(|g| g["name"].as_str() == Some("test-created-graph"))
                 .expect("Should find the created graph");
             let created_graph_id = created_graph["id"].as_str().unwrap();
-            
+
             // Parse UUID and add expectations
             let created_graph_uuid = Uuid::parse_str(created_graph_id).expect("Invalid UUID");
             validator.expect_graph_created(created_graph_uuid, "test-created-graph");

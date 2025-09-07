@@ -33,11 +33,7 @@ pub async fn resolve_graph_for_command(
             None
         };
 
-    registry.resolve_graph_target(
-        graph_uuid.as_ref(),
-        graph_name,
-        allow_smart_default,
-    )
+    registry.resolve_graph_target(graph_uuid.as_ref(), graph_name, allow_smart_default)
 }
 
 /// Check if a connection is authenticated (safe, read-only)

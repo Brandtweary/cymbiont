@@ -75,9 +75,9 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use crate::cqrs::router::RouterToken;
 use crate::error::{Result, StorageError};
 use crate::graph::graph_manager::GraphManager;
-use crate::cqrs::router::RouterToken;
 use crate::utils::uuid_serde::{uuid_hashmap_serde, uuid_hashset_serde};
 
 /// Information about a registered graph
@@ -155,7 +155,7 @@ impl GraphRegistry {
         data_dir: &Path,
     ) -> Result<()> {
         use std::collections::hash_map::Entry;
-        
+
         // Step 1: Mark graph as open in registry
         self.open_graph(&graph_id)?;
 
@@ -194,8 +194,7 @@ impl GraphRegistry {
         fs::create_dir_all(&graph_dir)?;
 
         // Step 1: Register the graph
-        let graph_info = self
-            .register_graph(Some(graph_id), name, description, &graph_dir);
+        let graph_info = self.register_graph(Some(graph_id), name, description, &graph_dir);
 
         // Step 2: Create the GraphManager
         let graph_manager = GraphManager::new(&graph_dir)?;
@@ -364,13 +363,16 @@ impl GraphRegistry {
                             match open_graphs.len() {
                                 0 => Err(StorageError::graph_registry("No graphs are open").into()),
                                 1 => Ok(open_graphs[0]),
-                                _ => Err(
-                                    StorageError::graph_registry("Multiple graphs open, must specify target")
-                                        .into(),
-                                ),
+                                _ => Err(StorageError::graph_registry(
+                                    "Multiple graphs open, must specify target",
+                                )
+                                .into()),
                             }
                         } else {
-                            Err(StorageError::graph_registry("Must specify graph_id or graph_name").into())
+                            Err(
+                                StorageError::graph_registry("Must specify graph_id or graph_name")
+                                    .into(),
+                            )
                         }
                     },
                     |name| {
@@ -418,9 +420,7 @@ impl GraphRegistry {
                 // Create archive directory if it doesn't exist
                 let archive_dir = data_dir.join("archived_graphs");
                 fs::create_dir_all(&archive_dir).map_err(|e| {
-                    StorageError::graph_registry(format!(
-                        "Failed to create archive directory: {e}"
-                    ))
+                    StorageError::graph_registry(format!("Failed to create archive directory: {e}"))
                 })?;
 
                 // Move to archive with timestamp

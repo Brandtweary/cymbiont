@@ -385,7 +385,9 @@ impl CommandProcessor {
         {
             let mut managers = self.graph_managers.write().await;
             // Double-check in case another task loaded it
-            managers.entry(graph_id).or_insert_with(|| Arc::new(RwLock::new(graph_manager)));
+            managers
+                .entry(graph_id)
+                .or_insert_with(|| Arc::new(RwLock::new(graph_manager)));
         }
 
         Ok(())

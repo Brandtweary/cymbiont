@@ -144,10 +144,7 @@ async fn handle_agent_history(
     send_success_response(connection_id, state, Some(data)).await
 }
 
-async fn handle_agent_reset(
-    connection_id: &str,
-    state: &Arc<AppState>,
-) -> Result<()> {
+async fn handle_agent_reset(connection_id: &str, state: &Arc<AppState>) -> Result<()> {
     // Clear conversation history
     let command = CqrsCommand::Agent(AgentCommand::ClearHistory);
     state.command_queue.execute(command).await?;
@@ -159,10 +156,7 @@ async fn handle_agent_reset(
     send_success_response(connection_id, state, Some(data)).await
 }
 
-async fn handle_agent_info(
-    connection_id: &str,
-    state: &Arc<AppState>,
-) -> Result<()> {
+async fn handle_agent_info(connection_id: &str, state: &Arc<AppState>) -> Result<()> {
     // Get info about the single agent
     let agent_guard = state.agent.read_or_panic("agent info - read agent").await;
     if let Some(ref agent) = *agent_guard {
@@ -192,13 +186,13 @@ pub async fn handle(command: Command, connection_id: &str, state: &Arc<AppState>
             echo,
             echo_tool,
         } => handle_agent_chat(connection_id, state, message, echo, echo_tool).await,
-        
+
         Command::AgentHistory { limit } => handle_agent_history(connection_id, state, limit).await,
-        
+
         Command::AgentReset => handle_agent_reset(connection_id, state).await,
-        
+
         Command::AgentInfo => handle_agent_info(connection_id, state).await,
-        
+
         _ => {
             // This shouldn't happen if routing is correct
             Err(ServerError::websocket("Command routed to wrong handler").into())

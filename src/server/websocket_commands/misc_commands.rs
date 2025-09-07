@@ -48,20 +48,14 @@ use tracing::{error, info, warn};
 
 // ===== Individual Command Handlers =====
 
-async fn handle_auth(
-    connection_id: &str,
-    state: &Arc<AppState>,
-    token: String,
-) -> Result<()> {
+async fn handle_auth(connection_id: &str, state: &Arc<AppState>, token: String) -> Result<()> {
     // Validate token against configured auth token
     if !validate_token(state, &token).await {
         warn!(
             "🔐 WebSocket authentication failed for {}: invalid token",
             connection_id
         );
-        return Err(
-            ServerError::authentication("Failed to authenticate: invalid token").into(),
-        );
+        return Err(ServerError::authentication("Failed to authenticate: invalid token").into());
     }
 
     // Set authenticated (atomic operation)
@@ -83,13 +77,10 @@ async fn handle_auth(
         }
         Err(e) => {
             error!("Failed to authenticate connection {}: {}", connection_id, e);
-            return Err(ServerError::authentication(format!(
-                "Failed to authenticate: {e}"
-            ))
-            .into());
+            return Err(ServerError::authentication(format!("Failed to authenticate: {e}")).into());
         }
     }
-    
+
     Ok(())
 }
 
@@ -123,8 +114,7 @@ async fn handle_test_cli_command(
     params: serde_json::Value,
 ) -> Result<()> {
     // Dispatch to CLI module
-    let exit_after = match crate::cli::dispatch_cli_command(state, &command, &params).await
-    {
+    let exit_after = match crate::cli::dispatch_cli_command(state, &command, &params).await {
         Ok(exit) => exit,
         Err(e) => {
             error!("CLI command failed: {}", e);
@@ -145,9 +135,9 @@ async fn handle_test_cli_command(
 pub async fn handle(command: Command, connection_id: &str, state: &Arc<AppState>) -> Result<()> {
     match command {
         Command::Auth { token } => handle_auth(connection_id, state, token).await,
-        
+
         Command::Test { message } => handle_test(connection_id, state, Some(message)).await,
-        
+
         Command::Heartbeat => {
             handle_heartbeat();
             Ok(())

@@ -341,7 +341,11 @@ impl GraphOps for Arc<AppState> {
                 GraphError::invalid_state("No data returned from OpenGraph command").into()
             })
         } else {
-            Err(GraphError::invalid_state(format!("OpenGraph failed: {error:?}", error = result.error)).into())
+            Err(GraphError::invalid_state(format!(
+                "OpenGraph failed: {error:?}",
+                error = result.error
+            ))
+            .into())
         }
     }
 
@@ -397,7 +401,11 @@ impl GraphOps for Arc<AppState> {
                 GraphError::invalid_state("No data returned from CreateGraph command").into()
             })
         } else {
-            Err(GraphError::invalid_state(format!("CreateGraph failed: {error:?}", error = result.error)).into())
+            Err(GraphError::invalid_state(format!(
+                "CreateGraph failed: {error:?}",
+                error = result.error
+            ))
+            .into())
         }
     }
 
@@ -474,12 +482,7 @@ pub fn execute_create_block(
     };
 
     // Setup relationships
-    pkm_data::setup_block_relationships(
-        graph_manager,
-        &block_id,
-        parent_id,
-        page_name,
-    );
+    pkm_data::setup_block_relationships(graph_manager, &block_id, parent_id, page_name);
 
     block_id
 }
@@ -546,8 +549,7 @@ pub fn execute_delete_page(
         .map_err(|_| GraphError::node_not_found(page_name, graph_id))?;
 
     // Archive the node
-    graph_manager
-        .delete_nodes(vec![(normalized_name, node_idx)]);
+    graph_manager.delete_nodes(vec![(normalized_name, node_idx)]);
 
     Ok(())
 }

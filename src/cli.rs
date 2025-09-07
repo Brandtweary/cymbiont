@@ -251,10 +251,7 @@ pub async fn dispatch_cli_command(
 
 // ===== Individual Command Handlers =====
 
-async fn handle_import_logseq(
-    app_state: &Arc<AppState>, 
-    logseq_path: &str
-) -> Result<bool> {
+async fn handle_import_logseq(app_state: &Arc<AppState>, logseq_path: &str) -> Result<bool> {
     let import_start = Instant::now();
     let path = Path::new(&logseq_path);
     let result = import::import_logseq_graph(app_state, path, None).await?;
@@ -271,14 +268,11 @@ async fn handle_import_logseq(
         "✅ Import complete in {:.3}s",
         import_start.elapsed().as_secs_f64()
     );
-    
+
     Ok(false) // Continue running after import
 }
 
-async fn handle_delete_graph(
-    app_state: &Arc<AppState>,
-    graph_identifier: &str
-) -> Result<bool> {
+async fn handle_delete_graph(app_state: &Arc<AppState>, graph_identifier: &str) -> Result<bool> {
     // Resolve the graph using centralized logic
     let graph_uuid = {
         let registry = app_state
@@ -307,7 +301,7 @@ async fn handle_delete_graph(
     app_state.delete_graph(&graph_uuid).await?;
 
     info!("✅ Graph deleted successfully");
-    
+
     Ok(false) // Continue running after delete
 }
 
@@ -360,30 +354,29 @@ async fn handle_list_graphs(app_state: &Arc<AppState>) -> Result<bool> {
             info!("");
         }
     }
-    
+
     Ok(false) // Continue running after listing
 }
 
 async fn handle_create_graph(
     app_state: &Arc<AppState>,
     name: &str,
-    description: Option<&str>
+    description: Option<&str>,
 ) -> Result<bool> {
     info!("📊 Creating new graph: {}", name);
-    
+
     // Use the GraphOps trait method to create the graph
-    let graph_info = app_state.create_graph(
-        Some(name.to_string()), 
-        description.map(str::to_string)
-    ).await?;
-    
+    let graph_info = app_state
+        .create_graph(Some(name.to_string()), description.map(str::to_string))
+        .await?;
+
     info!("✅ Graph created successfully");
     info!("  ID: {}", graph_info["id"]);
     info!("  Name: {}", graph_info["name"]);
     if let Some(desc) = graph_info["description"].as_str() {
         info!("  Description: {}", desc);
     }
-    
+
     Ok(false) // Continue running after creation
 }
 

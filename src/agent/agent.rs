@@ -239,7 +239,10 @@ fn validate_tool_arguments(tool_name: &str, args: &Value) -> result::Result<(), 
 
     // If there are validation errors, format them nicely
     if !errors.is_empty() {
-        let error_messages: Vec<String> = errors.iter().map(std::string::ToString::to_string).collect();
+        let error_messages: Vec<String> = errors
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         return Err(error_messages.join("; "));
     }
 
@@ -256,12 +259,12 @@ fn validate_field_value(
         "string" => {
             if let Some(s) = value.as_str() {
                 // Additional validation for UUID fields
-                if (field_name.ends_with("_id") || field_name == "graph_id") && Uuid::parse_str(s).is_err() {
+                if (field_name.ends_with("_id") || field_name == "graph_id")
+                    && Uuid::parse_str(s).is_err()
+                {
                     return Err(ValidationError {
                         field: field_name.to_string(),
-                        issue: ValidationIssue::InvalidUuid(format!(
-                            "'{s}' is not a valid UUID"
-                        )),
+                        issue: ValidationIssue::InvalidUuid(format!("'{s}' is not a valid UUID")),
                     });
                 }
                 // Additional validation for non-empty strings

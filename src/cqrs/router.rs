@@ -187,7 +187,7 @@ async fn handle_create_block(
 ) -> Result<CommandResult> {
     let manager = get_graph_manager(managers, &graph_id).await?;
     let token = RouterToken::new();
-    
+
     let block_id = {
         let mut graph_manager = manager.write().await;
         graph_operations::execute_create_block(
@@ -218,7 +218,7 @@ async fn handle_update_block(
 ) -> Result<CommandResult> {
     let manager = get_graph_manager(managers, &graph_id).await?;
     let token = RouterToken::new();
-    
+
     {
         let mut graph_manager = manager.write().await;
         graph_operations::execute_update_block(
@@ -245,15 +245,10 @@ async fn handle_delete_block(
 ) -> Result<CommandResult> {
     let manager = get_graph_manager(managers, &graph_id).await?;
     let token = RouterToken::new();
-    
+
     {
         let mut graph_manager = manager.write().await;
-        graph_operations::execute_delete_block(
-            &token,
-            &mut graph_manager,
-            &block_id,
-            graph_id,
-        )?;
+        graph_operations::execute_delete_block(&token, &mut graph_manager, &block_id, graph_id)?;
     }
 
     Ok(CommandResult {
@@ -272,7 +267,7 @@ async fn handle_create_page(
 ) -> Result<CommandResult> {
     let manager = get_graph_manager(managers, &graph_id).await?;
     let token = RouterToken::new();
-    
+
     {
         let mut graph_manager = manager.write().await;
         graph_operations::execute_create_page(
@@ -298,15 +293,10 @@ async fn handle_delete_page(
 ) -> Result<CommandResult> {
     let manager = get_graph_manager(managers, &graph_id).await?;
     let token = RouterToken::new();
-    
+
     {
         let mut graph_manager = manager.write().await;
-        graph_operations::execute_delete_page(
-            &token,
-            &mut graph_manager,
-            &page_name,
-            graph_id,
-        )?;
+        graph_operations::execute_delete_page(&token, &mut graph_manager, &page_name, graph_id)?;
     }
 
     Ok(CommandResult {
@@ -326,7 +316,7 @@ async fn handle_add_message(
 ) -> Result<CommandResult> {
     let msg: Message = serde_json::from_value(message)?;
     let token = RouterToken::new();
-    
+
     {
         let mut agent_guard = agent.write().await;
         let agent_mut = agent_guard
@@ -344,11 +334,9 @@ async fn handle_add_message(
 }
 
 #[allow(clippy::significant_drop_tightening)]
-async fn handle_clear_history(
-    agent: &Arc<RwLock<Option<Agent>>>,
-) -> Result<CommandResult> {
+async fn handle_clear_history(agent: &Arc<RwLock<Option<Agent>>>) -> Result<CommandResult> {
     let token = RouterToken::new();
-    
+
     {
         let mut agent_guard = agent.write().await;
         let agent_mut = agent_guard
@@ -372,7 +360,7 @@ async fn handle_set_llm_config(
 ) -> Result<CommandResult> {
     let llm_config: LLMConfig = serde_json::from_value(config)?;
     let token = RouterToken::new();
-    
+
     {
         let mut agent_guard = agent.write().await;
         let agent_mut = agent_guard
@@ -395,7 +383,7 @@ async fn handle_set_system_prompt(
     prompt: String,
 ) -> Result<CommandResult> {
     let token = RouterToken::new();
-    
+
     {
         let mut agent_guard = agent.write().await;
         let agent_mut = agent_guard
@@ -487,7 +475,7 @@ async fn handle_create_graph(
 ) -> Result<CommandResult> {
     let graph_id = Uuid::new_v4();
     let token = RouterToken::new();
-    
+
     let graph_info = {
         let mut graph_reg = graph_registry.write().await;
         let mut managers = graph_managers.write().await;
@@ -518,7 +506,7 @@ async fn handle_register_graph(
     data_dir: &Path,
 ) -> Result<CommandResult> {
     let graph_dir = data_dir.join("graphs").join(graph_id.to_string());
-    
+
     {
         let mut registry = graph_registry.write().await;
         registry.register_graph(Some(graph_id), name, description, &graph_dir);
@@ -569,7 +557,7 @@ async fn handle_open_graph(
         let mut registry = graph_registry.write().await;
         let mut managers = graph_managers.write().await;
         registry.open_graph_complete(&token, graph_id, &mut managers, data_dir)?;
-        
+
         registry
             .get_graph(&graph_id)
             .ok_or_else(|| StorageError::not_found("graph", "ID", graph_id.to_string()))?
@@ -629,8 +617,20 @@ async fn route_graph_registry_command(
         GraphRegistryCommand::CreateGraph { name, description } => {
             handle_create_graph(graph_managers, graph_registry, name, description, data_dir).await
         }
-        GraphRegistryCommand::RegisterGraph { graph_id, name, description } => {
-            handle_register_graph(graph_managers, graph_registry, graph_id, name, description, data_dir).await
+        GraphRegistryCommand::RegisterGraph {
+            graph_id,
+            name,
+            description,
+        } => {
+            handle_register_graph(
+                graph_managers,
+                graph_registry,
+                graph_id,
+                name,
+                description,
+                data_dir,
+            )
+            .await
         }
         GraphRegistryCommand::RemoveGraph { graph_id } => {
             handle_remove_graph(graph_managers, graph_registry, graph_id).await

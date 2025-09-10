@@ -131,7 +131,7 @@ impl GraphRegistry {
     pub fn load(path: &Path) -> Result<Self> {
         if path.exists() {
             let json = fs::read_to_string(path)?;
-            let mut registry: Self = serde_json::from_str(&json)?;
+            let mut registry: Self = serde_json::from_str(&json).map_err(|e| StorageError::Serialization(e))?;
             // Clear open_graphs since nothing is actually open on startup
             registry.open_graphs.clear();
             Ok(registry)
@@ -465,7 +465,7 @@ impl GraphRegistry {
     ///
     /// Save registry to JSON
     pub fn save(&self, path: &Path) -> Result<()> {
-        let json = serde_json::to_string_pretty(&self)?;
+        let json = serde_json::to_string_pretty(&self).map_err(|e| StorageError::Serialization(e))?;
 
         fs::write(path, json)?;
 

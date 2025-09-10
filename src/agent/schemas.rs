@@ -394,14 +394,23 @@ pub fn delete_graph_schema() -> ToolDefinition {
     )
 }
 
-// Agent Graph Management Operations
+// Import Operations
 
-pub fn list_my_graphs_schema() -> ToolDefinition {
+pub fn import_logseq_schema() -> ToolDefinition {
     tool(
-        "list_my_graphs",
-        "List all knowledge graphs",
-        vec![],
-        vec![],
+        "import_logseq",
+        "Import a Logseq knowledge graph from a directory",
+        vec![
+            ("path", prop!("string", "Path to the Logseq graph directory")),
+            (
+                "graph_name",
+                prop!(
+                    "string",
+                    "Optional custom name for the imported graph (defaults to directory name)"
+                ),
+            ),
+        ],
+        vec!["path"],
     )
 }
 
@@ -421,6 +430,6 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         close_graph_schema(),
         create_graph_schema(),
         delete_graph_schema(),
-        list_my_graphs_schema(),
+        import_logseq_schema(),
     ]
 }

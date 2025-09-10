@@ -257,7 +257,7 @@ pub fn write_server_info(host: &str, port: u16, filename: &str) -> Result<()> {
         host: host.to_string(),
         port,
     };
-    let json = serde_json::to_string_pretty(&info)?;
+    let json = serde_json::to_string_pretty(&info).map_err(|e| ServerError::Serialization(e))?;
     fs::write(filename, &json)?;
     trace!("[SERVER-INFO-WRITE] Wrote server info: {}", json);
     Ok(())

@@ -5,7 +5,7 @@
 //! including graph resolution, authentication checks, and response sending.
 
 use crate::error::{Result, ServerError};
-use crate::server::websocket::Response;
+use crate::http_server::websocket::Response;
 use crate::utils::AsyncRwLockExt;
 use crate::AppState;
 use axum::extract::ws::Message;
@@ -107,7 +107,7 @@ pub async fn send_response(
     };
 
     // Now send without holding any lock
-    let msg = serde_json::to_string(&response)?;
+    let msg = serde_json::to_string(&response).map_err(|e| ServerError::Serialization(e))?;
     sender
         .send(Message::Text(msg.into()))
         .map_err(|_| ServerError::websocket("Failed to send message on channel"))?;

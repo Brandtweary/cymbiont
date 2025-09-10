@@ -125,9 +125,13 @@ macro_rules! cli_commands {
         #[derive(Parser, Debug)]
         #[command(author, version, about, long_about = None)]
         pub struct Args {
-            /// Run as HTTP/WebSocket server
+            /// Run as HTTP/WebSocket server (not MCP - use --mcp for MCP server)
             #[arg(long)]
             pub server: bool,
+
+            /// Run as MCP server (Model Context Protocol over stdio)
+            #[arg(long)]
+            pub mcp: bool,
 
             /// Override data directory path (defaults to config value)
             #[arg(long)]
@@ -164,6 +168,7 @@ macro_rules! cli_commands {
             fn default() -> Self {
                 Self {
                     server: false,
+                    mcp: false,
                     data_dir: None,
                     config: None,
                     duration: None,

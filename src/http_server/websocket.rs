@@ -75,8 +75,8 @@ use tokio::time::interval;
 use tracing::{error, warn};
 use uuid::Uuid;
 
-use crate::error::Result;
-use crate::server::{
+use crate::error::{Result, ServerError};
+use crate::http_server::{
     websocket_commands::{agent_commands, graph_commands, misc_commands},
     websocket_utils::{is_authenticated, send_error_response},
 };
@@ -324,7 +324,7 @@ async fn handle_message(msg: Message, connection_id: &str, state: &Arc<AppState>
                 route_command(command, connection_id, state).await?;
             }
             Err(e) => {
-                return Err(e.into());
+                return Err(ServerError::Serialization(e).into());
             }
         }
     }

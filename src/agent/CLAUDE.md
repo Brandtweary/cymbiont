@@ -1,15 +1,19 @@
 # Agent Module Guide 🤖
 
 ## Module Overview
-Agent system with LLM backends, tool execution, and graph authorization.
+AI interface layer providing multiple integration methods for external AI agents to interact with Cymbiont's knowledge graph engine.
 
 ## Core Components
 
 ### File Structure
 - **agent.rs**: Core Agent struct with conversation management and 4-phase message processing
 - **llm.rs**: LLMBackend trait and MockLLM test implementation
-- **kg_tools.rs**: Static registry of 15 knowledge graph tools
+- **tools.rs**: Canonical registry of 14 knowledge graph tools (single source of truth)
 - **schemas.rs**: Ollama-compatible tool schemas for function calling
+- **mcp/**: Model Context Protocol server for AI agent integration
+  - **mod.rs**: Module exports
+  - **protocol.rs**: JSON-RPC 2.0 message types
+  - **server.rs**: MCP server implementation over stdio
 
 ### Key Types
 - **Agent**: Conversation history, LLM config, message processing
@@ -17,7 +21,7 @@ Agent system with LLM backends, tool execution, and graph authorization.
 - **LLMBackend**: Async trait for LLM implementations (MockLLM, future: Ollama)
 - **ToolDefinition**: JSON Schema tool descriptions for LLM function calling
 
-## Tool Registry (15 Tools)
+## Tool Registry (14 Tools)
 
 ### Block Operations
 - `add_block` - Create block with content, parent, page, properties
@@ -40,8 +44,8 @@ Agent system with LLM backends, tool execution, and graph authorization.
 - `create_graph` - Create new knowledge graph
 - `delete_graph` - Archive graph
 
-### Agent Graph Settings
-- `list_graphs` - List graphs
+### Import Operations
+- `import_logseq` - Import Logseq graph from directory
 
 ## Key Patterns 🔑
 
@@ -50,6 +54,12 @@ Agent system with LLM backends, tool execution, and graph authorization.
 2. Get LLM response (no locks)
 3. Execute tools (stateless)
 4. Add response (brief lock)
+
+### MCP Server Integration
+- JSON-RPC 2.0 protocol over stdio
+- Tool discovery via `tools/list` method
+- Tool execution via `tools/call` method  
+- Critical: stdout reserved for JSON-RPC, logs to stderr
 
 
 ### MockLLM Testing
@@ -62,10 +72,10 @@ Agent system with LLM backends, tool execution, and graph authorization.
 - Clear unauthorized error messages
 
 ### Adding New Tools
-1. Define tool function in kg_tools.rs
+1. Define tool function in tools.rs
 2. Add to TOOLS HashMap with name and function pointer
 3. Create schema in schemas.rs with parameters
-4. Tool automatically available to all agents
+4. Tool automatically available via all integrations (WebSocket, MCP)
 
 ### Error Handling
 - Domain-specific AgentError variants

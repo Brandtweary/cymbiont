@@ -43,6 +43,13 @@ transaction_log:
   integrity_check_on_startup: true  # Run integrity checks and auto-repair at startup
 
 
+# Tracing and logging configuration
+tracing:
+  # Output destination for logs: "stdout" or "stderr"
+  # IMPORTANT: Must be "stderr" when running as MCP server (--mcp flag)
+  # MCP protocol requires stdout to be reserved exclusively for JSON-RPC messages
+  output: "stderr"
+
 # Verbosity monitoring (warns when log volume exceeds thresholds)
 verbosity:
   info_threshold: 50  # Maximum INFO logs before warning

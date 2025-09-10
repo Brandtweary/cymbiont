@@ -130,7 +130,7 @@ use std::sync::Arc;
 use tracing::info;
 use uuid::Uuid;
 
-use crate::agent::kg_tools;
+use crate::agent::tools;
 use crate::agent::llm::{
     create_llm_backend, AgentContext, LLMBackend, LLMConfig, LLMResponse, Message,
 };
@@ -192,7 +192,7 @@ impl fmt::Display for ValidationError {
 /// - Value range validation where applicable
 fn validate_tool_arguments(tool_name: &str, args: &Value) -> result::Result<(), String> {
     // Get all tool schemas
-    let tools = kg_tools::get_tool_schemas();
+    let tools = tools::get_tool_schemas();
 
     // Find the specific tool schema
     let tool = tools
@@ -517,7 +517,7 @@ impl Agent {
             });
         }
 
-        let result = kg_tools::execute_tool(app_state, tool_name, args).await?;
+        let result = tools::execute_tool(app_state, tool_name, args).await?;
 
         // Convert result Value to AgentContext
         let context = result.as_object().map_or_else(
@@ -553,7 +553,7 @@ impl Agent {
         let llm = context.llm_backend;
 
         // Get tool schemas
-        let tool_schemas = kg_tools::get_tool_schemas();
+        let tool_schemas = tools::get_tool_schemas();
 
         // Call LLM with conversation history and tools
         let response = llm
@@ -583,10 +583,10 @@ impl Agent {
         });
 
         let json = serde_json::to_string_pretty(&data)
-            .map_err(|e| AgentError::serialization(format!("Failed to serialize agent: {e}")))?;
+            .map_err(|e| AgentError::Serialization(e))?;
 
         fs::write(&agent_path, json)
-            .map_err(|e| AgentError::serialization(format!("Failed to write agent JSON: {e}")))?;
+            .map_err(|e| AgentError::tool(format!("Failed to write agent JSON: {e}")))?;
 
         Ok(())
     }
@@ -602,10 +602,10 @@ impl Agent {
         }
 
         let json = fs::read_to_string(&agent_path)
-            .map_err(|e| AgentError::serialization(format!("Failed to read agent JSON: {e}")))?;
+            .map_err(|e| AgentError::tool(format!("Failed to read agent JSON: {e}")))?;
 
         let data: serde_json::Value = serde_json::from_str(&json)
-            .map_err(|e| AgentError::serialization(format!("Failed to parse agent JSON: {e}")))?;
+            .map_err(|e| AgentError::Serialization(e))?;
 
         let agent = Self {
             id: data["id"]
@@ -637,7 +637,6 @@ impl Agent {
         if let Some(agent) = Self::load(data_dir)? {
             Ok(agent)
         } else {
-            info!("No existing agent found, creating new agent");
             let agent = Self::new(
                 Uuid::new_v4(),
                 "Cymbiont".to_string(),
@@ -677,7 +676,7 @@ pub async fn process_agent_message(
         echo_tool: echo_tool.clone(),
     };
     let command = Command::Agent(AgentCommand::AddMessage {
-        message: serde_json::to_value(user_msg)?,
+        message: serde_json::to_value(user_msg).map_err(|e| AgentError::Serialization(e))?,
     });
     app_state.command_queue.execute(command).await?;
 
@@ -715,7 +714,7 @@ pub async fn process_agent_message(
             timestamp: chrono::Utc::now(),
         };
         let command = Command::Agent(AgentCommand::AddMessage {
-            message: serde_json::to_value(tool_msg)?,
+            message: serde_json::to_value(tool_msg).map_err(|e| AgentError::Serialization(e))?,
         });
         app_state.command_queue.execute(command).await?;
     }
@@ -726,7 +725,7 @@ pub async fn process_agent_message(
         timestamp: chrono::Utc::now(),
     };
     let command = Command::Agent(AgentCommand::AddMessage {
-        message: serde_json::to_value(assistant_msg)?,
+        message: serde_json::to_value(assistant_msg).map_err(|e| AgentError::Serialization(e))?,
     });
     app_state.command_queue.execute(command).await?;
 

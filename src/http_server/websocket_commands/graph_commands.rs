@@ -55,8 +55,8 @@
 
 use crate::error::{Result, ServerError};
 use crate::graph::graph_operations::GraphOps;
-use crate::server::websocket::Command;
-use crate::server::websocket_utils::{resolve_graph_for_command, send_success_response};
+use crate::http_server::websocket::Command;
+use crate::http_server::websocket_utils::{resolve_graph_for_command, send_success_response};
 use crate::AppState;
 use std::collections::HashMap;
 use std::sync::Arc;

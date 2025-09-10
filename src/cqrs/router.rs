@@ -314,7 +314,7 @@ async fn handle_add_message(
     agent: &Arc<RwLock<Option<Agent>>>,
     message: serde_json::Value,
 ) -> Result<CommandResult> {
-    let msg: Message = serde_json::from_value(message)?;
+    let msg: Message = serde_json::from_value(message).map_err(|e| ProcessorError::Serialization(e))?;
     let token = RouterToken::new();
 
     {
@@ -358,7 +358,7 @@ async fn handle_set_llm_config(
     agent: &Arc<RwLock<Option<Agent>>>,
     config: serde_json::Value,
 ) -> Result<CommandResult> {
-    let llm_config: LLMConfig = serde_json::from_value(config)?;
+    let llm_config: LLMConfig = serde_json::from_value(config).map_err(|e| ProcessorError::Serialization(e))?;
     let token = RouterToken::new();
 
     {
@@ -491,7 +491,7 @@ async fn handle_create_graph(
 
     Ok(CommandResult {
         success: true,
-        data: Some(serde_json::to_value(graph_info)?),
+        data: Some(serde_json::to_value(graph_info).map_err(|e| ProcessorError::Serialization(e))?),
         error: None,
         child_commands: vec![],
     })
@@ -566,7 +566,7 @@ async fn handle_open_graph(
 
     Ok(CommandResult {
         success: true,
-        data: Some(serde_json::to_value(graph_info)?),
+        data: Some(serde_json::to_value(graph_info).map_err(|e| ProcessorError::Serialization(e))?),
         error: None,
         child_commands: vec![],
     })

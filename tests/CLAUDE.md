@@ -3,7 +3,7 @@
 ## Test Structure
 - **common/**: Shared test utilities - imported via `#[path = "../common/mod.rs"]`
   - **mod.rs**: Test environment setup and re-exports
-  - **test_harness.rs**: `TestServer` lifecycle management and WebSocket utilities
+  - **test_harness.rs**: `TestServer` lifecycle management, WebSocket utilities, and MCP test helpers
   - **test_validator.rs**: JSON-based state validation for single-agent architecture
 - **integration/**: Integration test suite (single binary for parallelism)
   - **main.rs**: Entry point - imports common utilities and test modules
@@ -12,6 +12,7 @@
   - **websocket_commands.rs**: WebSocket API tests
   - **agent_commands.rs**: Agent chat command tests
   - **agent_tools.rs**: Agent tool execution tests for knowledge graph tools
+  - **mcp_server.rs**: MCP server protocol and tool execution tests
 - **deployment_manual_doctests.rs**: Validates commands in CYMBIONT_EMERGENCY_DEPLOYMENT.md
 
 ## Test Utilities
@@ -44,6 +45,12 @@
 - `make_import_request(port, path, name, auth_token) -> Result<Value>`: Import Logseq graph via HTTP
 - `assert_phase(PreShutdown/PostShutdown)`: Document test phase for clarity
 - `block_on<F: Future>(future: F) -> F::Output`: Block on async future using tokio runtime
+- `start_mcp_server(env) -> (Child, ChildStdin, BufReader<ChildStdout>, TestEnv)`: Start MCP server with pipes
+- `shutdown_mcp_server(process, env) -> TestEnv`: Gracefully shutdown MCP server process
+- `mcp_request(stdin, stdout, id, method, params) -> Result<Value>`: Send JSON-RPC request and get response
+- `mcp_initialize(stdin, stdout) -> Result<Value>`: Perform MCP initialization handshake
+- `mcp_list_tools(stdin, stdout, id) -> Result<Vec<String>>`: List available MCP tools
+- `mcp_call_tool(stdin, stdout, id, tool_name, args) -> Result<Value>`: Execute MCP tool with arguments
 
 ### common/test_validator.rs
 - `TestValidator::new(data_dir: &Path) -> Self`: Create new validator for test data directory

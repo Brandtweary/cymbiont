@@ -37,9 +37,9 @@
 //! - Bridges to CLI module for command testing (debug only)
 
 use crate::error::{Result, ServerError};
-use crate::server::auth::validate_token;
-use crate::server::websocket::Command;
-use crate::server::websocket_utils::{
+use crate::http_server::auth::validate_token;
+use crate::http_server::websocket::Command;
+use crate::http_server::websocket_utils::{
     get_connection_stats, send_success_response, set_authenticated,
 };
 use crate::AppState;

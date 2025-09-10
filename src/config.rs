@@ -87,6 +87,8 @@ pub struct Config {
     #[allow(dead_code)] // TODO: Remove when transaction log config is used
     pub transaction_log: TransactionLogConfig,
     #[serde(default)]
+    pub tracing: TracingConfig,
+    #[serde(default)]
     pub verbosity: VerbosityConfig,
 }
 
@@ -132,6 +134,12 @@ pub struct TransactionLogConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+pub struct TracingConfig {
+    #[serde(default = "default_tracing_output")]
+    pub output: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
 #[allow(clippy::struct_field_names)]
 pub struct VerbosityConfig {
     #[serde(default = "default_info_threshold")]
@@ -144,6 +152,12 @@ pub struct VerbosityConfig {
 
 fn default_data_dir() -> String {
     "data".to_string()
+}
+
+fn default_tracing_output() -> String {
+    // Default to stderr for MCP compatibility
+    // This ensures cymbiont works correctly as an MCP server even if config is missing
+    "stderr".to_string()
 }
 
 fn default_server_info_file() -> String {
@@ -197,6 +211,7 @@ impl Default for Config {
             data_dir: default_data_dir(),
             auth: AuthConfig::default(),
             transaction_log: TransactionLogConfig::default(),
+            tracing: TracingConfig::default(),
             verbosity: VerbosityConfig::default(),
         }
     }
@@ -210,6 +225,14 @@ impl Default for TransactionLogConfig {
             retention_days: default_retention_days(),
             redundant_copies: default_redundant_copies(),
             integrity_check_on_startup: default_integrity_check_on_startup(),
+        }
+    }
+}
+
+impl Default for TracingConfig {
+    fn default() -> Self {
+        Self {
+            output: default_tracing_output(),
         }
     }
 }

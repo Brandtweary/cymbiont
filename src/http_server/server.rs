@@ -60,7 +60,7 @@ use tracing::info;
 
 use crate::error::{Result, ServerError};
 use crate::{
-    server::http_api::create_router,
+    http_server::http_api::create_router,
     utils::{find_available_port, terminate_previous_instance, write_server_info},
     AppState,
 };

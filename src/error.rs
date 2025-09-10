@@ -87,6 +87,10 @@ pub enum CymbiontError {
     #[error("Configuration error: {0}")]
     Config(#[from] ConfigError),
 
+    /// MCP server errors (protocol, communication, tool execution)
+    #[error("MCP error: {0}")]
+    MCP(#[from] MCPError),
+
     /// CQRS processor errors
     #[error("Processor error: {0}")]
     Processor(#[from] ProcessorError),
@@ -133,8 +137,8 @@ pub enum AgentError {
     Tool { message: String },
 
     /// Serialization errors for agent persistence
-    #[error("Serialization error: {message}")]
-    Serialization { message: String },
+    #[error("Serialization error: {0}")]
+    Serialization(#[from] serde_json::Error),
 }
 
 /// Graph operation errors for CRUD operations and queries
@@ -179,6 +183,10 @@ pub enum ServerError {
     /// Invalid request format
     #[error("Invalid request: {message}")]
     InvalidRequest { message: String },
+
+    /// JSON serialization/deserialization errors
+    #[error("Serialization error: {0}")]
+    Serialization(#[from] serde_json::Error),
 }
 
 /// Data import errors for Logseq and other formats
@@ -217,6 +225,18 @@ pub enum ConfigError {
     IO(#[from] std::io::Error),
 }
 
+/// MCP server errors for JSON-RPC protocol and tool execution
+#[derive(Error, Debug)]
+pub enum MCPError {
+    /// JSON serialization/deserialization errors for messages
+    #[error("Message serialization error: {0}")]
+    Serialization(#[from] serde_json::Error),
+
+    /// I/O errors on stdio communication
+    #[error("I/O error on stdio: {0}")]
+    IO(#[from] std::io::Error),
+}
+
 /// CQRS processor errors
 #[derive(Error, Debug)]
 pub enum ProcessorError {
@@ -231,6 +251,10 @@ pub enum ProcessorError {
     /// Processor has shut down
     #[error("Processor is shut down")]
     Shutdown,
+
+    /// JSON serialization/deserialization errors for commands
+    #[error("Command serialization error: {0}")]
+    Serialization(#[from] serde_json::Error),
 }
 
 // Convenience From implementations for common error types
@@ -247,11 +271,6 @@ impl From<&str> for CymbiontError {
     }
 }
 
-impl From<serde_json::Error> for CymbiontError {
-    fn from(error: serde_json::Error) -> Self {
-        Self::Storage(StorageError::Serialization(error))
-    }
-}
 
 impl From<serde_yaml::Error> for CymbiontError {
     fn from(error: serde_yaml::Error) -> Self {
@@ -289,12 +308,6 @@ impl AgentError {
 
     pub fn tool(message: impl Into<String>) -> Self {
         Self::Tool {
-            message: message.into(),
-        }
-    }
-
-    pub fn serialization(message: impl Into<String>) -> Self {
-        Self::Serialization {
             message: message.into(),
         }
     }
@@ -379,3 +392,4 @@ impl ImportError {
         }
     }
 }
+

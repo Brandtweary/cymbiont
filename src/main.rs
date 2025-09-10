@@ -19,10 +19,10 @@
 //! # Run for specific duration (for testing)
 //! cymbiont --duration 10
 //!
-//! # Run as HTTP/WebSocket server
+//! # Run as HTTP/WebSocket server (not MCP)
 //! cymbiont --server
 //!
-//! # Run server with specific duration
+//! # Run HTTP server with specific duration
 //! cymbiont --server --duration 60
 //! ```
 //!
@@ -78,7 +78,7 @@ mod cqrs;
 mod error;
 mod graph;
 mod import;
-mod server;
+mod http_server;
 mod utils;
 
 use app_state::AppState;
@@ -107,14 +107,14 @@ async fn async_main() -> Result<()> {
     // Load configuration once to get logging settings
     let config = config::load_config(args.config.clone());
 
-    // Initialize logging with verbosity config
+    // Initialize logging with verbosity config and output destination
     let verbosity_config = AutodebuggerVerbosityConfig {
         info_threshold: config.verbosity.info_threshold,
         debug_threshold: config.verbosity.debug_threshold,
         trace_threshold: config.verbosity.trace_threshold,
     };
 
-    let verbosity_layer = init_logging(None, Some(verbosity_config));
+    let verbosity_layer = init_logging(None, Some(verbosity_config), Some(&config.tracing.output));
 
     // Track start time for total runtime measurement
     let start_time = Instant::now();
@@ -146,7 +146,10 @@ async fn async_main() -> Result<()> {
     // Phase 4: Enter runtime loop
     if args.server {
         run_server_loop(&app_state, &args).await?;
-        info!("🧹 Server shutdown complete");
+        info!("🧹 HTTP server shutdown complete");
+    } else if args.mcp {
+        run_mcp_server(&app_state, &args).await?;
+        info!("🧹 MCP server shutdown complete");
     } else {
         run_cli_loop(&app_state, &args).await?;
         info!("🧹 CLI shutdown complete");
@@ -183,21 +186,27 @@ fn run_startup_sequence(app_state: &Arc<AppState>) {
     // - etc.
 }
 
-/// Run the server event loop
-#[allow(clippy::cognitive_complexity)]
-async fn run_server_loop(app_state: &Arc<AppState>, args: &Args) -> Result<()> {
-    // Start server and get handle
-    let (server_handle, server_info_file) = server::start_server(app_state.clone()).await?;
-
-    // Handle duration and shutdown
+/// Unified runtime loop with shutdown handling for all modes
+async fn run_with_shutdown<F, C, CF>(
+    app_state: &Arc<AppState>,
+    args: &Args,
+    main_task: F,
+    cleanup: C,
+) -> Result<()>
+where
+    F: std::future::Future<Output = Result<()>>,
+    C: Fn() -> CF,
+    CF: std::future::Future<Output = ()>,
+{
+    // Handle duration and shutdown uniformly
     if let Some(duration) = args
         .duration
         .or(app_state.config.development.default_duration)
     {
         tokio::select! {
-            result = server_handle => {
+            result = main_task => {
                 if let Err(e) = result {
-                    error!("Server task error: {}", e);
+                    error!("Main task error: {}", e);
                 }
             }
             () = sleep(Duration::from_secs(duration)) => {
@@ -206,7 +215,7 @@ async fn run_server_loop(app_state: &Arc<AppState>, args: &Args) -> Result<()> {
             _ = signal::ctrl_c() => {
                 info!("🛑 Received shutdown signal");
                 if handle_graceful_shutdown(app_state).await {
-                    server::cleanup_server_info(&server_info_file);
+                    cleanup().await;
                     process::exit(1);
                 }
             }
@@ -214,59 +223,115 @@ async fn run_server_loop(app_state: &Arc<AppState>, args: &Args) -> Result<()> {
     } else {
         // Run indefinitely
         tokio::select! {
-            result = server_handle => {
+            result = main_task => {
                 if let Err(e) = result {
-                    error!("Server task error: {}", e);
+                    error!("Main task error: {}", e);
                 }
             }
             _ = signal::ctrl_c() => {
                 info!("🛑 Received shutdown signal");
                 if handle_graceful_shutdown(app_state).await {
-                    server::cleanup_server_info(&server_info_file);
+                    cleanup().await;
                     process::exit(1);
                 }
             }
         }
     }
 
-    // Cleanup for server mode
-    server::cleanup_server_info(&server_info_file);
+    // Standard cleanup sequence
+    cleanup().await;
     app_state.shutdown().await;
 
     Ok(())
 }
 
+/// Run the server event loop
+async fn run_server_loop(app_state: &Arc<AppState>, args: &Args) -> Result<()> {
+    // Start server and get handle
+    let (server_handle, server_info_file) = http_server::start_server(app_state.clone()).await?;
+
+    // Cleanup function specific to server mode
+    let cleanup = || async {
+        http_server::cleanup_server_info(&server_info_file);
+    };
+
+    // Convert JoinHandle to a Future that returns Result<()>
+    let server_task = async {
+        match server_handle.await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => {
+                error!("Server error: {}", e);
+                Err(CymbiontError::Other(format!("Server error: {}", e)))
+            }
+            Err(e) => {
+                error!("Server task panicked: {}", e);
+                Err(CymbiontError::Other(format!("Server task panicked: {}", e)))
+            }
+        }
+    };
+
+    // Run with unified shutdown handling
+    run_with_shutdown(
+        app_state,
+        args,
+        server_task,
+        cleanup,
+    ).await
+}
+
 /// Run the CLI event loop
 async fn run_cli_loop(app_state: &Arc<AppState>, args: &Args) -> Result<()> {
-    // Handle duration for CLI mode
-    if let Some(duration) = args
-        .duration
-        .or(app_state.config.development.default_duration)
-    {
-        sleep(Duration::from_secs(duration)).await;
-        info!("⏱️ Duration limit reached");
-    } else {
-        // Run indefinitely (for future interactive features)
+    // Write PID file for CLI mode
+    if args.duration.is_none() && app_state.config.development.default_duration.is_none() {
         utils::write_pid_file().map_err(|e| CymbiontError::Other(e.to_string()))?;
-
         info!("Running indefinitely. Press Ctrl+C to exit.");
-
-        // First Ctrl+C - initiate graceful shutdown
-        signal::ctrl_c().await?;
-        info!("🛑 Received shutdown signal");
-
-        if handle_graceful_shutdown(app_state).await {
-            // Force quit requested
-            utils::remove_pid_file();
-            process::exit(1);
-        }
     }
 
-    // Cleanup for CLI mode
-    app_state.shutdown().await;
-    utils::remove_pid_file();
+    // Cleanup function specific to CLI mode
+    let cleanup = || async {
+        utils::remove_pid_file();
+    };
 
-    Ok(())
+    // Create a future that never completes (CLI has no main task)
+    let never = std::future::pending::<Result<()>>();
+
+    // Run with unified shutdown handling
+    run_with_shutdown(
+        app_state,
+        args,
+        never,
+        cleanup,
+    ).await
+}
+
+/// Run the MCP server
+async fn run_mcp_server(app_state: &Arc<AppState>, args: &Args) -> Result<()> {
+    info!("🤖 Starting MCP server on stdio");
+    
+    // No cleanup needed for MCP mode
+    let cleanup = || async {};
+
+    // Run the MCP server as the main task
+    let mcp_task = async {
+        match agent::mcp::server::run_mcp_server(app_state.clone()).await {
+            Ok(_) => {
+                info!("MCP client disconnected");
+                Ok(())
+            }
+            Err(e) => {
+                error!("MCP server error: {}", e);
+                Err(e)
+            }
+        }
+    };
+
+    // Run with unified shutdown handling
+    run_with_shutdown(
+        app_state,
+        args,
+        mcp_task,
+        cleanup,
+    ).await
 }
 
 /// Handle graceful shutdown with transaction completion

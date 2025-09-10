@@ -12,6 +12,7 @@ mod agent_commands;
 mod agent_tools;
 mod cli_commands;
 mod http_logseq_import;
+mod mcp_server;
 mod websocket_commands;
 
 // Re-export test functions with #[test] attribute
@@ -68,4 +69,35 @@ fn test_agent_tool_validation_errors() {
 #[test]
 fn test_agent_tool_chaining() {
     agent_tools::test_agent_tool_chaining();
+}
+
+// MCP Server tests
+#[test]
+fn test_mcp_all_tools() {
+    mcp_server::test_mcp_all_tools();
+}
+
+#[test]
+fn test_mcp_initialization() {
+    mcp_server::test_mcp_initialization();
+}
+
+#[test]
+fn test_mcp_protocol_compliance() {
+    mcp_server::test_mcp_protocol_compliance();
+}
+
+#[test]
+fn test_mcp_malformed_requests() {
+    mcp_server::test_mcp_malformed_requests();
+}
+
+#[test]
+fn test_mcp_invalid_tool_arguments() {
+    mcp_server::test_mcp_invalid_tool_arguments();
+}
+
+#[test]
+fn test_mcp_notifications() {
+    mcp_server::test_mcp_notifications();
 }

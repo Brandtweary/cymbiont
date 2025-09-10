@@ -1,8 +1,8 @@
-//! Knowledge Graph Tools for LLM Agents
+//! Canonical Tool Definitions for All AI Integrations
 //!
-//! This module provides a simple, efficient tool system for agents to interact
-//! with the knowledge graph through the CQRS architecture. Tools are registered
-//! in a static `HashMap` for fast dispatch without ownership complexity.
+//! This module provides the authoritative set of knowledge graph tools used by
+//! all AI interfaces (WebSocket agents, MCP servers, and future integrations).
+//! Tools are registered in a static `HashMap` for fast dispatch without ownership complexity.
 //!
 //! ## Design Philosophy
 //!
@@ -39,10 +39,10 @@
 //!
 //! ```rust
 //! // Get tool schemas for LLM
-//! let tools = kg_tools::get_tool_schemas();
+//! let tools = tools::get_tool_schemas();
 //!
 //! // Execute a tool (mutations go through CQRS)
-//! let result = kg_tools::execute_tool(
+//! let result = tools::execute_tool(
 //!     app_state,
 //!     "add_block",
 //!     json!({"content": "Hello", "graph_id": "..."})
@@ -63,10 +63,12 @@ use crate::agent::schemas::ToolDefinition;
 use crate::app_state::AppState;
 use crate::error::{AgentError, Result};
 use crate::graph::graph_operations::GraphOps;
+use crate::import::import_utils;
 use crate::utils::AsyncRwLockExt;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::future::Future;
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -103,6 +105,9 @@ static TOOLS: LazyLock<HashMap<&'static str, ToolFn>> = LazyLock::new(|| {
     tools.insert("close_graph", close_graph as ToolFn);
     tools.insert("create_graph", create_graph as ToolFn);
     tools.insert("delete_graph", delete_graph as ToolFn);
+    
+    // Import operations
+    tools.insert("import_logseq", import_logseq as ToolFn);
 
     tools
 });
@@ -535,6 +540,59 @@ fn delete_graph<'a>(
                 "success": false,
                 "error": e.to_string()
             })),
+        }
+    })
+}
+
+// Import Operations
+
+/// Import a Logseq knowledge graph from a directory
+fn import_logseq<'a>(
+    app_state: &'a Arc<AppState>,
+    args: Value,
+) -> Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>> {
+    Box::pin(async move {
+        // Parse required path parameter
+        let path_str = args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::tool("Missing required parameter: path"))?;
+        
+        // Parse optional graph_name parameter
+        let graph_name = args
+            .get("graph_name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        
+        // Validate path exists and is a directory
+        let path = Path::new(path_str);
+        if !path.exists() {
+            return Err(AgentError::tool(format!("Path does not exist: {}", path.display())).into());
+        }
+        if !path.is_dir() {
+            return Err(AgentError::tool(format!("Path is not a directory: {}", path.display())).into());
+        }
+        
+        // Call the existing import logic
+        match import_utils::import_logseq_graph(app_state, path, graph_name).await {
+            Ok(result) => Ok(json!({
+                "success": true,
+                "graph_id": result.graph_id,
+                "graph_name": result.graph_name,
+                "pages_imported": result.pages_imported,
+                "blocks_imported": result.blocks_imported,
+                "errors": result.errors,
+                "message": format!(
+                    "✓ Imported {} pages and {} blocks into graph '{}'",
+                    result.pages_imported,
+                    result.blocks_imported,
+                    result.graph_name
+                )
+            })),
+            Err(e) => Ok(json!({
+                "success": false,
+                "error": format!("Import failed: {}", e)
+            }))
         }
     })
 }

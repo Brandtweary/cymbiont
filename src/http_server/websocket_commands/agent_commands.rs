@@ -2,16 +2,78 @@
 //!
 //! This module implements WebSocket commands for agent interactions including:
 //! - Chat messaging with the agent
-//! - Conversation history retrieval
+//! - Conversation history retrieval  
 //! - Agent reset functionality
 //! - Agent information queries
+//!
+//! ## Command Flow
+//!
+//! All agent commands follow a similar pattern:
+//! 1. Validate authentication status of the WebSocket connection
+//! 2. Extract and validate command parameters
+//! 3. Execute operation via CQRS command queue or direct agent methods
+//! 4. Format and send response back through WebSocket channel
+//!
+//! ## AgentChat Command
+//!
+//! The main interface for agent interaction. Supports both normal chat and test modes:
+//! - Normal mode: Sends message to configured LLM backend for processing
+//! - Echo mode: Forces specific text response (for testing)
+//! - Echo tool mode: Forces tool execution with name and args (MockLLM only)
+//!
+//! Example:
+//! ```json
+//! {
+//!   "type": "AgentChat",
+//!   "message": "What graphs are available?",
+//!   "echo": null,
+//!   "echo_tool": null
+//! }
+//! ```
+//!
+//! ## AgentHistory Command
+//!
+//! Retrieves conversation history with optional limit:
+//! ```json
+//! {
+//!   "type": "AgentHistory",
+//!   "limit": 10
+//! }
+//! ```
+//!
+//! Returns array of Message objects with User, Assistant, and Tool roles.
+//!
+//! ## AgentReset Command
+//!
+//! Clears the conversation history while preserving agent configuration:
+//! ```json
+//! {
+//!   "type": "AgentReset"
+//! }
+//! ```
+//!
+//! ## AgentInfo Command
+//!
+//! Returns detailed agent information including:
+//! - Agent ID and name
+//! - Creation and update timestamps
+//! - Message count statistics
+//! - Current LLM configuration
+//!
+//! ## Error Handling
+//!
+//! All commands return standardized error responses for:
+//! - Unauthorized access (connection not authenticated)
+//! - Missing or invalid parameters
+//! - Agent operation failures
+//! - Serialization errors
 
 use crate::agent::agent::process_agent_message;
 use crate::agent::llm::Message as LlmMessage;
 use crate::cqrs::{AgentCommand, Command as CqrsCommand};
 use crate::error::{Result, ServerError};
-use crate::server::websocket::Command;
-use crate::server::websocket_utils::{send_error_response, send_success_response};
+use crate::http_server::websocket::Command;
+use crate::http_server::websocket_utils::{send_error_response, send_success_response};
 use crate::utils::AsyncRwLockExt;
 use crate::AppState;
 use serde_json::json;

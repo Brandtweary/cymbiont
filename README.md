@@ -23,6 +23,7 @@ Cymbiont currently provides the core engine that makes this vision possible:
 - **📥 Logseq Import**: Complete import system with reference resolution
 - **🌐 Real-time Updates**: WebSocket protocol for live synchronization
 - **🔌 HTTP API**: RESTful interface for data ingestion and querying
+- **🤖 MCP Server**: Model Context Protocol for LLM agent integration
 - **⚙️ Multi-Instance**: Concurrent instances with isolated discovery
 
 ## Future Capabilities
@@ -152,8 +153,11 @@ development:
 For developers building applications on top of Cymbiont:
 
 ```bash
-# Start the server
+# Start HTTP/WebSocket server
 cargo run -- --server
+
+# Or start MCP server for LLM agent integration
+cargo run -- --mcp
 ```
 
 When running as a server, Cymbiont generates an authentication token on startup:
@@ -202,8 +206,9 @@ cargo run -- --help                        # View all options
 cargo run -- --data-dir ./custom           # Use custom data directory
 cargo run -- --config custom.yaml          # Use specific configuration file
 
-# Server mode
+# Server modes
 cargo run -- --server                      # Start HTTP/WebSocket server
+cargo run -- --mcp                         # Start MCP server for LLM agents
 cargo run -- --server --duration 60        # Run server for 60 seconds
 
 # Graph management

@@ -53,7 +53,7 @@ All operations automatically validate graph access - no manual validation needed
 2. Add method to GraphOps trait with agent_id + graph_id params
 3. Implement method using command_queue.execute()
 4. Add command handling in cqrs/router.rs
-5. Optional: Add to cli.rs, WebSocket commands, or kg_tools.rs
+5. Optional: Add to cli.rs, WebSocket commands, or tools.rs
 
 ### Error Handling
 - Domain-specific GraphError variants

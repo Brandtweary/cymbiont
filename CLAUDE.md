@@ -22,6 +22,7 @@ RUST_LOG=debug cargo run         # Run cymbiont with debug logging (do not chang
 
 ### Server & Runtime
 - `--server`: Run as HTTP/WebSocket server
+- `--mcp`: Run as MCP server (Model Context Protocol over stdio)
 - `--duration <SECONDS>`: Run for a specific duration in seconds (to run indefinitely, set default_duration to null in config.yaml)
 - `--data-dir <PATH>`: Override data directory path (defaults to config value)
 - `--config <PATH>`: Use specific configuration file
@@ -35,7 +36,7 @@ RUST_LOG=debug cargo run         # Run cymbiont with debug logging (do not chang
 
 
 ### Core Directories
-- **src/**: Cymbiont server - graph management, API endpoints
+- **src/**: Cymbiont engine - graph management, API endpoints, AI interfaces
 - **logseq_databases/**: Test graphs
   - **dummy_graph/**: Test data for development
 - **data/**: Knowledge graph persistence (configurable via data_dir in config.yaml)
@@ -57,9 +58,9 @@ RUST_LOG=debug cargo run         # Run cymbiont with debug logging (do not chang
   - **app_state.rs**: Pure resource container with CQRS integration
   - **cqrs/**: Command Query Responsibility Segregation for deadlock-free mutations
   - **graph/**: Graph management subsystem - see `src/graph/CLAUDE.md` for module details
-  - **agent/**: Agent abstraction layer - see `src/agent/CLAUDE.md` for module details
+  - **agent/**: AI interface layer - see `src/agent/CLAUDE.md` for module details
   - **import/**: Data import functionality - see `src/import/CLAUDE.md` for module details
-  - **server/**: HTTP/WebSocket server - see `src/server/CLAUDE.md` for API reference and module details
+  - **http_server/**: HTTP/WebSocket server - see `src/http_server/CLAUDE.md` for API reference and module details
 - **tests/**: Test binaries (e.g. integration tests) - see `tests/CLAUDE.md` for test harness details
 - **autodebugger/**: Git submodule - LLM developer utilities with automated log verbosity detection
 - **.gitignore**: Git ignore patterns

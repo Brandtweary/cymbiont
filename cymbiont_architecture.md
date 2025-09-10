@@ -15,18 +15,22 @@ cymbiont/
 │   │   ├── graph_manager.rs       # Petgraph-based knowledge graph engine
 │   │   ├── graph_operations.rs    # Graph operations via CQRS commands
 │   │   └── graph_registry.rs      # Multi-graph UUID management with open/closed state
-│   ├── agent/                     # Agent abstraction layer
+│   ├── agent/                     # AI interface layer - see src/agent/CLAUDE.md
 │   │   ├── mod.rs                 # Agent module exports
-│   │   ├── agent.rs               # Knowledge graph agent with conversation management and tool execution
-│   │   ├── llm.rs                 # LLM backend abstraction with MockLLM tool support
-│   │   ├── kg_tools.rs            # Static knowledge graph tool registry with 14 functional tools
-│   │   └── schemas.rs             # Ollama-compatible tool schemas for function calling
+│   │   ├── agent.rs               # Knowledge graph agent with conversation management
+│   │   ├── llm.rs                 # LLM backend abstraction with MockLLM
+│   │   ├── tools.rs               # Canonical tool registry with 14 knowledge graph tools
+│   │   ├── schemas.rs             # Ollama-compatible tool schemas
+│   │   └── mcp/                   # Model Context Protocol server
+│   │       ├── mod.rs             # MCP module exports
+│   │       ├── protocol.rs        # JSON-RPC 2.0 message types
+│   │       └── server.rs          # MCP server implementation over stdio
 │   ├── import/                    # Data import functionality
 │   │   ├── mod.rs                 # Import module exports and errors
 │   │   ├── pkm_data.rs            # PKM data structures and helper functions
 │   │   ├── logseq.rs              # Logseq-specific parsing
 │   │   └── import_utils.rs        # Import coordination and graph creation
-│   ├── server/                    # Server-specific functionality - see src/server/CLAUDE.md
+│   ├── http_server/               # HTTP/WebSocket server - see src/http_server/CLAUDE.md
 │   │   ├── mod.rs                 # Server module exports
 │   │   ├── server.rs              # Server lifecycle and port management
 │   │   ├── http_api.rs            # HTTP endpoints (health, import, WebSocket upgrade)
@@ -73,11 +77,11 @@ cymbiont/
 **Purpose**: Application entry point with 5-phase startup sequence
 **Phases**: Initialization → Common startup → Command handling → Runtime loop → Cleanup
 **Key functions**:
-- `run_startup_sequence()` - Common initialization for both modes
-- `run_server_loop()` / `run_cli_loop()` - Mode-specific event loops
+- `run_startup_sequence()` - Common initialization for all modes
+- `run_server_loop()` / `run_cli_loop()` / `run_mcp_server()` - Mode-specific execution
 - `handle_graceful_shutdown()` - Command completion during shutdown
 **Startup**: CommandProcessor::start() initializes CQRS system and loads agent
-**Features**: Duration limits, signal handling, graceful shutdown
+**Features**: Duration limits, signal handling, graceful shutdown, MCP server mode
 
 ### cli.rs
 **Purpose**: CLI argument parsing and CQRS command execution
@@ -92,8 +96,32 @@ cymbiont/
 **Contract**: Build script extracts commands for test verification
 
 ### config.rs
-**Purpose**: YAML configuration loading with CLI overrides  
-**Key types**: `Config`, `BackendConfig`, `DevelopmentConfig`
+**Purpose**: YAML configuration loading with smart fallback strategy
+**Search order**: --config flag → executable dir → parent dirs (up to 3) → defaults
+**Test mode**: Uses config.test.yaml when CYMBIONT_TEST_MODE is set
+**Configuration (config.yaml)**:
+```yaml
+data_dir: data                    # Storage directory
+backend:
+  port: 8888                      # Base HTTP port
+  max_port_attempts: 10           # Port search range
+  server_info_file: "cymbiont_server.json"
+development:
+  default_duration: 3             # Auto-exit seconds (null=forever)
+auth:
+  token: null                     # Fixed token (null=auto-generate)
+  disabled: false                 # Disable auth
+tracing:
+  output: "stderr"                # Log output: "stdout" or "stderr" (must be "stderr" for MCP)
+verbosity:                        # Log verbosity thresholds (for autodebugger)
+  info_threshold: 50
+  debug_threshold: 100
+  trace_threshold: 200
+transaction_log:                  # Future WAL configuration (not yet implemented)
+  fsync_interval_ms: 100
+  compaction_threshold_mb: 100
+  retention_days: 7
+```
 
 ### error.rs
 **Purpose**: Hierarchical error system with domain-specific types
@@ -191,7 +219,7 @@ cymbiont/
 - Lifecycle: `create_graph()`, `delete_graph()`, `open_graph()`, `close_graph()`
 - Queries: `get_node()`, `query_graph_bfs()`, `list_graphs()`, `list_open_graphs()`
 **Architecture**: Mutations route through CommandQueue, reads access state directly
-**Adding operations**: 1) Add to Command enum 2) Add to GraphOps trait 3) Implement via command_queue.execute() 4) Optional: Add to kg_tools 5) Optional: Add WebSocket command
+**Adding operations**: 1) Add to Command enum 2) Add to GraphOps trait 3) Implement via command_queue.execute() 4) Optional: Add to tools.rs 5) Optional: Add WebSocket command
 
 ### graph/graph_registry.rs
 **Purpose**: Multi-graph UUID tracking with open/closed state
@@ -205,7 +233,8 @@ cymbiont/
 **Persistence**: Metadata saved to `graph_registry.json`
 
 ### agent/mod.rs
-**Purpose**: Agent module exports
+**Purpose**: AI interface layer exports
+**Exports**: `agent`, `llm`, `tools`, `schemas`, `mcp`
 **Details**: See `src/agent/CLAUDE.md` for module guide
 
 
@@ -227,16 +256,17 @@ cymbiont/
 **MockLLM**: Test implementation with `echo_tool`, `generate_mock_args()`, valid UUIDs
 **Interface**: `complete()` with tool schemas, `health_check()`
 
-### agent/kg_tools.rs
-**Purpose**: Static tool registry (14 knowledge graph tools)
-**Architecture**: Static `TOOLS` HashMap with function pointers
+### agent/tools.rs
+**Purpose**: Canonical tool registry (14 knowledge graph tools)
+**Architecture**: Static `TOOLS` HashMap with function pointers, single source of truth
 **Tools**:
 - Blocks: `add_block`, `update_block`, `delete_block`
 - Pages: `create_page`, `delete_page`
-- Queries: `get_node`, `query_graph_bfs` (stub)
+- Queries: `get_node`, `query_graph_bfs`
 - Lifecycle: `open_graph`, `close_graph`, `create_graph`, `delete_graph`
 - Lists: `list_graphs`, `list_open_graphs`
-- Utilities: `set_default_graph`, `get_default_graph`
+- Import: `import_logseq`
+**Functions**: `execute_tool()`, `get_tool_schemas()`
 **Features**: Graph resolution with smart defaults, JSON responses
 
 ### agent/schemas.rs
@@ -245,18 +275,35 @@ cymbiont/
 **Features**: Graph targeting (UUID/name), required/optional params, type info
 **Function**: `all_tool_definitions()` - generate all schemas
 
-### server/server.rs
+### agent/mcp/mod.rs
+**Purpose**: MCP module exports
+**Exports**: `protocol`, `server`, `run_mcp_server()`
+
+### agent/mcp/protocol.rs
+**Purpose**: JSON-RPC 2.0 protocol types for MCP
+**Types**: `Request`, `Response`, `Error`, `Notification`
+**Constants**: Standard error codes, MCP method names
+**Features**: Type-safe message handling, error formatting
+
+### agent/mcp/server.rs
+**Purpose**: MCP server implementation over stdio
+**Type**: `MCPServer` - JSON-RPC server for AI agent integration
+**Features**: Tool discovery, execution via `tools::execute_tool()`, stdio communication
+**Protocol**: JSON-RPC 2.0 with MCP extensions
+**Critical**: stdout reserved for JSON-RPC, all logs to stderr
+
+### http_server/server.rs
 **Purpose**: Server lifecycle and port finding
 **Function**: `start_server()` - find port, create Axum server, return handle
 **Features**: Auto port selection, server info file, previous instance cleanup
 
-### server/websocket.rs & websocket_commands/
+### http_server/websocket.rs & websocket_commands/
 **Purpose**: WebSocket protocol and CQRS command routing
 **Architecture**: Core in websocket.rs, handlers in websocket_commands/
 **Features**: Async task spawning, auth verification, command dispatch via CommandQueue
 **CQRS Integration**: All mutations route through CommandQueue for execution
 **Commands**: Agent chat, graph CRUD, auth utilities
-**Details**: See `src/server/CLAUDE.md` for full API
+**Details**: See `src/http_server/CLAUDE.md` for full API
 
 ### import/mod.rs
 **Purpose**: Import module exports
@@ -290,7 +337,7 @@ cymbiont/
 **Integration**: Uses `create_graph()` for consistent graph creation
 
 
-### server/auth.rs
+### http_server/auth.rs
 **Purpose**: Token-based authentication
 **Features**: Auto-generate on startup, save to `auth_token` (0600), rotate on restart
 **Usage**: HTTP Bearer header, WebSocket Auth command
@@ -336,24 +383,11 @@ cymbiont/
 - **Graph**: `{graphs: [{id, name, path, created_at, last_accessed}]}`
 - **Agent**: `{id, name, created_at, updated_at, conversation_history[], llm_config}`
 
-## Configuration (config.yaml)
-```yaml
-data_dir: data                    # Storage directory
-backend:
-  port: 8888                      # Base HTTP port
-  max_port_attempts: 10           # Port search range
-  server_info_file: "cymbiont_server.json"
-development:
-  default_duration: 3             # Auto-exit seconds (null=forever)
-auth:
-  token: null                     # Fixed token (null=auto-generate)
-  disabled: false                 # Disable auth
-```
-
 ## CLI Commands
 | Category | Command | Description |
 |----------|---------|-------------|
 | **Server** | `--server` | Run as HTTP/WebSocket server |
+| | `--mcp` | Run as MCP server (Model Context Protocol) |
 | **Graph** | `--import-logseq <PATH>` | Import Logseq directory |
 | | `--create-graph <NAME>` | Create new graph |
 | | `--delete-graph <NAME/ID>` | Archive graph |

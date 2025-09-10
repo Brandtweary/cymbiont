@@ -65,8 +65,8 @@
 //! - **WebSocket Server**: Connection handoff and status reporting
 //! - **Storage Layer**: Graph registry and transaction coordination
 
-use crate::server::auth::auth_middleware;
-use crate::server::websocket::websocket_handler;
+use crate::http_server::auth::auth_middleware;
+use crate::http_server::websocket::websocket_handler;
 use crate::utils::AsyncRwLockExt;
 use crate::AppState;
 use axum::{

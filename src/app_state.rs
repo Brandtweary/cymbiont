@@ -105,7 +105,7 @@ use crate::{
     cqrs::{CommandProcessor, CommandQueue},
     graph::graph_manager::GraphManager,
     graph::graph_registry::GraphRegistry,
-    server::{auth::initialize_auth, websocket::WsConnection},
+    http_server::{auth::initialize_auth, websocket::WsConnection},
 };
 
 /// Central application state that coordinates all Cymbiont components

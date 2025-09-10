@@ -108,7 +108,7 @@
 //!    - Implements the actual graph operation logic
 //!    - Handles PKM-specific concerns (reference resolution, etc.)
 //!
-//! 5. **Register in tool registry** (optional) in `agent/kg_tools.rs`:
+//! 5. **Register in tool registry** (optional) in `agent/tools.rs`:
 //!    - Add tool registration in appropriate category
 //!    - Parse parameters from JSON args
 //!    - Call `GraphOps` method with parsed params
@@ -124,7 +124,7 @@
 //! - `GraphError` - General graph operation failures
 //! - `NodeNotFound` - Specific node lookup failures
 
-use crate::error::{GraphError, Result};
+use crate::error::{GraphError, Result, StorageError};
 use crate::{
     cqrs::{Command, GraphCommand, GraphRegistryCommand, RegistryCommand},
     AppState,
@@ -309,7 +309,7 @@ impl GraphOps for Arc<AppState> {
                 .clone()
         };
 
-        Ok(serde_json::to_value(node_data)?)
+        Ok(serde_json::to_value(node_data).map_err(|e| StorageError::Serialization(e))?)
     }
 
     /// Query graph with BFS traversal

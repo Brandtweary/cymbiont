@@ -113,9 +113,10 @@
 use serde_json::{json, Value};
 use std::env;
 use std::fs;
+use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Once;
 use std::thread;
@@ -139,7 +140,8 @@ static VERBOSITY_LAYER: Mutex<Option<VerbosityCheckLayer>> = Mutex::new(None);
 fn init_test_tracing() {
     INIT.call_once(|| {
         // Use RUST_LOG if set, otherwise default to warn for tests
-        let verbosity_layer = init_logging(Some("warn"), None);
+        // Use stderr for tests to avoid polluting test output
+        let verbosity_layer = init_logging(Some("warn"), None, Some("stderr"));
 
         // Store the layer for later checking
         if let Ok(mut guard) = VERBOSITY_LAYER.lock() {
@@ -792,4 +794,173 @@ pub fn agent_chat_sync(
 ) -> Value {
     send_agent_chat(ws, message, echo, echo_tool);
     wait_for_agent_response(ws)
+}
+
+// ===== MCP Testing Utilities =====
+
+/// Start MCP server with piped stdin/stdout
+pub fn start_mcp_server(test_env: TestEnv) -> (Child, ChildStdin, BufReader<ChildStdout>, TestEnv) {
+    let config_path = test_env.config_path.to_str().unwrap();
+    
+    let mut cmd = Command::new(get_cymbiont_binary());
+    cmd.env("CYMBIONT_TEST_MODE", "1")
+        .args(["--config", config_path, "--mcp"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(if is_nocapture() { 
+            Stdio::inherit() 
+        } else { 
+            Stdio::null() 
+        });
+    
+    let mut process = cmd.spawn().expect("Failed to start MCP server");
+    
+    let stdin = process.stdin.take().expect("Failed to get stdin");
+    let stdout = BufReader::new(process.stdout.take().expect("Failed to get stdout"));
+    
+    // Give the MCP server a moment to start its async loop
+    thread::sleep(Duration::from_millis(500));
+    
+    (process, stdin, stdout, test_env)
+}
+
+/// Send JSON-RPC request and read response
+pub fn mcp_request(
+    stdin: &mut ChildStdin,
+    stdout: &mut BufReader<ChildStdout>,
+    request_id: u64,
+    method: &str,
+    params: Option<Value>,
+) -> Result<Value, String> {
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": method,
+        "params": params,
+        "id": request_id
+    });
+    
+    // Write request
+    writeln!(stdin, "{}", request).map_err(|e| format!("Failed to write request: {}", e))?;
+    stdin.flush().map_err(|e| format!("Failed to flush stdin: {}", e))?;
+    
+    // Read response
+    let mut line = String::new();
+    stdout.read_line(&mut line).map_err(|e| format!("Failed to read response: {}", e))?;
+    
+    let response: Value = serde_json::from_str(&line)
+        .map_err(|e| format!("Failed to parse response: {}", e))?;
+    
+    // Check for error
+    if let Some(error) = response.get("error") {
+        return Err(format!("MCP error: {}", error));
+    }
+    
+    Ok(response.get("result").cloned().unwrap_or(json!(null)))
+}
+
+/// Initialize MCP protocol
+pub fn mcp_initialize(
+    stdin: &mut ChildStdin,
+    stdout: &mut BufReader<ChildStdout>,
+) -> Result<(), String> {
+    // Send initialize request
+    mcp_request(stdin, stdout, 1, "initialize", Some(json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {}
+    })))?;
+    
+    // Send initialized notification (no response expected)
+    let notification = json!({
+        "jsonrpc": "2.0",
+        "method": "initialized"
+    });
+    writeln!(stdin, "{}", notification).map_err(|e| format!("Failed to send notification: {}", e))?;
+    stdin.flush().map_err(|e| format!("Failed to flush: {}", e))?;
+    
+    Ok(())
+}
+
+/// List available MCP tools
+pub fn mcp_list_tools(
+    stdin: &mut ChildStdin,
+    stdout: &mut BufReader<ChildStdout>,
+    request_id: u64,
+) -> Result<Vec<String>, String> {
+    let result = mcp_request(stdin, stdout, request_id, "tools/list", None)?;
+    let tools = result["tools"].as_array()
+        .ok_or("Invalid tools response")?;
+    
+    Ok(tools.iter()
+        .filter_map(|t| t["name"].as_str())
+        .map(|s| s.to_string())
+        .collect())
+}
+
+/// Call an MCP tool
+pub fn mcp_call_tool(
+    stdin: &mut ChildStdin,
+    stdout: &mut BufReader<ChildStdout>,
+    request_id: u64,
+    tool_name: &str,
+    args: Value,
+) -> Result<Value, String> {
+    let result = mcp_request(stdin, stdout, request_id, "tools/call", Some(json!({
+        "name": format!("cymbiont_{}", tool_name),
+        "arguments": args
+    })))?;
+    
+    // Extract the text content from MCP response format
+    if let Some(content) = result["content"].as_array() {
+        if let Some(first) = content.first() {
+            if let Some(text) = first["text"].as_str() {
+                // Try to parse as JSON
+                if let Ok(parsed) = serde_json::from_str::<Value>(text) {
+                    return Ok(parsed);
+                }
+                // Otherwise return as string value
+                return Ok(json!(text));
+            }
+        }
+    }
+    
+    Ok(result)
+}
+
+/// Shutdown MCP server gracefully
+pub fn shutdown_mcp_server(mut process: Child, test_env: TestEnv) -> TestEnv {
+    // Send Ctrl+C signal
+    #[cfg(target_family = "unix")]
+    {
+        let pid = process.id();
+        let _ = Command::new("kill").args(["-2", &pid.to_string()]).output();
+    }
+    
+    #[cfg(not(target_family = "unix"))]
+    {
+        let _ = process.kill();
+    }
+    
+    // Wait for shutdown with timeout
+    let start = Instant::now();
+    let timeout = Duration::from_secs(5);
+    
+    loop {
+        match process.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if start.elapsed() > timeout {
+                    let _ = process.kill();
+                    let _ = process.wait();
+                    break;
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            Err(_) => break,
+        }
+    }
+    
+    // Wait for JSON persistence
+    thread::sleep(Duration::from_millis(1000));
+    
+    test_env
 }

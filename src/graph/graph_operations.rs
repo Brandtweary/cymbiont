@@ -55,7 +55,7 @@
 //! ## Transaction Integration
 //!
 //! All mutation operations are automatically wrapped in transactions:
-//! 1. Operation parameters are stored in WAL before execution
+//! 1. Operation parameters are validated before execution
 //! 2. PKM transformations are applied within transaction boundary
 //! 3. Success/failure updates transaction state
 //! 4. Crash recovery replays operations with exact parameters
@@ -79,7 +79,7 @@
 //!
 //! The recovery process:
 //! - Startup: Iterates all graphs, temporarily opens closed ones for recovery
-//! - Finds all Active transactions in each graph's WAL
+//! - Loads graph state from JSON persistence
 //! - `RecoveryContext` replays each pending operation
 //! - Updates transaction state based on result
 //! - No PKM reconstruction needed - exact API replay
@@ -101,7 +101,7 @@
 //! 3. **Implement command handling** in `cqrs/router.rs`:
 //!    - Add match arm in `apply_graph_command()` method
 //!    - Call helper function with `RouterToken` for validation
-//!    - All mutations automatically logged to WAL
+//!    - All mutations handled through CQRS
 //!
 //! 4. **Create helper function** in this file:
 //!    - Takes `RouterToken` as first parameter (enforces CQRS routing)

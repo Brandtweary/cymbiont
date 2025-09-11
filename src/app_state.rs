@@ -202,7 +202,7 @@ impl AppState {
             shutdown_initiated: Arc::new(AtomicBool::new(false)),
         });
 
-        // Note: Graphs and agents will be loaded from WAL during startup in main.rs
+        // Note: Graphs and agents will be loaded from JSON during startup in main.rs
 
         // Initialize authentication if in server mode
         if with_server {

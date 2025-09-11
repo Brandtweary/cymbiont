@@ -55,7 +55,7 @@
 //! 1. Tool functions call `GraphOps` methods on `AppState`
 //! 2. `GraphOps` methods submit commands to `CommandQueue`
 //! 3. `CommandProcessor` executes commands sequentially
-//! 4. State changes are logged to command WAL for recovery
+//! 4. State changes are persisted to JSON for recovery
 //!
 //! This ensures all mutations are audited, recoverable, and deadlock-free.
 

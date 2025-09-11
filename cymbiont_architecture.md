@@ -81,7 +81,7 @@ cymbiont/
 - `run_server_loop()` / `run_cli_loop()` / `run_mcp_server()` - Mode-specific execution
 - `handle_graceful_shutdown()` - Command completion during shutdown
 **Startup**: CommandProcessor::start() initializes CQRS system and loads agent
-**Features**: Duration limits, signal handling, graceful shutdown, MCP server mode
+**Features**: Duration limits (0=infinite), signal handling, graceful shutdown, MCP server mode
 
 ### cli.rs
 **Purpose**: CLI argument parsing and CQRS command execution
@@ -89,10 +89,12 @@ cymbiont/
 **Generated**: `Args` struct with clap annotations, `from_json_with_args()` for WebSocket bridge
 **Functions**:
 - `handle_cli_commands()` - Process CLI commands via CommandQueue, returns true for early exit
+- `handle_agent_mode()` - Spawn Claude with MCP integration (two-process architecture)
 - `show_cli_status()` - Display graph status (read-only)
 - `dispatch_cli_command()` - WebSocket bridge for CLI execution
+**Agent Mode**: Parent process spawns two children: (1) `cymbiont --mcp --duration 0` as MCP server providing knowledge graph tools via JSON-RPC over stdio, (2) `claude` CLI with generated MCP config pointing to child #1. Interactive mode requires TTY (uses `IsTerminal` trait to detect), non-interactive mode uses `-p` flag for single-shot prompts. Parent waits for Claude to exit then cleans up temp config file. This architecture leverages Claude Code's native MCP support, providing Cymbiont's 14 tools through the standard protocol without custom SDK integration.
 **Architecture**: All mutations use `app_state.command_queue.execute()`
-**Commands**: Graph operations, import, system status
+**Commands**: Graph operations, import, system status, agent mode
 **Contract**: Build script extracts commands for test verification
 
 ### config.rs
@@ -282,7 +284,7 @@ transaction_log:                  # Future WAL configuration (not yet implemente
 ### agent/mcp/protocol.rs
 **Purpose**: JSON-RPC 2.0 protocol types for MCP
 **Types**: `Request`, `Response`, `Error`, `Notification`
-**Constants**: Standard error codes, MCP method names
+**Constants**: Standard error codes, MCP method names (including prompts/resources lists)
 **Features**: Type-safe message handling, error formatting
 
 ### agent/mcp/server.rs
@@ -290,6 +292,7 @@ transaction_log:                  # Future WAL configuration (not yet implemente
 **Type**: `MCPServer` - JSON-RPC server for AI agent integration
 **Features**: Tool discovery, execution via `tools::execute_tool()`, stdio communication
 **Protocol**: JSON-RPC 2.0 with MCP extensions
+**Capabilities**: Tools, resources, prompts, logging (empty arrays for resources/prompts)
 **Critical**: stdout reserved for JSON-RPC, all logs to stderr
 
 ### http_server/server.rs
@@ -388,13 +391,15 @@ transaction_log:                  # Future WAL configuration (not yet implemente
 |----------|---------|-------------|
 | **Server** | `--server` | Run as HTTP/WebSocket server |
 | | `--mcp` | Run as MCP server (Model Context Protocol) |
+| | `--agent` | Spawn Claude with MCP integration |
 | **Graph** | `--import-logseq <PATH>` | Import Logseq directory |
 | | `--create-graph <NAME>` | Create new graph |
 | | `--delete-graph <NAME/ID>` | Archive graph |
 | | `--list-graphs` | List all graphs |
 | **Runtime** | `--data-dir <PATH>` | Override data directory |
 | | `--config <PATH>` | Use specific config |
-| | `--duration <SECONDS>` | Run duration limit |
+| | `--duration <SECONDS>` | Run duration limit (0=infinite) |
+| | `--prompt <TEXT>` | Non-interactive agent prompt |
 | **Supporting** | `--description <DESC>` | Graph description (with --create-graph) |
 
 ## Graceful Shutdown

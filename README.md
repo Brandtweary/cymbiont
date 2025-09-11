@@ -156,8 +156,11 @@ For developers building applications on top of Cymbiont:
 # Start HTTP/WebSocket server
 cargo run -- --server
 
-# Or start MCP server for LLM agent integration
+# Start MCP server for LLM agent integration
 cargo run -- --mcp
+
+# Start Claude Code agent with knowledge graph tools
+cargo run -- --agent
 ```
 
 When running as a server, Cymbiont generates an authentication token on startup:
@@ -209,6 +212,8 @@ cargo run -- --config custom.yaml          # Use specific configuration file
 # Server modes
 cargo run -- --server                      # Start HTTP/WebSocket server
 cargo run -- --mcp                         # Start MCP server for LLM agents
+cargo run -- --agent                       # Start Claude Code agent with knowledge graph tools
+cargo run -- --agent --prompt "What graphs are available?"  # Non-interactive agent mode
 cargo run -- --server --duration 60        # Run server for 60 seconds
 
 # Graph management

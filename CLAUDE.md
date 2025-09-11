@@ -23,7 +23,9 @@ RUST_LOG=debug cargo run         # Run cymbiont with debug logging (do not chang
 ### Server & Runtime
 - `--server`: Run as HTTP/WebSocket server
 - `--mcp`: Run as MCP server (Model Context Protocol over stdio)
-- `--duration <SECONDS>`: Run for a specific duration in seconds (to run indefinitely, set default_duration to null in config.yaml)
+- `--agent`: Spawn Claude with Cymbiont MCP integration
+  - `--prompt <TEXT>`: Non-interactive agent mode with specified prompt
+- `--duration <SECONDS>`: Run for a specific duration in seconds (0=infinite, defaults to config value)
 - `--data-dir <PATH>`: Override data directory path (defaults to config value)
 - `--config <PATH>`: Use specific configuration file
 

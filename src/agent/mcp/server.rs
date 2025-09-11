@@ -176,6 +176,8 @@ impl MCPServer {
             }
             methods::TOOLS_LIST => self.handle_tools_list(request).await,
             methods::TOOLS_CALL => self.handle_tools_call(request).await,
+            methods::PROMPTS_LIST => self.handle_prompts_list(request),
+            methods::RESOURCES_LIST => self.handle_resources_list(request),
             _ => Response::error(Error::method_not_found(&request.method), request.id),
         }
     }
@@ -189,9 +191,9 @@ impl MCPServer {
             "protocolVersion": "2024-11-05",
             "capabilities": {
                 "tools": {},
-                "resources": null,
-                "prompts": null,
-                "logging": null
+                "resources": {},
+                "prompts": {},
+                "logging": {}
             },
             "serverInfo": {
                 "name": "cymbiont",
@@ -305,6 +307,40 @@ impl MCPServer {
                 )
             }
         }
+    }
+
+    /// Handle prompts/list request
+    fn handle_prompts_list(&self, request: Request) -> Response {
+        if !self.initialized {
+            return Response::error(
+                Error::new(
+                    error_codes::INTERNAL_ERROR,
+                    "Server not initialized",
+                    None,
+                ),
+                request.id,
+            );
+        }
+        
+        // We don't have any prompts, return empty array
+        Response::success(json!({ "prompts": [] }), request.id)
+    }
+
+    /// Handle resources/list request
+    fn handle_resources_list(&self, request: Request) -> Response {
+        if !self.initialized {
+            return Response::error(
+                Error::new(
+                    error_codes::INTERNAL_ERROR,
+                    "Server not initialized",
+                    None,
+                ),
+                request.id,
+            );
+        }
+        
+        // We don't have any resources, return empty array
+        Response::success(json!({ "resources": [] }), request.id)
     }
 }
 

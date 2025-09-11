@@ -76,9 +76,14 @@
 //!
 //! ### Graph Operations
 //! - Import Logseq graphs from directories
+//! - Create new graphs with optional descriptions
 //! - Delete graphs by name or ID
 //! - List all graphs with metadata
 //!
+//! ### Agent Operations
+//! - Spawn Claude Code agent with MCP integration (`--agent`)
+//! - Support interactive and non-interactive modes via TTY detection
+//! - Non-interactive mode via `--prompt` flag for automation
 //!
 //! ## Execution Model
 //!
@@ -133,6 +138,14 @@ macro_rules! cli_commands {
             #[arg(long)]
             pub mcp: bool,
 
+            /// Run as Claude Code agent with MCP integration
+            #[arg(long, conflicts_with = "server", conflicts_with = "mcp")]
+            pub agent: bool,
+
+            /// Prompt for agent mode (enables non-interactive when provided)
+            #[arg(long, value_name = "TEXT")]
+            pub prompt: Option<String>,
+
             /// Override data directory path (defaults to config value)
             #[arg(long)]
             pub data_dir: Option<String>,
@@ -169,6 +182,8 @@ macro_rules! cli_commands {
                 Self {
                     server: false,
                     mcp: false,
+                    agent: false,
+                    prompt: None,
                     data_dir: None,
                     config: None,
                     duration: None,
@@ -385,6 +400,89 @@ async fn handle_create_graph(
     Ok(false) // Continue running after creation
 }
 
+/// Handle agent mode - spawns Claude with MCP server
+async fn handle_agent_mode(args: &Args) -> Result<bool> {
+    // TODO: Two-process architecture - parent process just spawns Claude and waits while
+    // child (--mcp) does all the work. Could be replaced with either: (1) external launcher
+    // script to avoid loading full Cymbiont twice, or (2) minimal launcher mode that skips
+    // initialization. Keeping as-is to preserve Cymbiont as multi-purpose "software laboratory"
+    // with CLI, server, and agent interfaces all in one binary.
+    
+    use std::io::IsTerminal;
+    use std::process::{Command, Stdio};
+    use serde_json::json;
+    
+    // Create MCP config for Claude
+    let config = json!({
+        "mcpServers": {
+            "cymbiont": {
+                "command": std::env::current_exe()?.to_str().unwrap(),
+                "args": ["--mcp", "--duration", "0"],  // 0 = run indefinitely
+                "env": {"RUST_LOG": "info"}
+            }
+        }
+    });
+    
+    // Write config to temp file
+    let config_path = "mcp_config.json";
+    let config_str = serde_json::to_string_pretty(&config)
+        .map_err(|e| CymbiontError::from(format!("Failed to serialize config: {}", e)))?;
+    std::fs::write(config_path, config_str)?;
+    
+    info!("🤖 Starting Claude Code agent with Cymbiont knowledge graph tools...");
+    
+    // Detect if we're in a TTY or if user provided a prompt
+    let is_interactive = std::io::stdin().is_terminal() && args.prompt.is_none();
+    
+    let result = if is_interactive {
+        info!("Running in interactive mode");
+        // Interactive mode - inherit stdio
+        Command::new("claude")
+            .arg("--append-system-prompt")
+            .arg("You are a personal knowledge assistant specialized in organizing thoughts and information. Focus on helping manage a knowledge graph of interconnected ideas.")
+            .arg("--mcp-config")
+            .arg(config_path)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+    } else {
+        // Non-interactive mode - use -p flag
+        let prompt = args.prompt.as_deref().unwrap_or(
+            "You have been run in a non-interactive terminal session. Please explain this, and also list all available tools. Explain that the --prompt flag should be used to pass a specific prompt next time."
+        );
+        
+        info!("Running in non-interactive mode with prompt: {}", prompt);
+        
+        Command::new("claude")
+            .arg("-p")
+            .arg(prompt)
+            .arg("--append-system-prompt")
+            .arg("You are a personal knowledge assistant specialized in organizing thoughts and information. Focus on helping manage a knowledge graph of interconnected ideas.")
+            .arg("--mcp-config")
+            .arg(config_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+    };
+    
+    // Clean up config file
+    std::fs::remove_file(config_path).ok();
+    
+    match result {
+        Ok(status) if status.success() => Ok(true),
+        Ok(status) => {
+            error!("Claude Code agent exited with status: {:?}", status.code());
+            Err(CymbiontError::from(format!("Claude Code agent exited with status: {:?}", status.code())))
+        },
+        Err(e) => {
+            error!("Failed to spawn Claude Code agent: {}", e);
+            Err(CymbiontError::from(format!("Failed to spawn Claude Code agent: {}", e)))
+        }
+    }
+}
+
 /// Handle all CLI-specific commands - routes to individual handlers
 /// Returns true if should exit after command completion
 pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Result<bool> {
@@ -399,6 +497,10 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
 
     if let Some(graph_identifier) = &args.delete_graph {
         return handle_delete_graph(app_state, graph_identifier).await;
+    }
+
+    if args.agent {
+        return handle_agent_mode(args).await;
     }
 
     if args.agent_info {

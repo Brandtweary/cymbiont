@@ -150,6 +150,12 @@ async fn async_main() -> Result<()> {
     } else if args.mcp {
         run_mcp_server(&app_state, &args).await?;
         info!("🧹 MCP server shutdown complete");
+    } else if args.agent {
+        // Agent mode - spawns Claude subprocess with MCP
+        // Handler in cli.rs does all the work
+        if handle_cli_commands(&app_state, &args).await? {
+            info!("🧹 Agent shutdown complete");
+        }
     } else {
         run_cli_loop(&app_state, &args).await?;
         info!("🧹 CLI shutdown complete");
@@ -175,7 +181,7 @@ fn run_startup_sequence(app_state: &Arc<AppState>) {
     info!("📁 Data directory: {}", app_state.data_dir.display());
 
     // CommandProcessor::start() was called during AppState initialization and handles:
-    // 1. Replaying all commands from WAL for recovery
+    // 1. Loading persisted state from JSON files
     // 2. Restoring runtime state (open graphs)
     // 3. Loading agent state
 
@@ -198,11 +204,13 @@ where
     C: Fn() -> CF,
     CF: std::future::Future<Output = ()>,
 {
-    // Handle duration and shutdown uniformly
-    if let Some(duration) = args
+    // Handle duration and shutdown uniformly (0 = infinite)
+    let duration = args
         .duration
         .or(app_state.config.development.default_duration)
-    {
+        .and_then(|d| if d == 0 { None } else { Some(d) });
+    
+    if let Some(duration) = duration {
         tokio::select! {
             result = main_task => {
                 if let Err(e) = result {

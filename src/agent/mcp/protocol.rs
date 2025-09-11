@@ -36,6 +36,8 @@
 //! - `initialized`: Client notification after initialization (notification)
 //! - `tools/list`: List available tools with JSON schemas
 //! - `tools/call`: Execute a specific tool with arguments
+//! - `prompts/list`: List available prompts (returns empty array)
+//! - `resources/list`: List available resources (returns empty array)
 //!
 //! ## Error Codes
 //!
@@ -97,6 +99,10 @@ pub mod methods {
     pub const TOOLS_LIST: &str = "tools/list";
     /// Execute a tool
     pub const TOOLS_CALL: &str = "tools/call";
+    /// List available prompts
+    pub const PROMPTS_LIST: &str = "prompts/list";
+    /// List available resources
+    pub const RESOURCES_LIST: &str = "resources/list";
 }
 
 /// Standard JSON-RPC 2.0 error codes

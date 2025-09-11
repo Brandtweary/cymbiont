@@ -10,7 +10,7 @@
 //! Agents operate within the CQRS architecture where all mutations flow through
 //! the `CommandQueue`. The Agent struct itself is owned by the `CommandProcessor`
 //! and can only be modified through RouterToken-authorized operations. This ensures
-//! all state changes are logged to the WAL for recovery and audit purposes.
+//! all state changes are handled through the CQRS system for consistency.
 //!
 //! ## Architecture Overview
 //!
@@ -89,7 +89,7 @@
 //! - `RouterToken` required for all state mutations
 //! - Tool execution authorized through `CommandQueue`
 //! - Agent state isolated per agent (no cross-agent data access)
-//! - All modifications logged to command WAL for audit
+//! - All modifications handled through CQRS commands
 //!
 //! ## Error Handling and Recovery
 //!

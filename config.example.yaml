@@ -55,3 +55,12 @@ verbosity:
   info_threshold: 50  # Maximum INFO logs before warning
   debug_threshold: 100  # Maximum DEBUG logs before warning
   trace_threshold: 200  # Maximum TRACE logs before warning
+
+# Rotating file logger configuration (used for MCP server logging)
+rotating_file_logger:
+  log_directory: "logs"         # Directory to store log files
+  filename: "mcp_server.log"    # Base filename for logs
+  max_files: 10                 # Number of rotating files to keep
+  max_size_mb: 5               # Size limit in MB before rotation
+  console_output: true         # Also output to console
+  truncate_on_limit: true      # Stop at limit vs create numbered backups

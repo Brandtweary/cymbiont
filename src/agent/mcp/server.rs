@@ -86,7 +86,7 @@ use crate::error::{MCPError, Result};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use super::protocol::{error_codes, methods, Error, Request, Response};
 
@@ -153,6 +153,7 @@ impl MCPServer {
                 Ok(None) => {
                     // stdin closed - client disconnected, exit gracefully
                     info!("MCP client disconnected (stdin closed)");
+                    debug!("Beginning MCP server shutdown sequence");
                     break;
                 }
                 Err(_e) => {
@@ -162,6 +163,8 @@ impl MCPServer {
             }
         }
         
+        debug!("MCP server loop exited, performing cleanup");
+        debug!("MCP server cleanup complete");
         Ok(())
     }
 

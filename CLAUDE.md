@@ -76,7 +76,7 @@ RUST_LOG=debug cargo run         # Run cymbiont with debug logging (do not chang
 - Logging: use `tracing` macros - `error!()`, `warn!()`, `info!()`, `debug!()`, `trace!()` (enforced by build.rs)
 - Error handling: use the centralized `error.rs` system with domain-specific types (StorageError, ServerError, etc.) and the global `Result<T>` type alias
 - Lock handling: use `AsyncRwLockExt` trait from `utils.rs` for async lock operations
-- Whenever you update `config.example.yaml` ensure that you also update `config.yaml`
+- **YAML Config Sync Protocol**: Always read BOTH `config.yaml` AND `config.example.yaml` before making changes - they inevitably drift and need field-by-field triage
 - Don't ever delete TODO comments unless the user gives permission first
 - Don't inline imports ever (except for temp debugging like `tracing::debug!()`)
 - Keep all documentation evergreen - don't reference transient details, implementation events, or deprecated modules whatsoever

@@ -67,7 +67,7 @@ use std::time::{Duration, Instant};
 use tokio::runtime::Runtime;
 use tokio::signal;
 use tokio::time::sleep;
-use tracing::{error, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 // Internal modules
 mod agent;
@@ -82,7 +82,7 @@ mod http_server;
 mod utils;
 
 use app_state::AppState;
-use autodebugger::{init_logging, VerbosityConfig as AutodebuggerVerbosityConfig};
+use autodebugger::{init_logging, init_logging_with_file, RotatingFileConfig, VerbosityConfig as AutodebuggerVerbosityConfig};
 use cli::{handle_cli_commands, Args};
 
 fn main() -> Result<()> {
@@ -114,7 +114,33 @@ async fn async_main() -> Result<()> {
         trace_threshold: config.verbosity.trace_threshold,
     };
 
-    let verbosity_layer = init_logging(None, Some(verbosity_config), Some(&config.tracing.output));
+    let verbosity_layer = if args.mcp {
+        // MCP mode: dual logging to stderr + file with maximum verbosity
+        std::env::set_var("RUST_LOG", "trace");  // Force maximum verbosity for MCP debugging
+        
+        let file_config = RotatingFileConfig {
+            log_directory: match args.data_dir.as_deref() {
+                Some(dir) => format!("{}/logs", dir),
+                None => "logs".to_string(),
+            },
+            filename: "mcp_server.log".to_string(),
+            max_files: 10,
+            max_size_mb: 5,
+            console_output: true,
+            truncate_on_limit: true,
+        };
+        
+        init_logging_with_file(
+            None,  // Let RUST_LOG=trace take effect via env var
+            Some(verbosity_config),
+            Some(&config.tracing.output),
+            file_config,
+        )
+    } else {
+        // Standard mode: console only
+        // TODO: Add rotating file logging for all modes - server, agent, and CLI (currently only MCP has it)
+        init_logging(None, Some(verbosity_config), Some(&config.tracing.output))
+    };
 
     // Track start time for total runtime measurement
     let start_time = Instant::now();
@@ -171,7 +197,6 @@ async fn async_main() -> Result<()> {
     }
 
     // Force exit because sled/tokio threads won't terminate
-    trace!("Forcing process exit (sled workaround)");
     process::exit(0)
 }
 
@@ -210,6 +235,10 @@ where
         .or(app_state.config.development.default_duration)
         .and_then(|d| if d == 0 { None } else { Some(d) });
     
+    // Create signal handlers outside tokio::select! to avoid lifetime issues
+    let mut sigterm1 = signal::unix::signal(signal::unix::SignalKind::terminate())?;
+    let mut sigterm2 = signal::unix::signal(signal::unix::SignalKind::terminate())?;
+    
     if let Some(duration) = duration {
         tokio::select! {
             result = main_task => {
@@ -221,7 +250,14 @@ where
                 info!("⏱️ Duration limit reached");
             }
             _ = signal::ctrl_c() => {
-                info!("🛑 Received shutdown signal");
+                info!("🛑 Received SIGINT (Ctrl+C)");
+                if handle_graceful_shutdown(app_state).await {
+                    cleanup().await;
+                    process::exit(1);
+                }
+            }
+            _ = sigterm1.recv() => {
+                info!("🛑 Received SIGTERM");
                 if handle_graceful_shutdown(app_state).await {
                     cleanup().await;
                     process::exit(1);
@@ -237,7 +273,14 @@ where
                 }
             }
             _ = signal::ctrl_c() => {
-                info!("🛑 Received shutdown signal");
+                info!("🛑 Received SIGINT (Ctrl+C)");
+                if handle_graceful_shutdown(app_state).await {
+                    cleanup().await;
+                    process::exit(1);
+                }
+            }
+            _ = sigterm2.recv() => {
+                info!("🛑 Received SIGTERM");
                 if handle_graceful_shutdown(app_state).await {
                     cleanup().await;
                     process::exit(1);
@@ -314,20 +357,25 @@ async fn run_cli_loop(app_state: &Arc<AppState>, args: &Args) -> Result<()> {
 
 /// Run the MCP server
 async fn run_mcp_server(app_state: &Arc<AppState>, args: &Args) -> Result<()> {
-    info!("🤖 Starting MCP server on stdio");
+    let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
+    debug!("🔧 DEBUG: MCP server startup initiated with debug logging enabled");
+    info!("🤖 Starting MCP server on stdio at {}", timestamp);
     
     // No cleanup needed for MCP mode
     let cleanup = || async {};
 
     // Run the MCP server as the main task
     let mcp_task = async {
+        debug!("🔧 DEBUG: Starting MCP server task");
         match agent::mcp::server::run_mcp_server(app_state.clone()).await {
             Ok(_) => {
                 info!("MCP client disconnected");
+                debug!("MCP server task completed successfully");
                 Ok(())
             }
             Err(e) => {
                 error!("MCP server error: {}", e);
+                debug!("MCP server task failed with error: {}", e);
                 Err(e)
             }
         }

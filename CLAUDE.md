@@ -44,7 +44,6 @@ RUST_LOG=debug cargo run         # Run cymbiont with debug logging (do not chang
 - **data/**: Knowledge graph persistence (configurable via data_dir in config.yaml)
   - **IMPORTANT**: The data/ directory is git-tracked (has .gitkeep) - never rm -rf it
   - **graph_registry.json**: Graph metadata persistence
-  - **agent.json**: Agent state persistence
   - **auth_token**: Auto-generated authentication token (rotates on restart)
   - **graphs/{graph-id}/**: Per-graph data
     - **knowledge_graph.json**: Graph content persistence

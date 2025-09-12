@@ -14,7 +14,6 @@ include!(concat!(env!("OUT_DIR"), "/cli_commands.rs"));
 const TESTED_COMMANDS: &[&str] = &[
     "import_logseq", // ✓ tested in test_all_cli_commands
     "delete_graph",  // ✓ tested in test_all_cli_commands
-    "agent_info",    // ✓ tested in test_all_cli_commands
     "list_graphs",   // ✓ tested in test_all_cli_commands
     "create_graph",  // ✓ tested in test_all_cli_commands
 ];
@@ -112,12 +111,6 @@ pub fn test_all_cli_commands() {
         let imported_uuid = Uuid::parse_str(&graph_id).expect("Invalid UUID");
         validator.expect_graph_created(imported_uuid, &graph_name);
         validator.expect_graph_open(imported_uuid);
-
-        // Test agent_info
-        {
-            let response = send_cli_command(&mut ws, "agent_info", &json!({}));
-            expect_success(&response).expect("Agent info should succeed");
-        }
 
         // Test delete_graph with a secondary graph (keep the imported one)
         {

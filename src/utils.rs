@@ -311,13 +311,6 @@ pub async fn save_all_system_data(app_state: &Arc<AppState>) -> Result<()> {
         graph_registry.save(&path)?;
     }
 
-    // Save agent state
-    {
-        let agent_opt = app_state.agent.read_or_panic("save agent").await;
-        if let Some(ref agent) = *agent_opt {
-            agent.save(&app_state.data_dir)?;
-        }
-    }
 
     // Save all graphs (both open and closed)
     {

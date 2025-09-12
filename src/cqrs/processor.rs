@@ -3,14 +3,13 @@
 //! The `CommandProcessor` is the single-threaded owner of all mutable state in Cymbiont.
 //! It runs as a background task, processing commands sequentially to guarantee
 //! deadlock-free operation while enabling unlimited concurrent reads. This is the
-//! architectural keystone that makes multi-agent operations safe and predictable.
+//! architectural keystone that makes operations safe and predictable.
 //!
 //! ## Core Responsibilities
 //!
 //! ### State Ownership
 //! The processor directly owns all mutable resources:
 //! - Graph managers (knowledge graphs)
-//! - Active agents (AI assistants)
 //! - Registries (metadata)
 //!
 //! External code receives Arc<`RwLock`<>> references for read-only access, but
@@ -84,11 +83,11 @@
 //!
 //! ## Error Handling
 //!
-//! Commands can fail at several stages:
-//! 1. **Authorization**: Agent lacks permission
-//! 2. **Validation**: Invalid parameters
-//! 3. **Execution**: Business logic failure
-//! 4. **System**: Out of memory, I/O errors
+//! Commands can fail for various reasons:
+//! - **Not Found**: Target entity doesn't exist (graph, block, page)
+//! - **Invalid State**: Operation not valid in current state
+//! - **Business Logic**: Domain-specific validation failures
+//! - **System**: I/O errors, serialization failures
 //!
 //! All errors are captured and returned via the response channel.
 //!
@@ -121,7 +120,6 @@ use uuid::Uuid;
 use super::commands::{Command, CommandResult, GraphCommand};
 use super::queue::CommandQueue;
 use super::router;
-use crate::agent::agent::Agent;
 use crate::error::{ProcessorError, Result};
 use crate::graph::graph_manager::GraphManager;
 use crate::graph::graph_registry::GraphRegistry;
@@ -163,8 +161,6 @@ pub struct CommandProcessor {
     // Owned mutable state (wrapped for sharing with AppState)
     graph_managers: Arc<RwLock<HashMap<Uuid, Arc<RwLock<GraphManager>>>>>,
 
-    // Agent state (reference from AppState)
-    agent: Arc<RwLock<Option<Agent>>>,
 
     // Registry for metadata (reference from AppState)
     graph_registry: Arc<RwLock<GraphRegistry>>,
@@ -181,12 +177,10 @@ impl CommandProcessor {
     /// Create a new command processor
     pub fn new(
         graph_registry: Arc<RwLock<GraphRegistry>>,
-        agent: Arc<RwLock<Option<Agent>>>,
         data_dir: PathBuf,
     ) -> Self {
         Self {
             graph_managers: Arc::new(RwLock::new(HashMap::new())),
-            agent,
             graph_registry,
             state: Arc::new(AtomicU8::new(ProcessorState::Accepting as u8)),
             active_count_notify: Arc::new(Notify::new()),
@@ -298,10 +292,6 @@ impl CommandProcessor {
                 self.ensure_graph_loaded(graph_id).await?;
 
                 router::route_graph_command(&self.graph_managers, graph_cmd).await
-            }
-            Command::Agent(agent_cmd) => {
-                // Route to the single agent
-                router::route_agent_command(&self.agent, agent_cmd).await
             }
             Command::Registry(reg_cmd) => {
                 router::route_registry_command(

@@ -131,6 +131,30 @@ async fn handle_test_cli_command(
     send_success_response(connection_id, state, Some(data)).await
 }
 
+/// Handle TestToolCall command for direct tool execution in tests (debug builds only)
+#[cfg(debug_assertions)]
+async fn handle_test_tool_call(
+    connection_id: &str,
+    state: &Arc<AppState>,
+    tool_name: String,
+    tool_args: serde_json::Value,
+) -> Result<()> {
+    use crate::agent::tools;
+    
+    // Execute the tool directly
+    match tools::execute_tool(state, &tool_name, tool_args).await {
+        Ok(result) => {
+            // Send the tool result directly as the success response
+            send_success_response(connection_id, state, Some(result)).await
+        }
+        Err(e) => {
+            // Send error response if tool execution failed
+            use crate::http_server::websocket_utils::send_error_response;
+            send_error_response(connection_id, state, &format!("Tool execution failed: {}", e)).await
+        }
+    }
+}
+
 /// Main handler function for miscellaneous commands - routes to individual handlers
 pub async fn handle(command: Command, connection_id: &str, state: &Arc<AppState>) -> Result<()> {
     match command {
@@ -147,6 +171,12 @@ pub async fn handle(command: Command, connection_id: &str, state: &Arc<AppState>
         #[cfg(debug_assertions)]
         Command::TestCliCommand { command, params } => {
             handle_test_cli_command(connection_id, state, command, params).await
+        }
+
+        // Command for direct tool testing (only available in debug builds)
+        #[cfg(debug_assertions)]
+        Command::TestToolCall { tool_name, tool_args } => {
+            handle_test_tool_call(connection_id, state, tool_name, tool_args).await
         }
 
         _ => {

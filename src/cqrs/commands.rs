@@ -9,7 +9,6 @@
 //! Commands are organized into logical groups based on what they affect:
 //!
 //! - **`GraphCommand`**: Mutations to knowledge graph content (blocks, pages)
-//! - **`AgentCommand`**: Changes to agent state (messages, configuration)
 //! - **`RegistryCommand`**: Lifecycle operations (create/delete graphs)
 //! - **`SystemCommand`**: Infrastructure control (shutdown)
 //!
@@ -83,7 +82,6 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Command {
     Graph(GraphCommand),
-    Agent(AgentCommand),
     Registry(RegistryCommand),
     System(SystemCommand),
 }
@@ -120,20 +118,6 @@ pub enum GraphCommand {
     },
 }
 
-/// Agent-related mutations
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum AgentCommand {
-    AddMessage {
-        message: Value, // Full Message struct serialized
-    },
-    ClearHistory,
-    SetLLMConfig {
-        config: Value, // LLMConfig serialized
-    },
-    SetSystemPrompt {
-        prompt: String,
-    },
-}
 
 /// Registry-related mutations
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -15,12 +15,10 @@ cymbiont/
 │   │   ├── graph_manager.rs       # Petgraph-based knowledge graph engine
 │   │   ├── graph_operations.rs    # Graph operations via CQRS commands
 │   │   └── graph_registry.rs      # Multi-graph UUID management with open/closed state
-│   ├── agent/                     # AI interface layer - see src/agent/CLAUDE.md
+│   ├── agent/                     # AI tool interface layer - see src/agent/CLAUDE.md
 │   │   ├── mod.rs                 # Agent module exports
-│   │   ├── agent.rs               # Knowledge graph agent with conversation management
-│   │   ├── llm.rs                 # LLM backend abstraction with MockLLM
 │   │   ├── tools.rs               # Canonical tool registry with 14 knowledge graph tools
-│   │   ├── schemas.rs             # Ollama-compatible tool schemas
+│   │   ├── schemas.rs             # Tool schemas for LLM function calling
 │   │   └── mcp/                   # Model Context Protocol server
 │   │       ├── mod.rs             # MCP module exports
 │   │       ├── protocol.rs        # JSON-RPC 2.0 message types
@@ -38,9 +36,8 @@ cymbiont/
 │   │   ├── websocket_utils.rs     # Shared helpers (auth, response, graph resolution)
 │   │   ├── websocket_commands/    # Command handlers by domain
 │   │   │   ├── mod.rs             # Command module exports
-│   │   │   ├── agent_commands.rs  # Agent chat and information
 │   │   │   ├── graph_commands.rs  # Graph CRUD operations
-│   │   │   └── misc_commands.rs   # Auth and system commands
+│   │   │   └── misc_commands.rs   # Auth, system, and test commands
 │   │   └── auth.rs                # Token generation and validation
 │   └── cqrs/                      # Command Query Responsibility Segregation
 │       ├── mod.rs                 # CQRS module exports
@@ -48,9 +45,8 @@ cymbiont/
 │       ├── queue.rs               # Public API for command submission
 │       ├── processor.rs           # Single-threaded state owner
 │       └── router.rs              # Command routing with RouterToken authorization
-├── data/                          # Graph and agent persistence (configurable path)
+├── data/                          # Graph persistence (configurable path)
 │   ├── graph_registry.json        # Graph metadata persistence
-│   ├── agent.json                 # Agent state persistence
 │   ├── auth_token                 # Authentication token (auto-generated)
 │   ├── graphs/{graph-id}/         # Per-graph data
 │   │   └── knowledge_graph.json   # Graph content persistence
@@ -80,7 +76,7 @@ cymbiont/
 - `run_startup_sequence()` - Common initialization for all modes
 - `run_server_loop()` / `run_cli_loop()` / `run_mcp_server()` - Mode-specific execution
 - `handle_graceful_shutdown()` - Command completion during shutdown
-**Startup**: CommandProcessor::start() initializes CQRS system and loads agent
+**Startup**: CommandProcessor::start() initializes CQRS system
 **Features**: Duration limits (0=infinite), signal handling, graceful shutdown, MCP server mode
 
 ### cli.rs
@@ -146,7 +142,6 @@ transaction_log:                  # Future WAL configuration (not yet implemente
 **Command types**:
 - `RegistryCommand`: Graph registry operations (CreateGraph, RemoveGraph, etc.)
 - `GraphCommand`: Graph content operations (CreateBlock, UpdateBlock, DeleteBlock, etc.)
-- `AgentCommand`: Agent state operations (AddMessage, ClearHistory, etc.)
 - `SystemCommand`: System operations (Shutdown)
 **Features**: Type-safe command definitions, response types
 
@@ -184,7 +179,6 @@ transaction_log:                  # Future WAL configuration (not yet implemente
 **Resources**:
 - `command_queue`: Primary interface for all mutations
 - `graph_managers`: HashMap of graph managers (read-only from external access)
-- `agent`: Knowledge graph agent (read-only from external access)
 - `graph_registry`: Graph metadata registry
 - `ws_connections`: WebSocket connection tracking (server mode)
 - `auth_token`: Authentication token
@@ -235,28 +229,9 @@ transaction_log:                  # Future WAL configuration (not yet implemente
 **Persistence**: Metadata saved to `graph_registry.json`
 
 ### agent/mod.rs
-**Purpose**: AI interface layer exports
-**Exports**: `agent`, `llm`, `tools`, `schemas`, `mcp`
+**Purpose**: AI tool interface layer exports
+**Exports**: `tools`, `schemas`, `mcp`
 **Details**: See `src/agent/CLAUDE.md` for module guide
-
-
-### agent/agent.rs
-**Purpose**: Knowledge graph agent with conversation management
-**Types**: `Agent`, `Message` (User/Assistant/Tool with AgentContext)
-**Features**: Conversation history, LLM backend, CQRS tool execution
-**Key function**: `process_agent_message()` - 4-phase LLM pipeline via CQRS commands
-**Methods**:
-- `chat()`, `process_message()` - LLM interaction
-- `execute_tool()` - Tool execution via CommandQueue
-- `reset_conversation()`, `get_history()` - conversation management
-- `save()`, `load()`, `load_or_create()` - JSON persistence
-**Architecture**: Tool calls route through CommandQueue for mutations
-
-### agent/llm.rs
-**Purpose**: LLM backend abstraction with MockLLM
-**Types**: `LLMBackend` trait, `LLMConfig` enum, `MockLLM`, `ToolCall`, `LLMResponse`
-**MockLLM**: Test implementation with `echo_tool`, `generate_mock_args()`, valid UUIDs
-**Interface**: `complete()` with tool schemas, `health_check()`
 
 ### agent/tools.rs
 **Purpose**: Canonical tool registry (14 knowledge graph tools)
@@ -305,7 +280,7 @@ transaction_log:                  # Future WAL configuration (not yet implemente
 **Architecture**: Core in websocket.rs, handlers in websocket_commands/
 **Features**: Async task spawning, auth verification, command dispatch via CommandQueue
 **CQRS Integration**: All mutations route through CommandQueue for execution
-**Commands**: Agent chat, graph CRUD, auth utilities
+**Commands**: Graph CRUD, auth, test utilities
 **Details**: See `src/http_server/CLAUDE.md` for full API
 
 ### import/mod.rs
@@ -350,6 +325,7 @@ transaction_log:                  # Future WAL configuration (not yet implemente
 **Purpose**: Integration test infrastructure
 **Type**: `TestServer` - process lifecycle management
 **Features**: Parallel execution, isolated environments, phase-based testing
+**Key functions**: `execute_tool_sync()` - Direct tool execution for testing (debug builds)
 **Details**: See `tests/CLAUDE.md`
 
 ### tests/common/test_validator.rs
@@ -359,8 +335,7 @@ transaction_log:                  # Future WAL configuration (not yet implemente
 - `expect_*()` - Track expected operations
 - `validate_all()` - Verify state in JSON files
 - `validate_graph_state()` - Check graph state from JSON
-- `validate_agent_state()` - Check agent state from JSON
-**Features**: Operation consolidation, timestamp validation, message order checking
+**Features**: Operation consolidation, timestamp validation, case-insensitive page lookups
 
 
 ## Data Structures
@@ -376,15 +351,14 @@ transaction_log:                  # Future WAL configuration (not yet implemente
 | **Auth** | `Auth` | `token` |
 | **Graph Ops** | `OpenGraph`, `CloseGraph`, `CreateBlock`, `UpdateBlock`, `DeleteBlock` | `graph_id?/graph_name?` + op-specific |
 | | `CreatePage`, `DeletePage`, `CreateGraph`, `DeleteGraph`, `ListGraphs` | |
-| **Agent** | `AgentChat`, `AgentHistory`, `AgentReset`, `AgentInfo` | Message content for chat |
 | **System** | `Heartbeat` | None |
+| **Test** | `TestToolCall` (debug builds) | `tool_name`, `tool_args` |
 
 **Responses**: `Success {data?}`, `Error {message}`, `Heartbeat`
 **Processing**: Async task spawning per command
 
-### Registry Formats
+### Registry Format
 - **Graph**: `{graphs: [{id, name, path, created_at, last_accessed}]}`
-- **Agent**: `{id, name, created_at, updated_at, conversation_history[], llm_config}`
 
 ## CLI Commands
 | Category | Command | Description |
@@ -415,9 +389,9 @@ transaction_log:                  # Future WAL configuration (not yet implemente
 | **Import** | CLI/HTTP → Parse .md → Extract blocks → CQRS CreateGraph → Return UUID |
 | **CQRS Command** | Submit to CommandQueue → Execute via RouterToken → Return response |
 | **WebSocket** | Auth → Spawn task → Check auth → CQRS command → Response |
-| **Agent Chat** | LLM complete → Execute tools via CommandQueue → Save conversation → Return |
+| **Tool Execution** | MCP request → execute_tool() → CQRS command → Return result |
 | **Graph Lifecycle** | Create → Open → Operations → Close → Archive |
-| **Startup** | Load registries → Initialize agent → Start CommandProcessor |
+| **Startup** | Load registries → Start CommandProcessor |
 | **Auth** | Generate token → Save to `auth_token` → HTTP: Bearer header, WS: Auth command |
 | **Persistence** | JSON autosave (5 min/10 ops) → Shutdown save → Load on startup |
 

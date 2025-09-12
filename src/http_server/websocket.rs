@@ -77,7 +77,7 @@ use uuid::Uuid;
 
 use crate::error::{Result, ServerError};
 use crate::http_server::{
-    websocket_commands::{agent_commands, graph_commands, misc_commands},
+    websocket_commands::{graph_commands, misc_commands},
     websocket_utils::{is_authenticated, send_error_response},
 };
 use crate::utils::AsyncRwLockExt;
@@ -162,24 +162,18 @@ pub enum Command {
     },
     ListGraphs,
 
-    // Agent commands
-    AgentChat {
-        message: String,
-        // TODO: Re-evaluate if echo fields should be feature-gated or if they have legitimate user use cases
-        echo: Option<String>, // Test-only: force MockLLM to echo this response
-        echo_tool: Option<String>, // Test-only: force MockLLM to call this tool
-    },
-    AgentHistory {
-        limit: Option<usize>, // Optional, last N messages
-    },
-    AgentReset,
-    AgentInfo,
 
     // Command for CLI integration testing (only available in debug builds)
     #[cfg(debug_assertions)]
     TestCliCommand {
         command: String,
         params: serde_json::Value,
+    },
+    // Command for direct tool testing (only available in debug builds)
+    #[cfg(debug_assertions)]
+    TestToolCall {
+        tool_name: String,
+        tool_args: serde_json::Value,
     },
 }
 
@@ -195,14 +189,6 @@ pub enum Response {
         message: String,
     },
     Heartbeat,
-    /// Immediate ACK for agent chat with `request_id`
-    AgentChatAck {
-        request_id: String,
-    },
-    /// Async response from agent processing
-    AgentChatResponse {
-        data: serde_json::Value, // Contains request_id, response, agent_id
-    },
 }
 
 /// WebSocket upgrade handler
@@ -336,14 +322,14 @@ async fn handle_message(msg: Message, connection_id: &str, state: &Arc<AppState>
 async fn route_command(command: Command, connection_id: &str, state: &Arc<AppState>) -> Result<()> {
     // Check authentication for non-auth commands
     #[cfg(debug_assertions)]
-    let is_test_cli_command = matches!(command, Command::TestCliCommand { .. });
+    let is_test_command = matches!(command, Command::TestCliCommand { .. } | Command::TestToolCall { .. });
     #[cfg(not(debug_assertions))]
-    let is_test_cli_command = false;
+    let is_test_command = false;
 
     if !matches!(
         command,
         Command::Auth { .. } | Command::Heartbeat | Command::Test { .. }
-    ) && !is_test_cli_command
+    ) && !is_test_command
         && !is_authenticated(connection_id, state).await
     {
         warn!(
@@ -361,9 +347,7 @@ async fn route_command(command: Command, connection_id: &str, state: &Arc<AppSta
 
     // Route to appropriate handler based on command type
 
-    if is_agent_command(&command) {
-        agent_commands::handle(command, connection_id, state).await
-    } else if is_graph_command(&command) {
+    if is_graph_command(&command) {
         graph_commands::handle(command, connection_id, state).await
     } else {
         misc_commands::handle(command, connection_id, state).await
@@ -371,15 +355,6 @@ async fn route_command(command: Command, connection_id: &str, state: &Arc<AppSta
 }
 
 /// Check if command is agent-related
-const fn is_agent_command(command: &Command) -> bool {
-    matches!(
-        command,
-        Command::AgentChat { .. }
-            | Command::AgentHistory { .. }
-            | Command::AgentReset
-            | Command::AgentInfo
-    )
-}
 
 /// Check if command is graph-related
 const fn is_graph_command(command: &Command) -> bool {

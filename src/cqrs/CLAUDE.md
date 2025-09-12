@@ -14,7 +14,6 @@ Command Query Responsibility Segregation for sequential state management.
 
 ### Command Types
 - **GraphCommand**: CreateBlock, UpdateBlock, DeleteBlock, CreatePage, DeletePage
-- **AgentCommand**: AddMessage, ClearHistory, SetLLMConfig, SetSystemPrompt, SetDefaultGraph
 - **RegistryCommand**: RegisterGraph, RemoveGraph, OpenGraph, CloseGraph
 - **SystemCommand**: Shutdown
 

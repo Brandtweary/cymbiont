@@ -10,8 +10,7 @@
   - **http_logseq_import.rs**: HTTP API import tests
   - **cli_commands.rs**: CLI command tests
   - **websocket_commands.rs**: WebSocket API tests
-  - **agent_commands.rs**: Agent chat command tests
-  - **agent_tools.rs**: Agent tool execution tests for knowledge graph tools
+  - **agent_tools.rs**: Direct tool execution tests for knowledge graph tools
   - **mcp_server.rs**: MCP server protocol and tool execution tests
 - **deployment_manual_doctests.rs**: Validates commands in CYMBIONT_EMERGENCY_DEPLOYMENT.md
 
@@ -33,8 +32,7 @@
 - `expect_success(response) -> Option<Value>`: Assert success response and return data
 - `expect_error(response) -> Option<Value>`: Assert error response and return message
 - `authenticate_websocket(ws, token) -> bool`: Authenticate WebSocket connection
-- `agent_chat(ws, message, echo, echo_tool) -> Value`: Send AgentChat command
-- `agent_chat_sync(ws, message, echo, echo_tool) -> Value`: Agent chat with response wait
+- `execute_tool_sync(ws, tool_name, tool_args) -> Value`: Execute tool directly via TestToolCall command (debug builds only)
 - `send_cli_command(ws, command, args) -> Value`: Execute CLI command via WebSocket
 - `import_dummy_graph(env) -> String`: Import dummy graph via CLI and return graph ID
 - `import_dummy_graph_http(port, data_dir) -> Result<String>`: Import via HTTP API (async)
@@ -60,22 +58,11 @@
 - `expect_delete_block(block_id, graph_id: Option<&str>) -> &mut Self`: Expect block deletion
 - `expect_delete_page(page_name, graph_id: Option<&str>) -> &mut Self`: Expect page deletion
 - `expect_dummy_graph(graph_id: Option<&str>) -> &mut Self`: Add expectations for standard dummy graph import
-- `expect_user_message(content: MessagePattern) -> &mut Self`: Expect user message
-- `expect_assistant_message(content: MessagePattern) -> &mut Self`: Expect assistant message
-- `expect_tool_message(tool_name: &str, result: MessagePattern) -> &mut Self`: Expect tool result
-- `expect_chat_reset() -> &mut Self`: Expect chat history clear
-- `expect_message_count(min: usize, max: Option<usize>) -> &mut Self`: Expect message count range
 - `expect_graph_created(id: Uuid, name: &str) -> &mut Self`: Expect graph creation in registry
 - `expect_graph_open(id: Uuid) -> &mut Self`: Expect graph to be opened
 - `expect_graph_closed(id: Uuid) -> &mut Self`: Expect graph to be closed
 - `expect_graph_deleted(id: Uuid) -> &mut Self`: Expect graph removal from registry
-- `validate_all() -> Result<(), String>`: Validate all expectations against JSON files (agent, registry, graphs)
-
-## MockLLM Testing
-MockLLM is the test LLM backend with two control mechanisms:
-- `echo`: Pass text in AgentChat commands to control assistant responses
-- `echo_tool`: Pass tool name and args to trigger deterministic tool execution
-Without echo/echo_tool, MockLLM returns a default response. These fields flow through Message::User to MockLLM::complete().
+- `validate_all() -> Result<(), String>`: Validate all expectations against JSON files (registry, graphs)
 
 ## Key Concepts
 - Each test gets unique port (8888+), data directory, and config file via atomic counter

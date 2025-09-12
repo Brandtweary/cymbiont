@@ -8,7 +8,6 @@
 mod common;
 
 // Import all integration test modules
-mod agent_commands;
 mod agent_tools;
 mod cli_commands;
 mod http_logseq_import;
@@ -31,10 +30,6 @@ fn test_websocket_commands() {
     websocket_commands::test_websocket_commands();
 }
 
-#[test]
-fn test_agent_chat_commands() {
-    agent_commands::test_agent_chat_commands();
-}
 
 #[test]
 fn test_all_cli_commands() {

@@ -47,6 +47,8 @@
 //! - `-32601`: Method not found (unknown method name)
 //! - `-32602`: Invalid params (wrong parameter types/structure)
 //! - `-32603`: Internal error (tool execution failure)
+//!
+//! All logs are sent to stderr to keep stdout clean for JSON-RPC communication.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

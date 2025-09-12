@@ -24,30 +24,12 @@
 //! validator.validate_all();
 //! ```
 
-use chrono::{DateTime, Utc};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-// ===== Pattern Matching (from agent_validation.rs.bak) =====
-
-/// Pattern matching for message content
-#[derive(Debug, Clone)]
-pub enum MessagePattern {
-    Exact(String),
-    Contains(String),
-}
-
-impl MessagePattern {
-    pub fn matches(&self, actual: &str) -> bool {
-        match self {
-            Self::Exact(expected) => actual == expected,
-            Self::Contains(substring) => actual.contains(substring),
-        }
-    }
-}
 
 // ===== JSON File Reader =====
 
@@ -55,13 +37,6 @@ impl MessagePattern {
 struct JsonReader;
 
 impl JsonReader {
-    /// Read the single agent data file
-    fn read_agent_data(data_dir: &Path) -> Result<Value, String> {
-        let agent_path = data_dir.join("agent.json");
-        let content = fs::read_to_string(&agent_path)
-            .map_err(|e| format!("Failed to read agent.json: {e}"))?;
-        serde_json::from_str(&content).map_err(|e| format!("Failed to parse agent.json: {e}"))
-    }
 
     /// Read the graph registry file
     fn read_graph_registry(data_dir: &Path) -> Result<Value, String> {
@@ -106,13 +81,6 @@ pub enum GraphOpType {
     DeletePage,
 }
 
-/// Expected message for agent conversation
-#[derive(Debug, Clone)]
-pub struct ExpectedMessage {
-    pub role: String,
-    pub content_pattern: MessagePattern,
-    pub tool_name: Option<String>, // For tool messages
-}
 
 /// Expected graph registry entry
 #[derive(Debug, Clone)]
@@ -121,100 +89,6 @@ pub struct ExpectedGraph {
     pub is_open: bool,
 }
 
-// ===== Message Order Validator (from agent_validation.rs.bak) =====
-
-/// Validates message ordering and integrity
-pub struct MessageOrderValidator {
-    messages: Vec<Value>,
-}
-
-impl MessageOrderValidator {
-    pub const fn new(messages: Vec<Value>) -> Self {
-        Self { messages }
-    }
-
-    /// Validate timestamps are strictly increasing
-    pub fn validate_timestamp_ordering(&self) -> Result<(), String> {
-        if self.messages.len() < 2 {
-            return Ok(());
-        }
-
-        let mut last_timestamp: Option<DateTime<Utc>> = None;
-
-        for (index, message) in self.messages.iter().enumerate() {
-            let timestamp_str = message["timestamp"]
-                .as_str()
-                .ok_or_else(|| format!("Message at index {index} missing timestamp"))?;
-
-            let timestamp = DateTime::parse_from_rfc3339(timestamp_str)
-                .map_err(|e| format!("Invalid timestamp at index {index}: {e}"))?
-                .with_timezone(&Utc);
-
-            if timestamp > Utc::now() {
-                return Err(format!(
-                    "Message at index {index} has future timestamp: {timestamp}"
-                ));
-            }
-
-            if let Some(last) = last_timestamp {
-                if timestamp < last {
-                    return Err(format!(
-                        "Message timestamps out of order at index {index}: {timestamp} < {last}"
-                    ));
-                }
-                if timestamp == last {
-                    return Err(format!("Duplicate timestamp at index {index}: {timestamp}"));
-                }
-            }
-
-            last_timestamp = Some(timestamp);
-        }
-
-        Ok(())
-    }
-
-    /// Validate message structure and integrity
-    pub fn validate_integrity(&self) -> Result<(), String> {
-        for (index, message) in self.messages.iter().enumerate() {
-            let role = message["role"]
-                .as_str()
-                .ok_or_else(|| format!("Message at index {index} missing role"))?;
-
-            match role {
-                "user" | "assistant" => {
-                    if message["content"].is_null() {
-                        return Err(format!("{role} message at index {index} missing content"));
-                    }
-                }
-                "tool" => {
-                    if message["name"].is_null() || message["result"].is_null() {
-                        return Err(format!(
-                            "Tool message at index {index} missing required fields"
-                        ));
-                    }
-                }
-                _ => {
-                    return Err(format!("Unknown message role '{role}' at index {index}"));
-                }
-            }
-
-            if message["timestamp"].is_null() {
-                return Err(format!("Message at index {index} missing timestamp"));
-            }
-        }
-
-        // Check for exact duplicates
-        for i in 0..self.messages.len() {
-            for j in (i + 1)..self.messages.len() {
-                if self.messages[i] == self.messages[j] {
-                    return Err(format!("Duplicate messages found at indices {i} and {j}"));
-                }
-            }
-        }
-
-        Ok(())
-    }
-}
 
 // ===== Main Test Validator =====
 
@@ -226,8 +100,6 @@ pub struct TestValidator {
     expected_graph_ops: Vec<ExpectedGraphOp>,
     deleted_nodes: HashSet<String>,
 
-    expected_messages: Vec<ExpectedMessage>,
-    expected_message_count: Option<(usize, Option<usize>)>, // (min, max)
 
     // Graph registry expectations
     expected_graphs: HashMap<Uuid, ExpectedGraph>,
@@ -242,8 +114,6 @@ impl TestValidator {
             data_dir: data_dir.to_path_buf(),
             expected_graph_ops: Vec::new(),
             deleted_nodes: HashSet::new(),
-            expected_messages: Vec::new(),
-            expected_message_count: None,
             expected_graphs: HashMap::new(),
             expected_open_graphs: HashSet::new(),
             deleted_graphs: HashSet::new(),
@@ -387,50 +257,6 @@ impl TestValidator {
         self
     }
 
-    // ===== Agent Message Expectations (Simplified for Single Agent) =====
-
-    /// Record that a user message will be added
-    pub fn expect_user_message(&mut self, content: MessagePattern) -> &mut Self {
-        self.expected_messages.push(ExpectedMessage {
-            role: "user".to_string(),
-            content_pattern: content,
-            tool_name: None,
-        });
-        self
-    }
-
-    /// Record that an assistant message will be added
-    pub fn expect_assistant_message(&mut self, content: MessagePattern) -> &mut Self {
-        self.expected_messages.push(ExpectedMessage {
-            role: "assistant".to_string(),
-            content_pattern: content,
-            tool_name: None,
-        });
-        self
-    }
-
-    /// Record that a tool message will be added
-    pub fn expect_tool_message(&mut self, tool: &str, result: MessagePattern) -> &mut Self {
-        self.expected_messages.push(ExpectedMessage {
-            role: "tool".to_string(),
-            content_pattern: result,
-            tool_name: Some(tool.to_string()),
-        });
-        self
-    }
-
-    /// Record that the agent's chat will be reset
-    pub fn expect_chat_reset(&mut self) -> &mut Self {
-        self.expected_messages.clear();
-        self.expected_message_count = Some((0, Some(0)));
-        self
-    }
-
-    /// Set expected message count bounds
-    pub const fn expect_message_count(&mut self, min: usize, max: Option<usize>) -> &mut Self {
-        self.expected_message_count = Some((min, max));
-        self
-    }
 
     // ===== Graph Registry Expectations =====
 
@@ -480,9 +306,6 @@ impl TestValidator {
         // Consolidate layered operations before validation
         self.consolidate_operations();
 
-        // Validate agent state
-        self.validate_agent()?;
-
         // Validate graph registry
         self.validate_registry()?;
 
@@ -492,105 +315,6 @@ impl TestValidator {
         Ok(())
     }
 
-    /// Validate agent.json
-    fn validate_agent(&self) -> Result<(), String> {
-        let agent_data = JsonReader::read_agent_data(&self.data_dir)?;
-
-        // Validate schema
-        if agent_data["version"].as_u64() != Some(1) {
-            return Err("Agent data missing or invalid version".to_string());
-        }
-
-        // Get conversation history
-        let history = agent_data["conversation_history"]
-            .as_array()
-            .ok_or("Agent missing conversation_history")?;
-
-        // Validate message count if specified
-        if let Some((min, max)) = self.expected_message_count {
-            let count = history.len();
-            if count < min {
-                return Err(format!(
-                    "Agent has {count} messages, expected at least {min}"
-                ));
-            }
-            if let Some(max) = max {
-                if count > max {
-                    return Err(format!(
-                        "Agent has {count} messages, expected at most {max}"
-                    ));
-                }
-            }
-        }
-
-        // Validate expected messages
-        if !self.expected_messages.is_empty() {
-            if history.len() != self.expected_messages.len() {
-                return Err(format!(
-                    "Agent has {} messages, expected {}",
-                    history.len(),
-                    self.expected_messages.len()
-                ));
-            }
-
-            for (index, (actual, expected)) in
-                history.iter().zip(&self.expected_messages).enumerate()
-            {
-                let role = actual["role"]
-                    .as_str()
-                    .ok_or_else(|| format!("Message {index} missing role"))?;
-
-                if role != expected.role {
-                    return Err(format!(
-                        "Message {index} has role '{role}', expected '{}'",
-                        expected.role
-                    ));
-                }
-
-                // Validate content based on role
-                match role {
-                    "user" | "assistant" => {
-                        let content = actual["content"]
-                            .as_str()
-                            .ok_or_else(|| format!("Message {index} missing content"))?;
-                        if !expected.content_pattern.matches(content) {
-                            return Err(format!("Message {index} content doesn't match pattern"));
-                        }
-                    }
-                    "tool" => {
-                        if let Some(ref expected_tool) = expected.tool_name {
-                            let tool_name = actual["name"]
-                                .as_str()
-                                .ok_or_else(|| format!("Tool message {index} missing name"))?;
-                            if tool_name != expected_tool {
-                                return Err(format!(
-                                    "Message {index} has tool '{tool_name}', expected '{expected_tool}'"
-                                ));
-                            }
-                        }
-
-                        let result_message =
-                            actual["result"]["message"].as_str().ok_or_else(|| {
-                                format!("Tool message {index} missing result.message")
-                            })?;
-                        if !expected.content_pattern.matches(result_message) {
-                            return Err(format!(
-                                "Tool message {index} result doesn't match pattern"
-                            ));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        // Validate message ordering
-        let validator = MessageOrderValidator::new(history.clone());
-        validator.validate_timestamp_ordering()?;
-        validator.validate_integrity()?;
-
-        Ok(())
-    }
 
     /// Validate `graph_registry.json`
     fn validate_registry(&self) -> Result<(), String> {
@@ -815,7 +539,9 @@ impl TestValidator {
                         #[allow(clippy::cast_possible_truncation)]
                         let target_node = &nodes[target_idx as usize];
 
-                        source_node["id"].as_str() == Some(page_name)
+                        // Check both original and normalized (lowercase) page names for Logseq compatibility
+                        let source_id = source_node["id"].as_str().unwrap_or("");
+                        (source_id == page_name || source_id == page_name.to_lowercase())
                             && target_node["id"].as_str() == Some(block_id)
                             && edge[2]["edge_type"].as_str() == Some("PageToBlock")
                     } else {
@@ -925,7 +651,9 @@ impl TestValidator {
                         .as_ref()
                         .ok_or("DeletePage expectation missing page name")?;
 
-                    if node_index.contains_key(page_name) {
+                    // Check both original and normalized (lowercase) names
+                    let page_name_lower = page_name.to_lowercase();
+                    if node_index.contains_key(page_name) || node_index.contains_key(&page_name_lower) {
                         return Err(format!(
                             "Page '{page_name}' should be deleted but still exists in graph {graph_id}"
                         ));

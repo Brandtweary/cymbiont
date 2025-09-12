@@ -100,7 +100,6 @@ use crate::error::{CymbiontError, Result};
 use crate::utils::{save_all_system_data, AsyncRwLockExt};
 
 use crate::{
-    agent::agent::Agent,
     config::Config,
     cqrs::{CommandProcessor, CommandQueue},
     graph::graph_manager::GraphManager,
@@ -117,9 +116,8 @@ pub struct AppState {
     // CQRS command queue - all mutations go through here
     pub command_queue: CommandQueue,
 
-    // Direct read access to graphs and agent (references from CommandProcessor)
+    // Direct read access to graphs (references from CommandProcessor)
     pub graph_managers: Arc<RwLock<HashMap<Uuid, Arc<RwLock<GraphManager>>>>>,
-    pub agent: Arc<RwLock<Option<Agent>>>,
 
     // Registry for graph metadata and persistence
     pub graph_registry: Arc<RwLock<GraphRegistry>>,
@@ -172,12 +170,9 @@ impl AppState {
         graph_registry_inner.set_data_dir(&data_dir);
         let graph_registry = Arc::new(RwLock::new(graph_registry_inner));
 
-        // Load or create agent state
-        let agent = Arc::new(RwLock::new(Some(Agent::load_or_create(&data_dir)?)));
-
-        // Create the command processor with registry reference and agent
+        // Create the command processor with registry reference
         let processor =
-            CommandProcessor::new(graph_registry.clone(), agent.clone(), data_dir.clone());
+            CommandProcessor::new(graph_registry.clone(), data_dir.clone());
 
         // Start the processor
         let (command_queue, resources) = processor.start();
@@ -192,7 +187,6 @@ impl AppState {
         let app_state = Arc::new(Self {
             command_queue,
             graph_managers: resources.graph_managers,
-            agent,
             graph_registry,
             config,
             data_dir: data_dir.clone(),

@@ -43,9 +43,13 @@
 //!             "type": "create_block",
 //!             "content": "Test block"
 //!         });
-//!         let response = send_command(&mut ws, cmd);
-//!         let data = expect_success(response);
+//!         let response = send_command(&mut ws, &cmd);
+//!         let data = expect_success(&response);
 //!         let block_id = data.unwrap()["block_id"].as_str().unwrap();
+//!         
+//!         // Test tool execution directly (debug builds only)
+//!         let tool_result = execute_tool_sync(&mut ws, "list_graphs", json!({}));
+//!         assert!(tool_result.get("graphs").is_some());
 //!         
 //!         // Graceful shutdown
 //!         let test_env = server.shutdown();
@@ -96,6 +100,7 @@
 //! - `connect_websocket()` - Connect with automatic retries
 //! - `authenticate_websocket()` - Send auth command and verify success
 //! - `send_command()` - Send command and return response (skips heartbeats)
+//! - `execute_tool_sync()` - Execute tool directly via TestToolCall (debug builds)
 //! - `expect_success()` - Assert success response and extract data
 //!
 //! **Data Access:**
@@ -690,110 +695,28 @@ pub fn setup_with_graph(test_env: TestEnv) -> (TestServer, String) {
     (server, graph_id)
 }
 
-// ===== Agent Chat Utilities =====
+// ===== Tool Testing Utilities =====
 
-/// Send agent chat and get `request_id` (for async processing)
-///
-/// Send agent chat command and wait for processing ACK
-pub fn send_agent_chat(
+/// Execute a tool directly via TestToolCall command (for testing)
+pub fn execute_tool_sync(
     ws: &mut WsConnection,
-    message: &str,
-    echo: Option<&str>,
-    echo_tool: Option<&str>,
-) {
-    let cmd = json!({
-        "type": "agent_chat",
-        "message": message,
-        "echo": echo,
-        "echo_tool": echo_tool,
-    });
-
-    let msg = Message::Text(cmd.to_string().into());
-    ws.send(msg).expect("Failed to send agent chat");
-
-    // Read ACK response
-    let timeout = Duration::from_secs(5);
-    let start = Instant::now();
-
-    loop {
-        match ws.read() {
-            Ok(Message::Text(text)) => {
-                let response: Value =
-                    serde_json::from_str(&text).expect("Failed to parse response");
-
-                // Check for success ACK with processing status
-                if response["type"] == "success" {
-                    if let Some(data) = response.get("data") {
-                        if data["status"] == "processing" {
-                            return; // ACK received
-                        }
-                    }
-                }
-
-                // Skip heartbeats
-                if response["type"] == "heartbeat" {
-                    // Continue to next iteration (implicit)
-                }
-            }
-            Ok(_) => {}
-            Err(e) => {
-                assert!(
-                    start.elapsed() <= timeout,
-                    "Timeout waiting for agent chat ACK: {e}"
-                );
-                thread::sleep(Duration::from_millis(10));
-            }
-        }
-    }
-}
-
-/// Wait for agent response after ACK
-pub fn wait_for_agent_response(ws: &mut WsConnection) -> Value {
-    let timeout = Duration::from_secs(30); // Generous for tool execution
-    let start = Instant::now();
-
-    loop {
-        match ws.read() {
-            Ok(Message::Text(text)) => {
-                let msg: Value = serde_json::from_str(&text).expect("Failed to parse response");
-
-                // Check if this is the final response (success with response field)
-                if msg["type"] == "success" {
-                    if let Some(data) = msg.get("data") {
-                        if data.get("response").is_some() {
-                            return data.clone();
-                        }
-                    }
-                }
-                // Skip heartbeats
-                if msg["type"] == "heartbeat" {
-                    // Continue to next iteration (implicit)
-                }
-            }
-            Ok(Message::Close(_)) => {
-                panic!("WebSocket connection closed while waiting for agent response");
-            }
-            Ok(_) => {}
-            Err(e) => {
-                assert!(
-                    start.elapsed() <= timeout,
-                    "Timeout waiting for agent response: {e}"
-                );
-                thread::sleep(Duration::from_millis(10));
-            }
-        }
-    }
-}
-
-/// Synchronous agent chat helper that sends message and waits for response
-pub fn agent_chat_sync(
-    ws: &mut WsConnection,
-    message: &str,
-    echo: Option<&str>,
-    echo_tool: Option<&str>,
+    tool_name: &str,
+    tool_args: Value,
 ) -> Value {
-    send_agent_chat(ws, message, echo, echo_tool);
-    wait_for_agent_response(ws)
+    let cmd = json!({
+        "type": "test_tool_call",
+        "tool_name": tool_name,
+        "tool_args": tool_args,
+    });
+    
+    let response = send_command(ws, &cmd);
+    
+    // Extract the tool result from the success response
+    if response["type"] == "success" {
+        response.get("data").cloned().unwrap_or(json!({}))
+    } else {
+        panic!("Tool execution failed: {}", response);
+    }
 }
 
 // ===== MCP Testing Utilities =====

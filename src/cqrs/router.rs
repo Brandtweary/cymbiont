@@ -132,10 +132,8 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use super::commands::{
-    AgentCommand, CommandResult, GraphCommand, GraphRegistryCommand, RegistryCommand,
+    CommandResult, GraphCommand, GraphRegistryCommand, RegistryCommand,
 };
-use crate::agent::agent::Agent;
-use crate::agent::llm::{LLMConfig, Message};
 use crate::error::{ProcessorError, Result, StorageError};
 use crate::graph::graph_manager::GraphManager;
 use crate::graph::graph_operations;
@@ -307,98 +305,6 @@ async fn handle_delete_page(
     })
 }
 
-// ===== Agent Command Handlers =====
-
-#[allow(clippy::significant_drop_tightening)]
-async fn handle_add_message(
-    agent: &Arc<RwLock<Option<Agent>>>,
-    message: serde_json::Value,
-) -> Result<CommandResult> {
-    let msg: Message = serde_json::from_value(message).map_err(|e| ProcessorError::Serialization(e))?;
-    let token = RouterToken::new();
-
-    {
-        let mut agent_guard = agent.write().await;
-        let agent_mut = agent_guard
-            .as_mut()
-            .ok_or_else(|| ProcessorError::NotFound("Agent".to_string()))?;
-        agent_mut.add_message(&token, msg);
-    }
-
-    Ok(CommandResult {
-        success: true,
-        data: None,
-        error: None,
-        child_commands: vec![],
-    })
-}
-
-#[allow(clippy::significant_drop_tightening)]
-async fn handle_clear_history(agent: &Arc<RwLock<Option<Agent>>>) -> Result<CommandResult> {
-    let token = RouterToken::new();
-
-    {
-        let mut agent_guard = agent.write().await;
-        let agent_mut = agent_guard
-            .as_mut()
-            .ok_or_else(|| ProcessorError::NotFound("Agent".to_string()))?;
-        agent_mut.clear_history(&token);
-    }
-
-    Ok(CommandResult {
-        success: true,
-        data: None,
-        error: None,
-        child_commands: vec![],
-    })
-}
-
-#[allow(clippy::significant_drop_tightening)]
-async fn handle_set_llm_config(
-    agent: &Arc<RwLock<Option<Agent>>>,
-    config: serde_json::Value,
-) -> Result<CommandResult> {
-    let llm_config: LLMConfig = serde_json::from_value(config).map_err(|e| ProcessorError::Serialization(e))?;
-    let token = RouterToken::new();
-
-    {
-        let mut agent_guard = agent.write().await;
-        let agent_mut = agent_guard
-            .as_mut()
-            .ok_or_else(|| ProcessorError::NotFound("Agent".to_string()))?;
-        agent_mut.set_llm_config(&token, llm_config);
-    }
-
-    Ok(CommandResult {
-        success: true,
-        data: None,
-        error: None,
-        child_commands: vec![],
-    })
-}
-
-#[allow(clippy::significant_drop_tightening)]
-async fn handle_set_system_prompt(
-    agent: &Arc<RwLock<Option<Agent>>>,
-    prompt: String,
-) -> Result<CommandResult> {
-    let token = RouterToken::new();
-
-    {
-        let mut agent_guard = agent.write().await;
-        let agent_mut = agent_guard
-            .as_mut()
-            .ok_or_else(|| ProcessorError::NotFound("Agent".to_string()))?;
-        agent_mut.set_system_prompt(&token, prompt);
-    }
-
-    Ok(CommandResult {
-        success: true,
-        data: None,
-        error: None,
-        child_commands: vec![],
-    })
-}
 
 /// Route a graph command to its handler
 pub async fn route_graph_command(
@@ -451,18 +357,6 @@ pub async fn route_graph_command(
     }
 }
 
-/// Route an agent command to its handler
-pub async fn route_agent_command(
-    agent: &Arc<RwLock<Option<Agent>>>,
-    command: AgentCommand,
-) -> Result<CommandResult> {
-    match command {
-        AgentCommand::AddMessage { message } => handle_add_message(agent, message).await,
-        AgentCommand::ClearHistory => handle_clear_history(agent).await,
-        AgentCommand::SetLLMConfig { config } => handle_set_llm_config(agent, config).await,
-        AgentCommand::SetSystemPrompt { prompt } => handle_set_system_prompt(agent, prompt).await,
-    }
-}
 
 // ===== Graph Registry Command Handlers =====
 

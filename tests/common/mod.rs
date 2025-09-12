@@ -5,4 +5,4 @@ pub mod test_validator;
 pub use test_harness::{cleanup_test_env, setup_test_env};
 
 // Export test validation types
-pub use test_validator::{MessagePattern, TestValidator};
+pub use test_validator::TestValidator;

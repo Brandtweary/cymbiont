@@ -111,4 +111,4 @@ pub use processor::CommandProcessor;
 pub use queue::CommandQueue;
 
 // Re-export command types for convenience
-pub use commands::{AgentCommand, GraphCommand, GraphRegistryCommand, RegistryCommand};
+pub use commands::{GraphCommand, GraphRegistryCommand, RegistryCommand};

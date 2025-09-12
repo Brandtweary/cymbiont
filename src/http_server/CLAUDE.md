@@ -10,9 +10,8 @@ server/
 ├── websocket_utils.rs       # Shared helpers (auth checks, response sending, graph resolution)
 ├── websocket_commands/      # Command handlers organized by domain
 │   ├── mod.rs              # Command module exports
-│   ├── agent_commands.rs   # Agent chat operations
 │   ├── graph_commands.rs   # Graph CRUD and block/page operations  
-│   └── misc_commands.rs    # Auth, test, freeze commands
+│   └── misc_commands.rs    # Auth, test, and debug commands
 └── auth.rs                  # Token generation, validation, middleware
 ```
 
@@ -40,7 +39,7 @@ server/
 - `Error { message: string }` - Command failed with reason
 - `Heartbeat` - Keep-alive pulse from server
 
-### Graph Commands (Require Current Agent)
+### Graph Commands
 - `CreateBlock { content, parent_id?, page_name?, temp_id?, graph_id?, graph_name? }` - Create block via GraphOps trait
 - `UpdateBlock { block_id, content, graph_id?, graph_name? }` - Update block content preserving edges
 - `DeleteBlock { block_id, graph_id?, graph_name? }` - Archive block node
@@ -52,22 +51,17 @@ server/
 - `DeleteGraph { graph_id?, graph_name? }` - Archive graph to archived_graphs/
 - `ListGraphs` - Return all graphs with metadata
 
-### Agent Chat Commands
-- `AgentChat { message, echo?, echo_tool? }` - Send message to agent (echo for text, echo_tool for tool calls in MockLLM)
-- `AgentHistory { limit? }` - Get conversation messages
-- `AgentReset` - Clear agent conversation history
-- `AgentInfo` - Detailed agent information with stats
-
 ### System Commands
 - `Auth { token }` - Authenticate connection
 - `Test { message }` - Echo test with connection stats
 - `Heartbeat` - Client keep-alive (no response to prevent loops)
 - `TestCliCommand { command, params }` - CLI command bridge (debug builds only)
+- `TestToolCall { tool_name, tool_args }` - Direct tool execution (debug builds only)
 
 ## Authentication
 - **Token**: Auto-generated UUID v4 on startup, saved to `{data_dir}/auth_token` (0600), rotates per restart
 - **HTTP**: `Authorization: Bearer TOKEN` header required for protected endpoints
-- **WebSocket**: Send `Auth { token }` after connection to authenticate and get prime agent
+- **WebSocket**: Send `Auth { token }` after connection to authenticate
 
 ## Key Patterns
 - **Connection State**: Each WsConnection has ID, sender channel, and auth flag
@@ -77,7 +71,7 @@ server/
 - **Smart Resolution**: Commands use UUID/name with intelligent defaults for graph/agent targeting
 
 ## Testing Support
-- **MockLLM**: Pass `echo` for text responses or `echo_tool` for tool execution in AgentChat
+- **Direct Tool Testing**: TestToolCall for tool execution without agent layer
 - **CLI Bridge**: TestCliCommand for integration test coverage
 
 ## Gotchas

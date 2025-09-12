@@ -124,13 +124,9 @@ pub enum StorageError {
     Serialization(#[from] serde_json::Error),
 }
 
-/// Agent operation errors consolidating agent, LLM, and tool errors
+/// Agent operation errors for tool execution
 #[derive(Error, Debug)]
 pub enum AgentError {
-    /// LLM backend errors
-    #[error("LLM error: {message}")]
-    #[allow(clippy::upper_case_acronyms)]
-    LLM { message: String },
 
     /// Knowledge graph tool errors
     #[error("Tool error: {message}")]
@@ -300,11 +296,6 @@ impl StorageError {
 }
 
 impl AgentError {
-    pub fn llm(message: impl Into<String>) -> Self {
-        Self::LLM {
-            message: message.into(),
-        }
-    }
 
     pub fn tool(message: impl Into<String>) -> Self {
         Self::Tool {

@@ -137,11 +137,9 @@ macro_rules! cli_commands {
             /// Run as MCP server (Model Context Protocol over stdio)
             #[arg(long)]
             pub mcp: bool,
-
             /// Run as Claude Code agent with MCP integration
             #[arg(long, conflicts_with = "server", conflicts_with = "mcp")]
             pub agent: bool,
-
             /// Prompt for agent mode (enables non-interactive when provided)
             #[arg(long, value_name = "TEXT")]
             pub prompt: Option<String>,
@@ -243,7 +241,6 @@ cli_commands! {
     ],
     flag_commands: [
         (ListGraphs, list_graphs, "", "list_graphs"),
-        (AgentInfo, agent_info, "", "agent_info"),
     ],
     supporting_fields: [
         (description, "DESCRIPTION", "create_graph"),
@@ -325,35 +322,6 @@ async fn handle_delete_graph(app_state: &Arc<AppState>, graph_identifier: &str) 
     Ok(false) // Continue running after delete
 }
 
-#[allow(clippy::cognitive_complexity)]
-async fn handle_agent_info(app_state: &Arc<AppState>) -> Result<bool> {
-    // Get the agent state
-    let agent_info = {
-        let agent_opt = app_state.agent.read_or_panic("read agent state").await;
-        agent_opt.as_ref().map(|agent| {
-            (
-                agent.id,
-                agent.name.clone(),
-                agent.created,
-                agent.last_active,
-                agent.conversation_history.len(),
-            )
-        })
-    };
-
-    if let Some((id, name, created, last_active, message_count)) = agent_info {
-        info!("🤖 Agent Information");
-        info!("  ID: {}", id);
-        info!("  Name: {}", name);
-        info!("  Created: {}", created);
-        info!("  Last Active: {}", last_active);
-        info!("  Conversation Messages: {}", message_count);
-    } else {
-        info!("No agent initialized");
-    }
-
-    Ok(false) // Continue running after showing info
-}
 
 #[allow(clippy::cognitive_complexity)]
 async fn handle_list_graphs(app_state: &Arc<AppState>) -> Result<bool> {
@@ -503,9 +471,6 @@ pub async fn handle_cli_commands(app_state: &Arc<AppState>, args: &Args) -> Resu
         return handle_agent_mode(args).await;
     }
 
-    if args.agent_info {
-        return handle_agent_info(app_state).await;
-    }
 
     if args.list_graphs {
         return handle_list_graphs(app_state).await;

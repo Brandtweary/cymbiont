@@ -32,22 +32,22 @@ pub fn test_mcp_all_tools() {
             .expect("Failed to list tools");
         request_id += 1;
         
-        // Verify all 14 tools are present with cymbiont_ prefix
+        // Verify all 14 tools are present without prefix
         let expected_tools = vec![
-            "cymbiont_add_block",
-            "cymbiont_update_block", 
-            "cymbiont_delete_block",
-            "cymbiont_create_page",
-            "cymbiont_delete_page",
-            "cymbiont_get_node",
-            "cymbiont_query_graph_bfs",
-            "cymbiont_list_graphs",
-            "cymbiont_list_open_graphs",
-            "cymbiont_open_graph",
-            "cymbiont_close_graph",
-            "cymbiont_create_graph",
-            "cymbiont_delete_graph",
-            "cymbiont_import_logseq",
+            "add_block",
+            "update_block", 
+            "delete_block",
+            "create_page",
+            "delete_page",
+            "get_node",
+            "query_graph_bfs",
+            "list_graphs",
+            "list_open_graphs",
+            "open_graph",
+            "close_graph",
+            "create_graph",
+            "delete_graph",
+            "import_logseq",
         ];
         
         for tool_name in &expected_tools {

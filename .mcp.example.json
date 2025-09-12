@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "cymbiont": {
+      "command": "cargo",
+      "args": ["run", "--", "--mcp", "--duration", "0"],
+      "env": {
+        "RUST_LOG": "info"
+      }
+    }
+  }
+}

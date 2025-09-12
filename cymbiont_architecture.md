@@ -269,6 +269,7 @@ transaction_log:                  # Future WAL configuration (not yet implemente
 **Protocol**: JSON-RPC 2.0 with MCP extensions
 **Capabilities**: Tools, resources, prompts, logging (empty arrays for resources/prompts)
 **Critical**: stdout reserved for JSON-RPC, all logs to stderr
+**Namespacing**: MCP tools use clean, unprefixed names (`add_block`, `list_graphs`, etc.) - Cymbiont claims the knowledge graph namespace without redundant prefixing. MCP clients handle their own namespacing if needed.
 
 ### http_server/server.rs
 **Purpose**: Server lifecycle and port finding

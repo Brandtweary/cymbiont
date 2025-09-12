@@ -828,7 +828,7 @@ pub fn mcp_call_tool(
     args: Value,
 ) -> Result<Value, String> {
     let result = mcp_request(stdin, stdout, request_id, "tools/call", Some(json!({
-        "name": format!("cymbiont_{}", tool_name),
+        "name": tool_name,
         "arguments": args
     })))?;
     

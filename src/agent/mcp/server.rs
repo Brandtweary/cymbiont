@@ -38,8 +38,8 @@
 //!
 //! ## Tool Naming Convention
 //!
-//! MCP tools are prefixed with `cymbiont_` to avoid naming conflicts with client tools:
-//! - MCP exposure: `cymbiont_add_block`  
+//! MCP tools use clean names without prefixes:
+//! - MCP exposure: `add_block`  
 //! - Internal name: `add_block`
 //! - The prefix is automatically added when exposing tools and stripped when executing
 //!
@@ -112,8 +112,7 @@ impl MCPServer {
         let reader = BufReader::new(stdin);
         let mut lines = reader.lines();
         
-        // The server runs until the process shuts down (via duration or Ctrl+C)
-        // We never exit just because stdin is empty - we keep waiting for input
+        // The server runs until stdin closes (client disconnects) or process shuts down
         loop {
             match lines.next_line().await {
                 Ok(Some(line)) => {
@@ -152,10 +151,9 @@ impl MCPServer {
                     }
                 }
                 Ok(None) => {
-                    // stdin returned None - this can happen with TTY or when no input is available
-                    // We don't treat this as disconnection - just keep waiting
-                    // Small sleep to avoid busy-waiting
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    // stdin closed - client disconnected, exit gracefully
+                    info!("MCP client disconnected (stdin closed)");
+                    break;
                 }
                 Err(_e) => {
                     // Actual IO error - this is worth logging but we still continue
@@ -163,6 +161,8 @@ impl MCPServer {
                 }
             }
         }
+        
+        Ok(())
     }
 
     /// Handle a JSON-RPC request
@@ -226,12 +226,12 @@ impl MCPServer {
         // Get tool schemas from the canonical tools module
         let tool_schemas = tools::get_tool_schemas();
         
-        // Convert to MCP format with cymbiont_ prefix
+        // Convert to MCP format
         let tools: Vec<Value> = tool_schemas
             .into_iter()
             .map(|schema| {
                 json!({
-                    "name": format!("cymbiont_{}", schema.name),
+                    "name": schema.name,
                     "description": schema.description,
                     "inputSchema": {
                         "type": "object",
@@ -283,8 +283,8 @@ impl MCPServer {
             }
         };
 
-        // Remove cymbiont_ prefix if present
-        let internal_name = tool_name.strip_prefix("cymbiont_").unwrap_or(tool_name);
+        // Use tool name directly
+        let internal_name = tool_name;
 
         let args = params.get("arguments").cloned().unwrap_or(json!({}));
 

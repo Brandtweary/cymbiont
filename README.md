@@ -163,6 +163,34 @@ cargo run -- --mcp
 cargo run -- --agent
 ```
 
+### Using Cymbiont as an MCP Server
+
+Cymbiont provides an MCP (Model Context Protocol) server that exposes its knowledge graph tools to any MCP-compatible application. This allows integration with Claude Code, custom applications, or other MCP clients.
+
+**Note:** We recommend using `cargo run -- --agent` for the full Cymbiont experience, which manages the agent lifecycle and will include additional configuration in future updates. Direct MCP integration is best suited for specific use cases where you need knowledge graph capabilities as a backend service.
+
+#### Setup for Claude Code
+
+1. **Copy the MCP configuration:**
+   ```bash
+   cp .mcp.example.json .mcp.json
+   ```
+
+2. **Add the server to Claude Code:**
+   ```bash
+   claude mcp add cymbiont --scope project /path/to/cymbiont/cargo run -- --mcp --duration 0
+   ```
+
+   Or manually edit `.mcp.json` in your project root based on `.mcp.example.json`.
+
+3. **Approve and use:**
+   Claude Code will prompt for approval when it detects the project-scoped MCP server. Once approved, Cymbiont's 14 knowledge graph tools will be available.
+
+**Current limitations:**
+- All tools are loaded globally and cannot be toggled (toolset management coming in future updates)
+- Minimal agent configuration compared to `--agent` mode
+- Best suited for development contexts where persistent knowledge graph storage enhances coding workflows
+
 When running as a server, Cymbiont generates an authentication token on startup:
 
 ```

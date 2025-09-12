@@ -38,9 +38,9 @@
 1. Define function in `tools.rs` with signature: `fn(app_state: &Arc<AppState>, args: Value) -> Pin<Box<dyn Future<Output = Result<Value>> + Send>>`
 2. Add to `TOOLS` HashMap: `tools.insert("tool_name", tool_function as ToolFn)`
 3. Create schema in `schemas.rs` with parameters
-4. Tool available via MCP (`cymbiont_tool_name`) and TestToolCall (debug builds)
+4. Tool available via MCP (`tool_name`) and TestToolCall (debug builds)
 
 ## MCP Protocol
 - **Discovery**: `tools/list` returns all tool schemas
-- **Execution**: `tools/call` with `{name: "cymbiont_tool_name", arguments: {...}}`
+- **Execution**: `tools/call` with `{name: "tool_name", arguments: {...}}`
 - **Critical**: stdout reserved for JSON-RPC, all logs to stderr

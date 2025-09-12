@@ -12,6 +12,8 @@ data/*
 
 # Configuration (keep example)
 /config.yaml
+/.mcp.json
+/.mcp.disabled.json
 
 # Logs
 *.log
@@ -26,7 +28,7 @@ logs/*
 .idea/
 .vscode/
 .windsurfrules
-.claude
+/.claude
 CLAUDE.local.md
 *.swp
 *.swo

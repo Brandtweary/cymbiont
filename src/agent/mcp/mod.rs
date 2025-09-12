@@ -25,9 +25,9 @@
 //!
 //! ## Tool Mapping
 //!
-//! MCP tools are mapped to internal tool names:
-//! - `cymbiont_add_block` → `add_block`
-//! - `cymbiont_update_block` → `update_block`
+//! MCP tools use clean names that map directly to internal tools:
+//! - `add_block` → `add_block`
+//! - `update_block` → `update_block`
 //! - etc.
 
 pub mod protocol;

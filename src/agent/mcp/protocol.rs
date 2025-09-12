@@ -19,7 +19,7 @@
 //! → {"jsonrpc":"2.0","method":"initialized"}
 //! → {"jsonrpc":"2.0","method":"tools/list","id":2}
 //! ← {"jsonrpc":"2.0","result":{"tools":[...]},"id":2}
-//! → {"jsonrpc":"2.0","method":"tools/call","params":{"name":"cymbiont_list_graphs","arguments":{}},"id":3}
+//! → {"jsonrpc":"2.0","method":"tools/call","params":{"name":"list_graphs","arguments":{}},"id":3}
 //! ← {"jsonrpc":"2.0","result":{"content":[{"type":"text","text":"..."}]},"id":3}
 //! ```
 //!

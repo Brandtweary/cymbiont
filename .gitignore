@@ -1,0 +1,30 @@
+# Rust build artifacts
+/target
+/Cargo.lock
+
+# Configuration (keep example)
+/config.yaml
+
+# Logs
+*.log
+logs/*
+!logs/.gitkeep
+
+# Environment files
+.env
+.env.local
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+/tmp
+*.tmp

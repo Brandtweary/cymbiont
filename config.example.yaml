@@ -1,0 +1,54 @@
+# Cymbiont Rust MCP Server Configuration
+# Copy this to config.yaml and customize for your environment
+
+graphiti:
+  # Graphiti FastAPI backend URL
+  base_url: "http://localhost:8000"
+
+  # HTTP request timeout in seconds
+  timeout_secs: 30
+
+  # Default group_id for episodes (allows shared memory across sessions)
+  default_group_id: "default"
+
+similarity:
+  # Minimum similarity score for search results (0.0-1.0)
+  # Passed to Graphiti for search filtering
+  min_score: 0.7
+
+corpus:
+  # Document sync directory (markdown files auto-synced to knowledge graph)
+  path: "/home/brandt/projects/hector/corpus"
+
+  # Sync interval in hours (hourly batch processing)
+  sync_interval_hours: 1.0
+
+  # Note: Cymbiont passes this config to Graphiti via POST /sync/start on startup
+
+logging:
+  # Logging level: trace, debug, info, warn, error
+  level: "info"
+
+  # Output destination: "stderr" or "file"
+  # IMPORTANT: Use "file" for MCP mode (Claude Code treats stderr as errors)
+  output: "file"
+
+  # Log file path (used when output is "file")
+  file_path: "logs/cymbiont_mcp.log"
+
+  # Maximum number of log files to retain
+  max_files: 10
+
+  # Maximum log file size in MB before rotation
+  max_size_mb: 5
+
+  # CRITICAL: Set false in MCP mode (stdout reserved for JSON-RPC)
+  # Claude Code shows all stderr output as red errors in UI
+  console_output: false
+
+verbosity:
+  # Verbosity monitoring thresholds (logs per minute)
+  # Autodebugger tracks logging frequency to detect excessive verbosity
+  info_threshold: 50
+  debug_threshold: 100
+  trace_threshold: 200

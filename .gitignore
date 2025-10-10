@@ -4,10 +4,13 @@
 
 # Configuration (keep example)
 /config.yaml
+CLAUDE.local.md
 
 # Logs
 *.log
-logs/*
+logs/timestamped/*
+!logs/timestamped/.gitkeep
+logs/*_latest.log
 !logs/.gitkeep
 
 # Environment files

@@ -33,8 +33,9 @@ logging:
   # IMPORTANT: Use "file" for MCP mode (Claude Code treats stderr as errors)
   output: "file"
 
-  # Log file path (used when output is "file")
-  file_path: "logs/cymbiont_mcp.log"
+  # Log directory (logs are named cymbiont_mcp.log with timestamped backups)
+  # MUST be absolute path (validated at startup)
+  log_directory: "/home/brandt/projects/hector/cymbiont/logs"
 
   # Maximum number of log files to retain
   max_files: 10

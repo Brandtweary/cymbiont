@@ -1,0 +1,50 @@
+# CYMBIONT DEVELOPMENT GUIDE
+
+## Documentation Structure
+- **This file**: Development commands and guidelines
+- **config.example.yaml**: Configuration template
+- **README.md**: User documentation (TODO)
+
+## Build/Test Commands
+```bash
+# In cymbiont root
+cargo check                      # Quick syntax check
+cargo build                      # Build cymbiont
+cargo test                       # Run test suite
+RUST_LOG=info cargo run          # Run with logging
+```
+
+## Core Directories
+- **src/**: Cymbiont MCP server implementation
+- **logs/**: Log directory
+  - **timestamped/**: Timestamped log files
+  - **cymbiont_mcp_latest.log**: Symlink to latest log (`/home/brandt/projects/hector/cymbiont/logs/cymbiont_mcp_latest.log`)
+- **autodebugger/**: Git submodule - logging utilities with verbosity monitoring
+
+## Project Structure
+- **src/**
+  - **main.rs**: MCP server bootstrap and lifecycle
+  - **config.rs**: YAML configuration loading
+  - **client.rs**: HTTP client for Graphiti FastAPI
+  - **mcp_tools.rs**: MCP tool implementations
+  - **graphiti_launcher.rs**: Graphiti backend lifecycle management
+  - **types.rs**: Request/response JSON schemas
+  - **error.rs**: Error types
+
+## Codebase Guidelines
+- Logging: use `tracing` macros - `error!()`, `warn!()`, `info!()`, `debug!()`, `trace!()`
+- Error handling: use `anyhow::Result` for application errors, `thiserror` for library errors
+- Config file is optional - all settings have sensible defaults
+- Don't inline imports (except for temp debugging)
+- Comments are welcome for complex logic
+
+### Log Level Guidelines
+- **INFO**: Use sparingly, only for messages you would want to see on every single run
+- **DEBUG**: Temporary troubleshooting only - all debug logs must be removed before committing
+- **WARN**: Use for problematic behavior that can be fully recovered from
+- **ERROR**: Use for any true software bugs - when in doubt whether something should be warn vs error, choose error
+- **TRACE**: Low-level implementation details worth preserving
+
+### Autodebugger Commands
+- **Remove debug! calls**: `autodebugger remove-debug`
+- **Validate documentation**: `autodebugger validate-docs`

@@ -26,4 +26,7 @@ pub enum ConfigError {
 
     #[error("Parse error: {0}")]
     Parse(String),
+
+    #[error("Validation error: {0}")]
+    Validation(String),
 }

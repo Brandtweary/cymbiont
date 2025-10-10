@@ -137,13 +137,49 @@ impl Config {
             let contents = fs::read_to_string(config_path)
                 .map_err(|e| ConfigError::Io(e.to_string()))?;
 
-            let config: Config = serde_yaml::from_str(&contents)
+            let mut config: Config = serde_yaml::from_str(&contents)
                 .map_err(|e| ConfigError::Parse(e.to_string()))?;
+
+            // Validate and enforce absolute paths
+            config.validate_paths()?;
 
             Ok(config)
         } else {
             // No config file - use defaults
             Ok(Config::default())
         }
+    }
+
+    /// Validate that all paths are absolute
+    /// This is critical for MCP mode where the working directory is unpredictable
+    fn validate_paths(&mut self) -> Result<(), ConfigError> {
+        // Check log_directory
+        let log_path = Path::new(&self.logging.log_directory);
+        if !log_path.is_absolute() {
+            return Err(ConfigError::Validation(format!(
+                "log_directory must be an absolute path, got: {}",
+                self.logging.log_directory
+            )));
+        }
+
+        // Check corpus path
+        let corpus_path = Path::new(&self.corpus.path);
+        if !corpus_path.is_absolute() {
+            return Err(ConfigError::Validation(format!(
+                "corpus.path must be an absolute path, got: {}",
+                self.corpus.path
+            )));
+        }
+
+        // Check graphiti server path
+        let server_path = Path::new(&self.graphiti.server_path);
+        if !server_path.is_absolute() {
+            return Err(ConfigError::Validation(format!(
+                "graphiti.server_path must be an absolute path, got: {}",
+                self.graphiti.server_path
+            )));
+        }
+
+        Ok(())
     }
 }

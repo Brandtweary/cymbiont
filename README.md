@@ -303,20 +303,9 @@ cargo test           # Run tests
 
 Logs written to `logs/timestamped/cymbiont_mcp_YYYYMMDD_HHMMSS.log` with `cymbiont_mcp_latest.log` symlink to most recent session.
 
-## Graphiti-Cymbiont Fork
-
-Cymbiont uses a fork of Graphiti with enhancements:
-
-- **Document sync system**: Auto-ingest markdown files with change tracking
-- **FastAPI server**: HTTP/REST interface for remote access
-- **Enhanced retrieval**: Additional search recipes and ranking strategies
-
-**Fork**: [github.com/Brandtweary/graphiti-cymbiont](https://github.com/Brandtweary/graphiti-cymbiont)
-**Upstream**: [github.com/getzep/graphiti](https://github.com/getzep/graphiti)
-
 ## Upcoming Features
 
-- **Hook-based automation**: Automatic conversation monitoring and episode creation
+- **Hook-based automation**: Automatic episode creation
 - **Enhanced search**: Personalized PageRank and learned edge weights
 - **Graph maintenance**: Orphan cleanup and semantic drift detection
 

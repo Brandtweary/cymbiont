@@ -27,6 +27,7 @@ Your notes, conversations, and documents become a living network. AI agents don'
 
 ### What You'll Need
 
+- **MCP-Compatible AI Assistant**: [Claude Code](https://claude.ai/download) recommended (only officially supported agent at present)
 - **Rust**: https://rustup.rs/
 - **Python 3.10+**: For the knowledge graph backend
 - **Neo4j**: Graph database

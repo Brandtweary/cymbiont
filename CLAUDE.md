@@ -3,7 +3,7 @@
 ## Documentation Structure
 - **This file**: Development commands and guidelines
 - **config.example.yaml**: Configuration template
-- **README.md**: User documentation (TODO)
+- **README.md**: User documentation and technical overview
 
 ## Build/Test Commands
 ```bash

@@ -23,6 +23,68 @@ Cymbiont is infrastructure for **collective intelligence through shared represen
 
 Your notes, conversations, and documents become a living network. AI agents don't just retrieve from it; they traverse it, extend it, discover connections within it. You're not prompting an oracle—you're thinking alongside an agent that can explore knowledge space in ways you can't, while you contribute structure and meaning it can't generate alone.
 
+## Using Cymbiont
+
+### With Claude Code
+
+Once installed, Cymbiont integrates seamlessly with your AI assistant. Your agent will automatically build and query the knowledge graph as you work—capturing insights from conversations, documents, and structured data. No manual intervention required.
+
+The graph grows organically as you use your assistant, forming connections between concepts, tracking how information evolves over time, and surfacing relevant context when needed.
+
+**Cymbiont is memory augmentation for general-purpose AI**—not just for notes. Use it for:
+
+- **Software development**: Code alongside your assistant with full memory of your codebase, past debugging sessions, and architectural decisions
+- **Research**: Literature notes, experimental results, evolving hypotheses
+- **Writing**: Draft iterations, research sources, thematic connections
+- **Custom agents**: Build AI agents with persistent identity and long-term memory
+
+For developers, tools like [code2prompt](https://github.com/raphaelmansuy/code2prompt) generate markdown codebase maps that work seamlessly with Cymbiont—just dump the output in your synced corpus folder and the knowledge graph ingests your entire codebase structure.
+
+### Document Sync
+
+Cymbiont can automatically sync markdown files from a corpus directory into the knowledge graph. Place your notes, documentation, or research in a designated folder and the system will ingest them hourly, tracking changes and creating diff summaries.
+
+**Setup:**
+1. Create a corpus directory for your markdown files
+2. Configure the path in `config.yaml`:
+```yaml
+corpus:
+  path: "/absolute/path/to/your/corpus"
+  sync_interval_hours: 1.0
+```
+3. Files sync automatically on the hourly interval
+4. Your AI assistant can manually trigger sync using `sync_all_documents()`
+
+**How it works:**
+- New files: Full content ingested as episodes
+- Modified files: Semantic diff summaries added to graph
+- Renamed files: Episode metadata updated automatically
+- Deleted files: History preserved (append-only)
+
+### Recommended Editors
+
+Cymbiont works with any editor that uses local markdown files. Choose based on your workflow:
+
+**IDEs** (recommended for most users):
+- **Zed**: Fast, modern, written in Rust
+- **VS Code**: Extensive ecosystem, mature tooling
+- **Cursor/Windsurf**: Agentic IDEs with AI-native features
+
+IDEs with integrated terminals let you chat with your assistant and edit documents in the same application—the most convenient setup for most users. Some prefer separate windows for chat and editing, which works just as well.
+
+**PKM Apps** (specialized note-taking):
+- **Logseq**: Open-source PKM with graph view and local markdown
+- **Obsidian**: PKM with local vault and extensive plugins
+
+**Text Editors** (lightweight):
+- **Sublime Text**: Fast with minimap navigation
+- **Neovim**: For terminal enthusiasts
+
+**Writing-Focused** (non-developers):
+- **Typora**: Clean markdown with live preview
+- **iA Writer**: Distraction-free writing
+- **Zettlr**: Academic writing with Zettelkasten features
+
 ## Quick Start
 
 ### What You'll Need
@@ -256,49 +318,6 @@ Cymbiont uses a fork of Graphiti with enhancements:
 
 **Fork**: [github.com/Brandtweary/graphiti-cymbiont](https://github.com/Brandtweary/graphiti-cymbiont)
 **Upstream**: [github.com/getzep/graphiti](https://github.com/getzep/graphiti)
-
-## Document Sync
-
-Cymbiont can automatically sync markdown files from a corpus directory into the knowledge graph. Place your notes, documentation, or research in a designated folder and Graphiti will ingest them hourly, tracking changes and creating diff summaries.
-
-**Setup:**
-1. Create a corpus directory for your markdown files
-2. Configure the path in `config.yaml`:
-```yaml
-corpus:
-  path: "/absolute/path/to/your/corpus"
-  sync_interval_hours: 1.0
-```
-3. Files sync automatically on the hourly interval
-4. Your AI assistant can manually trigger sync using `sync_all_documents()`
-
-**How it works:**
-- New files: Full content ingested as episodes
-- Modified files: Semantic diff summaries added to graph
-- Renamed files: Episode metadata updated automatically
-- Deleted files: History preserved (append-only)
-
-## Recommended Editors
-
-Cymbiont works with any editor that uses local markdown files. Choose based on your workflow:
-
-**PKM Apps** (best for note-taking):
-- **Logseq**: Local markdown with graph view, perfect fit for Cymbiont
-- **Obsidian**: Local vault with extensive plugins
-
-**IDEs** (best for developers):
-- **Zed**: Fast, modern, great git integration
-- **VS Code**: Extensive ecosystem, mature tooling
-- **Cursor**: AI-native features complement knowledge graph
-
-**Text Editors** (lightweight):
-- **Sublime Text**: Fast with minimap navigation
-- **Neovim**: For terminal enthusiasts
-
-**Writing-Focused** (non-developers):
-- **Typora**: Clean markdown with live preview
-- **iA Writer**: Distraction-free writing
-- **Zettlr**: Academic writing with Zettelkasten features
 
 ## Upcoming Features
 

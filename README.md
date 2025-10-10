@@ -2,43 +2,38 @@
 
 > **A knowledge graph engine for self-organizing AI agents**
 
-Most AI works with pure vectors and tokens—statistically probable responses grounded in nothing but training data and recent conversation. There's no structure, no explicit relationships, no way to reason about how concepts actually connect. You can't build shared understanding, can't collaboratively construct knowledge, can't create genuine coordination between human and machine intelligence.
+Most conversations with AI vanish the moment they end. Every insight, every connection you draw together, every pattern that emerges from working through a problem gets lost when you close the window. You start over each time, rebuilding context, re-explaining what you meant, rehashing old ground. There's no shared workspace, no persistent understanding, no way to build knowledge together over time.
 
-Cymbiont provides the missing substrate: a **knowledge graph as interface**. Not just storage for facts, but structured representation of relationships, context, and patterns that both human and AI can read, write, and reason about together. The graph becomes shared cognitive infrastructure—a medium for genuine collaboration that's impossible with vectors alone.
+Cymbiont creates that workspace. A knowledge graph that both you and your AI can read, write, and traverse. Your conversations leave traces that connect to everything else you've explored. Ideas branch into relationships. Patterns emerge across months of work. The graph remembers so you don't have to, and your AI draws from this accumulated understanding automatically, like you would from your own memory.
 
 ## Why Knowledge Graphs
 
-Traditional AI assistance is single-turn pattern matching. You prompt, it predicts. Even with "memory," you're still fundamentally isolated—the AI generates responses based on your input, but you can't see or influence its internal representations. There's no shared workspace, no collaborative knowledge construction.
+Knowledge graphs give you explicit structure. Entities and relationships you can inspect, query, and traverse. Both human and AI build the graph together, contributing different perspectives on the same knowledge. The graph becomes the interface through which different forms of intelligence coordinate.
 
-**Knowledge graphs change the game.** They provide:
-
-- **Explicit structure**: Entities and relationships you can inspect, query, and traverse—not opaque embeddings
-- **Collaborative construction**: Both human and AI build the graph together, contributing different perspectives on the same knowledge
-- **Collective intelligence substrate**: Graph becomes the interface through which different forms of intelligence coordinate
-- **Beyond RAG**: Not just retrieving context, but reasoning over structure—discovering paths, detecting patterns, understanding how concepts relate
+This enables reasoning over structure: discovering paths, detecting patterns, understanding how concepts relate. Your AI can traverse the network of what you've built together, finding connections you didn't know existed, surfacing context that's actually relevant rather than statistically probable.
 
 ## The Vision
 
-Cymbiont is infrastructure for **collective intelligence through shared representation**. The knowledge graph isn't a database for your AI—it's collaborative workspace where human insight and machine computation meet.
+Cymbiont is infrastructure for collective intelligence through shared representation. Your notes, conversations, and documents become a living network. The AI traverses it, extends it, discovers connections within it. You contribute structure and meaning. The AI explores knowledge space in ways you can't. Together you build understanding neither could create alone.
 
-Your notes, conversations, and documents become a living network. AI agents don't just retrieve from it; they traverse it, extend it, discover connections within it. You're not prompting an oracle—you're thinking alongside an agent that can explore knowledge space in ways you can't, while you contribute structure and meaning it can't generate alone.
+This is compound computing: different cognitive substrates coordinating through a shared interface. The knowledge graph becomes the medium where human insight and machine computation meet, each preserving what makes it unique while amplifying what the other contributes.
 
 ## Using Cymbiont
 
 ### With Claude Code
 
-Once installed, Cymbiont integrates seamlessly with your AI assistant. Your agent will automatically build and query the knowledge graph as you work—capturing insights from conversations, documents, and structured data. No manual intervention required.
+Once installed, Cymbiont integrates seamlessly with your AI assistant. Your agent will automatically build and query the knowledge graph as you work, capturing insights from conversations, documents, and structured data. No manual intervention required.
 
 The graph grows organically as you use your assistant, forming connections between concepts, tracking how information evolves over time, and surfacing relevant context when needed.
 
-**Cymbiont is memory augmentation for general-purpose AI**—not just for notes. Use it for:
+Cymbiont is memory augmentation for general-purpose AI. Use it for:
 
 - **Software development**: Code alongside your assistant with full memory of your codebase, past debugging sessions, and architectural decisions
 - **Research**: Literature notes, experimental results, evolving hypotheses
 - **Writing**: Draft iterations, research sources, thematic connections
 - **Custom agents**: Build AI agents with persistent identity and long-term memory
 
-For developers, tools like [code2prompt](https://github.com/raphaelmansuy/code2prompt) generate markdown codebase maps that work seamlessly with Cymbiont—just dump the output in your synced corpus folder and the knowledge graph ingests your entire codebase structure.
+For developers, tools like [code2prompt](https://github.com/raphaelmansuy/code2prompt) generate markdown codebase maps that work seamlessly with Cymbiont. Just dump the output in your synced corpus folder and the knowledge graph ingests your entire codebase structure.
 
 ### Document Sync
 
@@ -70,7 +65,7 @@ Cymbiont works with any editor that uses local markdown files. Choose based on y
 - **VS Code**: Extensive ecosystem, mature tooling
 - **Cursor/Windsurf**: Agentic IDEs with AI-native features
 
-IDEs with integrated terminals let you chat with your assistant and edit documents in the same application—the most convenient setup for most users. Some prefer separate windows for chat and editing, which works just as well.
+IDEs with integrated terminals let you chat with your assistant and edit documents in the same application, the most convenient setup for most users. Some prefer separate windows for chat and editing, which works just as well.
 
 **PKM Apps** (specialized note-taking):
 - **Logseq**: Open-source PKM with graph view and local markdown
@@ -280,7 +275,7 @@ verbosity:
 
 ### Backend Management
 
-The Graphiti FastAPI backend starts automatically when the first Cymbiont instance connects. It continues running even after your AI assistant exits to prevent data loss during asynchronous episode ingestion—you can safely close your AI client without interrupting memory formation.
+The Graphiti FastAPI backend starts automatically when the first Cymbiont instance connects. It continues running even after your AI assistant exits to prevent data loss during asynchronous episode ingestion. You can safely close your AI client without interrupting memory formation.
 
 The backend terminates naturally on system restart. To manually restart for troubleshooting:
 

@@ -159,9 +159,9 @@ def main():
 
         # Add delay AFTER deduplication check to let compaction stabilize
         import time
-        time.sleep(5)
+        time.sleep(1)
         with open(log_file, 'a') as f:
-            f.write("Waited 5 seconds for compaction to stabilize.\n")
+            f.write("Waited 1 second for compaction to stabilize.\n")
 
     try:
         # Copy original transcript

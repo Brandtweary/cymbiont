@@ -56,23 +56,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = GraphitiClient::new(&config.graphiti)?;
     tracing::info!("Graphiti client initialized (base_url: {})", config.graphiti.base_url);
 
-    // TODO: Initialize document sync on startup
-    // TODO: Call POST /sync/start with corpus config when endpoint is ready
-    // TODO: Call POST /sync/trigger for immediate catch-up when endpoint is ready
+    // Initialize document sync on startup
+    match client
+        .start_sync(
+            &config.corpus.path,
+            config.corpus.sync_interval_hours,
+            &config.graphiti.default_group_id,
+        )
+        .await
+    {
+        Ok(msg) => tracing::info!("Document sync started: {}", msg),
+        Err(e) => tracing::error!("Failed to start document sync: {} (continuing without sync)", e),
+    }
 
     // Create Cymbiont MCP service
-    let service = CymbiontService::new(client, config);
+    let service = CymbiontService::new(client.clone(), config);
 
     // Start MCP server with stdio transport
     tracing::info!("Starting MCP server with stdio transport");
     let transport = (stdin(), stdout());
     let server = service.serve(transport).await?;
 
-    // TODO: Graceful shutdown handler
-    // TODO: Call POST /sync/stop when endpoint is ready
-
     // Wait for server shutdown
     let _quit_reason = server.waiting().await?;
+
+    // Graceful shutdown: stop document sync
+    tracing::info!("Shutting down document sync...");
+    match client.stop_sync().await {
+        Ok(msg) => tracing::info!("{}", msg),
+        Err(e) => tracing::error!("Failed to stop document sync: {}", e),
+    }
 
     // Check for excessive logging and report
     if let Some(report) = verbosity_layer.check_and_report() {

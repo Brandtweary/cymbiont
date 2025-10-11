@@ -14,6 +14,12 @@ cargo test                       # Run test suite
 RUST_LOG=info cargo run          # Run with logging
 ```
 
+## Development Workflow
+
+**Editing Cymbiont**: After changes, run `cargo build` (debug build), then wait for session reload to pick up new binary.
+
+**Editing Graphiti**: Kill the Graphiti server process first (`pkill -f "uvicorn graph_service.main:app"`). Cymbiont will auto-launch fresh instance on next connection.
+
 ## Core Directories
 - **src/**: Cymbiont MCP server implementation
 - **logs/**: Log directory

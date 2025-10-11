@@ -13,16 +13,14 @@ use rmcp::{
 #[derive(Clone)]
 pub struct CymbiontService {
     client: GraphitiClient,
-    config: Config,
     tool_router: ToolRouter<Self>,
 }
 
 impl CymbiontService {
     /// Create new service
-    pub fn new(client: GraphitiClient, config: Config) -> Self {
+    pub fn new(client: GraphitiClient, _config: Config) -> Self {
         Self {
             client,
-            config,
             tool_router: Self::tool_router(),
         }
     }
@@ -30,44 +28,19 @@ impl CymbiontService {
 
 #[tool_router]
 impl CymbiontService {
-    /// Add memory episode to knowledge graph (STUBBED)
-    /// TODO: Requires POST /episodes endpoint in Graphiti FastAPI
-    #[tool(name = "add_memory", description = "Add a new memory episode to the knowledge graph (NOT YET IMPLEMENTED)")]
+    /// Add memory episode to knowledge graph
+    #[tool(name = "add_memory", description = "Add a new memory episode to the knowledge graph")]
     async fn add_memory(&self, params: Parameters<AddMemoryRequest>) -> Result<String, String> {
         let req = &params.0;
-        let group_id = req
-            .group_id
-            .as_deref()
-            .or(Some(self.config.graphiti.default_group_id.as_str()));
 
         self.client
             .add_episode(
                 &req.name,
                 &req.episode_body,
-                group_id,
-                req.source.as_deref(),
                 req.source_description.as_deref(),
             )
             .await
             .map_err(|e| format!("Graphiti request failed: {}", e))
-    }
-
-    /// Search for facts (relationships) in knowledge graph
-    #[tool(name = "search_facts", description = "Search for facts (relationships between entities) in the knowledge graph")]
-    async fn search_facts(
-        &self,
-        params: Parameters<SearchFactsRequest>,
-    ) -> Result<String, String> {
-        let req = &params.0;
-        let max_results = req.max_results.or(Some(10));
-
-        let results = self
-            .client
-            .search_facts(&req.query, req.group_ids.clone(), max_results)
-            .await
-            .map_err(|e| format!("Graphiti request failed: {}", e))?;
-
-        Ok(serde_json::to_string_pretty(&results).unwrap_or_default())
     }
 
     /// Get recent episodes from knowledge graph
@@ -77,16 +50,11 @@ impl CymbiontService {
         params: Parameters<GetEpisodesRequest>,
     ) -> Result<String, String> {
         let req = &params.0;
-        let group_id = req
-            .group_id
-            .as_deref()
-            .unwrap_or(&self.config.graphiti.default_group_id);
-
-        let last_n = req.last_n.or(Some(10));
+        let last_n = req.last_n.unwrap_or(10);
 
         let episodes = self
             .client
-            .get_episodes(group_id, last_n)
+            .get_episodes("default", Some(last_n))
             .await
             .map_err(|e| format!("Graphiti request failed: {}", e))?;
 
@@ -106,28 +74,52 @@ impl CymbiontService {
             .map_err(|e| format!("Graphiti request failed: {}", e))
     }
 
-    // === STUBBED TOOLS ===
-
-    /// Search for both nodes and facts (STUBBED)
-    /// TODO: Requires POST /search/nodes endpoint in Graphiti FastAPI
-    /// TODO: Should call both node and fact search in parallel, merge results
-    #[tool(name = "search_context", description = "Search for both nodes and facts in the knowledge graph (NOT YET IMPLEMENTED)")]
-    async fn search_context(
-        &self,
-        _params: Parameters<SearchContextRequest>,
-    ) -> Result<String, String> {
-        Err("search_context not yet implemented - requires POST /search/nodes endpoint in Graphiti FastAPI".to_string())
-    }
-
-    /// Trigger manual document sync (STUBBED)
-    /// TODO: Requires POST /sync/start, /sync/stop, /sync/trigger endpoints in Graphiti FastAPI
-    /// TODO: Cymbiont should call /sync/start on startup, /sync/trigger here, /sync/stop on shutdown
-    #[tool(name = "sync_documents", description = "Trigger manual document synchronization (NOT YET IMPLEMENTED)")]
+    /// Trigger manual document synchronization
+    #[tool(name = "sync_documents", description = "Trigger manual document synchronization for all corpus files")]
     async fn sync_documents(
         &self,
-        _params: Parameters<SyncDocumentsRequest>,
+        params: Parameters<SyncDocumentsRequest>,
     ) -> Result<String, String> {
-        Err("sync_documents not yet implemented - requires document sync lifecycle endpoints in Graphiti FastAPI".to_string())
+        let req = &params.0;
+        let async_mode = req.async_mode.unwrap_or(true);
+
+        let result = self.client
+            .trigger_sync(async_mode)
+            .await
+            .map_err(|e| format!("Graphiti request failed: {}", e))?;
+
+        Ok(format!("{} (async: {})", result, async_mode))
+    }
+
+    /// Search for both nodes and facts in parallel
+    #[tool(name = "search_context", description = "Search for both nodes and facts in the knowledge graph")]
+    async fn search_context(
+        &self,
+        params: Parameters<SearchContextRequest>,
+    ) -> Result<String, String> {
+        let req = &params.0;
+        let max_results = req.max_results.unwrap_or(5);
+        let max_facts = max_results * 2; // 1:2 ratio - facts are more information-dense
+
+        // Run both searches in parallel (group_ids=None searches all groups, but "default" is the only group used)
+        let (nodes_result, facts_result) = tokio::join!(
+            self.client
+                .search_nodes(&req.query, None, Some(max_results)),
+            self.client
+                .search_facts(&req.query, None, Some(max_facts))
+        );
+
+        // Handle errors
+        let nodes = nodes_result.map_err(|e| format!("Node search failed: {}", e))?;
+        let facts = facts_result.map_err(|e| format!("Fact search failed: {}", e))?;
+
+        // Merge results into combined JSON
+        let combined = serde_json::json!({
+            "nodes": nodes["nodes"],
+            "facts": facts["facts"]
+        });
+
+        Ok(serde_json::to_string_pretty(&combined).unwrap_or_default())
     }
 }
 

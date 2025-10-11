@@ -121,12 +121,9 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ```bash
 # Clone Graphiti fork
 git clone https://github.com/Brandtweary/graphiti-cymbiont.git
-cd graphiti-cymbiont/server
+cd graphiti-cymbiont
 
-# Install dependencies
-uv sync
-
-# Configure
+# Create .env in root directory (required for editable install)
 cat > .env << 'EOF'
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
@@ -137,6 +134,10 @@ SMALL_MODEL_NAME=gpt-4o-mini
 SEMAPHORE_LIMIT=10
 LLM_TEMPERATURE=0.0
 EOF
+
+# Install server dependencies with editable graphiti-core
+cd server
+uv sync
 ```
 
 **4. Build Cymbiont**

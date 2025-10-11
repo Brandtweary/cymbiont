@@ -56,7 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = GraphitiClient::new(&config.graphiti)?;
     tracing::info!("Graphiti client initialized (base_url: {})", config.graphiti.base_url);
 
-    // Initialize document sync on startup
+    // Initialize document sync watcher (hourly sync)
     match client
         .start_sync(
             &config.corpus.path,
@@ -65,8 +65,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await
     {
-        Ok(msg) => tracing::info!("Document sync started: {}", msg),
-        Err(e) => tracing::error!("Failed to start document sync: {} (continuing without sync)", e),
+        Ok(msg) => tracing::info!("Document sync watcher started: {}", msg),
+        Err(e) => tracing::error!("Failed to start document sync watcher: {} (continuing without sync)", e),
+    }
+
+    // Trigger immediate sync on startup
+    match client.trigger_sync().await {
+        Ok(msg) => tracing::info!("Initial document sync triggered: {}", msg),
+        Err(e) => tracing::error!("Failed to trigger initial sync: {}", e),
     }
 
     // Create Cymbiont MCP service

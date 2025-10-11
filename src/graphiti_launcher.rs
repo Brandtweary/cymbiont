@@ -28,6 +28,8 @@ pub async fn is_graphiti_running(base_url: &str) -> bool {
 /// - Working directory set to server_path
 /// - Using uvicorn ASGI server to run the FastAPI app
 ///
+/// Graphiti logs are configured via its own .env file (log_file setting).
+///
 /// Note: This is an intentional "resource leak" - the process will continue
 /// running after Cymbiont exits, ensuring no data loss during episode ingestion.
 pub async fn launch_graphiti(server_path: &str) -> Result<()> {

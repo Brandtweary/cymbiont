@@ -285,13 +285,12 @@ impl GraphitiClient {
             .to_string())
     }
 
-    /// Trigger manual document sync
-    /// POST /sync/trigger?async_mode={async_mode}
+    /// Trigger manual document sync (always async)
+    /// POST /sync/trigger
     ///
-    /// If async_mode=true (default), returns immediately.
-    /// If async_mode=false, waits for sync and returns detailed stats.
-    pub async fn trigger_sync(&self, async_mode: bool) -> Result<String, GraphitiError> {
-        let url = format!("{}/sync/trigger?async_mode={}", self.base_url, async_mode);
+    /// Triggers document sync in background and returns immediately.
+    pub async fn trigger_sync(&self) -> Result<String, GraphitiError> {
+        let url = format!("{}/sync/trigger", self.base_url);
 
         let response = self
             .client
@@ -308,25 +307,7 @@ impl GraphitiClient {
             )));
         }
 
-        if async_mode {
-            // Async mode - just return simple message
-            let _ = response.text().await;
-            Ok("Document sync started in background".to_string())
-        } else {
-            // Sync mode - parse and format stats
-            let result: Value = response
-                .json()
-                .await
-                .map_err(|e| GraphitiError::InvalidResponse(e.to_string()))?;
-
-            let synced = result["synced"].as_u64().unwrap_or(0);
-            let skipped = result["skipped"].as_u64().unwrap_or(0);
-            let errors = result["errors"].as_array().map(|a| a.len()).unwrap_or(0);
-
-            Ok(format!(
-                "Sync complete: {} synced, {} skipped, {} errors",
-                synced, skipped, errors
-            ))
-        }
+        let _ = response.text().await;
+        Ok("Document sync started in background".to_string())
     }
 }

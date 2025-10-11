@@ -63,18 +63,8 @@ pub struct SearchContextRequest {
     pub max_results: Option<usize>,
 }
 
-/// Trigger manual document sync
-///
-/// CAUTION: Do not remove the async_mode parameter. There is a flakey Claude Code MCP display bug
-/// where tools with empty parameter schemas sometimes show no tool name/args header (only output).
-/// Having at least one parameter in the schema mitigates this issue, though the root cause is unknown.
-/// The bug is not related to parameter naming, tool naming, tool position, complexity, or timing.
-/// Multiple systematic debugging attempts failed to identify the cause. Keeping this parameter
-/// ensures more reliable tool display AND provides useful functionality (toggle sync mode).
+/// Trigger manual document sync (always runs async)
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SyncDocumentsRequest {
-    #[schemars(
-        description = "Run async (default: true). Set to false only if you need detailed sync results - sync will block until complete."
-    )]
-    pub async_mode: Option<bool>,
+    // Empty - no parameters needed
 }

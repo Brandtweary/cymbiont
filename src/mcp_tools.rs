@@ -78,17 +78,12 @@ impl CymbiontService {
     #[tool(name = "sync_documents", description = "Trigger manual document synchronization for all corpus files")]
     async fn sync_documents(
         &self,
-        params: Parameters<SyncDocumentsRequest>,
+        _params: Parameters<SyncDocumentsRequest>,
     ) -> Result<String, String> {
-        let req = &params.0;
-        let async_mode = req.async_mode.unwrap_or(true);
-
-        let result = self.client
-            .trigger_sync(async_mode)
+        self.client
+            .trigger_sync()
             .await
-            .map_err(|e| format!("Graphiti request failed: {}", e))?;
-
-        Ok(format!("{} (async: {})", result, async_mode))
+            .map_err(|e| format!("Graphiti request failed: {}", e))
     }
 
     /// Search for both nodes and facts in parallel

@@ -157,7 +157,106 @@ claude mcp add cymbiont --transport stdio -- /path/to/cymbiont/target/release/cy
 
 For other MCP-compatible AI assistants: Configure stdio transport to launch the `cymbiont` binary.
 
-That's it! The knowledge graph backend starts automatically when your AI assistant connects. You can now use memory tools in your conversations.
+**6. Install Claude Code Hooks (Required)**
+
+The hooks enable automatic context injection and memory formation - without them, you'd need to manually query and save to the graph every time.
+
+**Option 1: Point to cymbiont installation (Faster)**
+
+```bash
+# Find your cymbiont installation (if you don't remember where you installed it)
+find ~ -type d -name "cymbiont" -path "*/cymbiont" 2>/dev/null | grep -v node_modules
+
+# Set CYMBIONT_PATH to the path shown above
+CYMBIONT_PATH="/full/path/to/cymbiont"
+
+# Create settings backup
+cp ~/.claude/settings.json ~/.claude/settings.json.backup
+
+# Add hooks to your Claude Code settings
+cat > /tmp/hook_config.json << EOF
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CYMBIONT_PATH}/hooks/inject_kg_context.py"
+          },
+          {
+            "type": "command",
+            "command": "python3 ${CYMBIONT_PATH}/hooks/monitoring_agent.py"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CYMBIONT_PATH}/hooks/monitoring_agent.py --force"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CYMBIONT_PATH}/hooks/monitoring_agent.py --force"
+          }
+        ]
+      }
+    ]
+  }
+}
+EOF
+
+# Merge with existing settings (requires jq)
+jq -s '.[0] * .[1]' ~/.claude/settings.json /tmp/hook_config.json > ~/.claude/settings.json.new
+mv ~/.claude/settings.json.new ~/.claude/settings.json
+rm /tmp/hook_config.json
+
+echo "Hooks installed! Backup saved to ~/.claude/settings.json.backup"
+```
+
+**Option 2: Copy hooks to ~/.claude/ (Recommended)**
+
+Copy hooks to your own directory for customization:
+
+```bash
+# Find your cymbiont installation
+find ~ -type d -name "cymbiont" -path "*/cymbiont" 2>/dev/null | grep -v node_modules
+
+# Copy hooks (replace /full/path/to/cymbiont with path from above)
+mkdir -p ~/.claude/hooks
+cp /full/path/to/cymbiont/hooks/*.py ~/.claude/hooks/
+cp /full/path/to/cymbiont/hooks/monitoring_protocol.txt ~/.claude/hooks/
+
+# Install hooks using ~/.claude/hooks/ path
+CYMBIONT_PATH="$HOME/.claude"
+
+# Run the same installation commands as Option 1, using $CYMBIONT_PATH
+```
+
+Then edit the files in `~/.claude/hooks/` as needed.
+
+**If you don't have jq installed**, manually edit `~/.claude/settings.json` and add the hooks block shown above.
+
+That's it! Restart Claude Code and the automated memory system is active.
+
+---
+
+## How It Works
+
+**Automatic Context**: Every message triggers parallel knowledge graph queries (your message + agent's previous response). Relevant entities and facts (~3 nodes + 6 facts) inject silently into the agent's context.
+
+**Automatic Memory**: Every 10 messages, a background agent analyzes the conversation and adds salient information to the graph. Monitoring logs go to `monitoring_logs/timestamped/YYYYMMDD_HHMMSS/` with a `latest/` symlink.
+
+**Customization**: Copy hooks to `~/.claude/hooks/` if you want to modify behavior, then update your settings to point there.
 
 ---
 
@@ -306,9 +405,9 @@ Logs written to `logs/timestamped/cymbiont_mcp_YYYYMMDD_HHMMSS.log` with `cymbio
 
 ## Upcoming Features
 
-- **Hook-based automation**: Automatic episode creation
-- **Enhanced search**: Personalized PageRank and learned edge weights
-- **Graph maintenance**: Orphan cleanup and semantic drift detection
+- **Enhanced search**: Personalized PageRank and learned edge weights via GNN
+- **Graph maintenance**: Automated orphan cleanup and semantic drift detection
+- **Chunk retrieval**: Access original document text for precise citations
 
 ## Resources
 

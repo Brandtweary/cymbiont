@@ -1,0 +1,351 @@
+#!/usr/bin/env python3
+"""
+Background worker for monitoring agent.
+This runs fully detached from the main conversation.
+"""
+
+import json
+import sys
+import subprocess
+from datetime import datetime
+from pathlib import Path
+
+
+def extract_text_content(content) -> str:
+    """Extract text from message content (handles both string and list formats)."""
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        text_parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get('type') == 'text':
+                text_parts.append(block.get('text', ''))
+        text = '\n'.join(text_parts)
+    else:
+        text = str(content)
+
+    # Remove KG context injection (everything from <user-prompt-submit-hook> to </user-prompt-submit-hook>)
+    import re
+    text = re.sub(r'<user-prompt-submit-hook>.*?</user-prompt-submit-hook>', '', text, flags=re.DOTALL)
+
+    return text.strip()
+
+
+def extract_memory_additions(jsonl_path):
+    """Extract all add_memory tool calls from monitoring agent transcript.
+
+    Args:
+        jsonl_path: Path to monitoring_agent.jsonl file
+
+    Returns:
+        List of dicts with keys: name, episode_body, source_description (optional)
+    """
+    additions = []
+
+    with open(jsonl_path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            # Look for assistant messages with content arrays
+            if msg.get('type') == 'assistant':
+                message_data = msg.get('message', {})
+                content = message_data.get('content', [])
+
+                if not isinstance(content, list):
+                    continue
+
+                # Find tool_use blocks
+                for block in content:
+                    if (isinstance(block, dict) and
+                        block.get('type') == 'tool_use' and
+                        block.get('name') == 'mcp__cymbiont__add_memory'):
+
+                        tool_input = block.get('input', {})
+                        additions.append({
+                            'name': tool_input.get('name', '(unnamed)'),
+                            'episode_body': tool_input.get('episode_body', ''),
+                            'source_description': tool_input.get('source_description', '')
+                        })
+
+    return additions
+
+
+def format_memory_additions_markdown(additions, run_timestamp):
+    """Format memory additions as markdown.
+
+    Args:
+        additions: List of memory addition dicts
+        run_timestamp: Timestamp string for the run
+
+    Returns:
+        Markdown-formatted string
+    """
+    lines = [
+        "# Monitoring Agent Memory Additions",
+        f"Run: {run_timestamp}",
+        ""
+    ]
+
+    if not additions:
+        lines.append("*No memory additions found.*")
+        return '\n'.join(lines)
+
+    for i, addition in enumerate(additions, 1):
+        lines.append(f"## Episode {i}: {addition['name']}")
+
+        # Only show source_description if it exists
+        if addition['source_description']:
+            lines.extend([
+                f"**Description**: {addition['source_description']}",
+                ""
+            ])
+
+        lines.extend([
+            addition['episode_body'],
+            "",
+            "---",
+            ""
+        ])
+
+    return '\n'.join(lines)
+
+
+def main():
+    """Main worker entry point."""
+    if len(sys.argv) != 5:
+        sys.stderr.write("Usage: monitoring_worker.py <transcript_path> <monitoring_log_dir> <cached_message> <trigger_type>\n")
+        sys.exit(1)
+
+    transcript_path = sys.argv[1]
+    monitoring_log_dir = Path(sys.argv[2])
+    cached_message = sys.argv[3]  # Anchor message from 10 messages ago (or empty string)
+    trigger_type = sys.argv[4]  # "force" or "normal"
+    log_file = monitoring_log_dir / "monitoring.log"
+
+    # Log trigger type
+    with open(log_file, 'w') as f:
+        f.write(f"Starting monitoring worker (trigger: {trigger_type})\n")
+
+    # Deduplication for force triggers (PreCompact/SessionEnd)
+    if trigger_type == "force":
+        # Check for other recent force runs within 5 seconds
+        base_dir = monitoring_log_dir.parent  # timestamped/ directory
+        current_timestamp = int(monitoring_log_dir.name)  # YYYYMMDD_HHMMSS as int
+
+        for other_dir in base_dir.iterdir():
+            if other_dir == monitoring_log_dir or not other_dir.is_dir():
+                continue
+
+            try:
+                other_timestamp = int(other_dir.name)
+                time_diff = abs(current_timestamp - other_timestamp)
+
+                # Check if within 5 seconds (comparing HHMMSS format)
+                if time_diff <= 5:
+                    other_log = other_dir / "monitoring.log"
+                    if other_log.exists() and "trigger: force" in other_log.read_text():
+                        with open(log_file, 'a') as f:
+                            f.write(f"Deduplicating - found another force worker at {other_dir.name}. Exiting.\n")
+                        return
+            except (ValueError, TypeError):
+                continue  # Skip malformed directory names
+
+        # Add delay AFTER deduplication check to let compaction stabilize
+        import time
+        time.sleep(5)
+        with open(log_file, 'a') as f:
+            f.write("Waited 5 seconds for compaction to stabilize.\n")
+
+    try:
+        # Copy original transcript
+        import shutil
+        shutil.copy(transcript_path, monitoring_log_dir / "original_conversation.jsonl")
+
+        # Step 1: Filter to user/assistant messages (excluding non-conversational)
+        messages = []
+        with open(transcript_path) as f:
+            for line in f:
+                msg = json.loads(line)
+                if msg['type'] in ['user', 'assistant']:
+                    messages.append(msg)
+
+        # Filter out non-conversational user messages
+        filtered = []
+        for msg in messages:
+            if msg['type'] == 'user':
+                content = msg['message']['content']
+
+                # Skip meta messages
+                if isinstance(content, str):
+                    if any(marker in content for marker in ['<command-name>', '<local-command', '[Request interrupted']):
+                        continue
+
+                # Skip orphaned tool results
+                if isinstance(content, list):
+                    all_tool_results = all(
+                        isinstance(block, dict) and block.get('type') == 'tool_result'
+                        for block in content
+                    )
+                    if all_tool_results:
+                        continue
+
+                    # Skip messages with no real text content
+                    has_text = any(
+                        isinstance(block, dict) and block.get('type') == 'text' and block.get('text', '').strip()
+                        for block in content
+                    )
+                    if not has_text:
+                        continue
+
+                filtered.append(msg)
+            else:
+                filtered.append(msg)
+
+        # Determine message window based on cached anchor
+        if cached_message and cached_message.strip():
+            # Search in reverse for cached message
+            anchor_index = None
+            for i in range(len(filtered) - 1, -1, -1):
+                if filtered[i]['type'] == 'user':
+                    msg_text = extract_text_content(filtered[i]['message']['content'])
+                    if cached_message in msg_text:  # Use substring match for robustness
+                        anchor_index = i
+                        break
+
+            if anchor_index is not None:
+                # Found anchor - take all messages from anchor (inclusive) to end
+                messages = filtered[anchor_index:]
+            else:
+                # Anchor not found - fall back to last 10
+                with open(log_file, 'a') as f:
+                    f.write(f"WARNING: Cached anchor not found, using last 10 messages.\n")
+                messages = filtered[-10:]
+        else:
+            # No cached message (first run) - take last 10 filtered messages
+            messages = filtered[-10:]
+
+        # Strip trailing user messages (unless force trigger - then transcript will be lost, keep everything)
+        if trigger_type != "force":
+            while messages and messages[-1]['type'] == 'user':
+                messages.pop()
+
+        if not messages:
+            with open(log_file, 'a') as f:
+                f.write("No messages to analyze after filtering and stripping trailing user messages.\n")
+            return
+
+        # Format as text transcript for system prompt (filter out empty messages)
+        transcript_text = "=== CONVERSATION TRANSCRIPT TO ANALYZE ===\n\n"
+        non_empty_count = 0
+        for i, msg in enumerate(messages):
+            role = msg['type'].upper()
+            content = extract_text_content(msg['message']['content'])
+
+            # Skip empty messages (tool-only messages with no text)
+            if not content:
+                continue
+
+            transcript_text += f"[{role}]:\n{content}\n\n"
+            non_empty_count += 1
+
+        transcript_text += "=== END OF TRANSCRIPT ===\n"
+
+        if non_empty_count == 0:
+            with open(log_file, 'w') as f:
+                f.write("All messages were empty after filtering. Skipping monitoring.\n")
+            return
+
+        # Run monitoring agent with transcript as system prompt context
+
+        monitoring_transcript = monitoring_log_dir / "monitoring_agent.jsonl"
+        # Path to monitoring_protocol.txt in same directory as this script
+        protocol_path = Path(__file__).parent / "monitoring_protocol.txt"
+
+        # Combine protocol + transcript as system prompt
+        system_prompt = protocol_path.read_text() + "\n\n" + transcript_text
+
+        result = subprocess.run(
+            [
+                "claude",
+                "-p", "ultrathink: Examine the conversation transcript provided in the system prompt and add salient information to the knowledge graph.",
+                "--allowedTools",
+                "mcp__cymbiont__search_context",
+                "mcp__cymbiont__add_memory",
+                "Write",
+                "--output-format=stream-json",
+                "--settings", '{"hooks": {"Stop": [], "UserPromptSubmit": []}}',
+                "--append-system-prompt", system_prompt,
+                "--verbose",
+                "--print"
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+
+        # Save the monitoring agent output
+        with open(monitoring_transcript, 'w') as f:
+            f.write(result.stdout)
+
+        # Parse monitoring transcript for memory additions and save as markdown
+        try:
+            # Extract run timestamp from directory name (format: YYYYMMDD_HHMMSS)
+            dir_name = monitoring_log_dir.name
+            if len(dir_name) == 15 and '_' in dir_name:
+                date_part, time_part = dir_name.split('_')
+                run_timestamp = f"{date_part[:4]}-{date_part[4:6]}-{date_part[6:8]} {time_part[:2]}:{time_part[2:4]}:{time_part[4:6]}"
+            else:
+                run_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+            # Extract and format memory additions
+            additions = extract_memory_additions(monitoring_transcript)
+            markdown = format_memory_additions_markdown(additions, run_timestamp)
+
+            # Write to memory_additions.md
+            memory_additions_path = monitoring_log_dir / "memory_additions.md"
+            memory_additions_path.write_text(markdown)
+        except Exception as e:
+            # Log parsing errors but don't fail the whole worker
+            with open(log_file, 'a') as f:
+                f.write(f"\nWarning: Failed to parse memory additions: {e}\n")
+
+        # Update symlink to point to this latest run
+        try:
+            import os
+            symlink_path = Path("/home/brandt/projects/hector/monitoring_logs/latest")
+            # Remove existing symlink if present
+            if symlink_path.exists() or symlink_path.is_symlink():
+                symlink_path.unlink()
+            # Create new symlink pointing to this run (relative path from monitoring_logs/)
+            os.symlink(f"timestamped/{monitoring_log_dir.name}", symlink_path)
+        except Exception as e:
+            # Don't fail if symlink update fails
+            with open(log_file, 'a') as f:
+                f.write(f"\nWarning: Failed to update symlink: {e}\n")
+
+        # Only log errors or warnings
+        if result.returncode != 0 or result.stderr:
+            with open(log_file, 'w') as f:
+                f.write(f"Exit code: {result.returncode}\n")
+                if result.stderr:
+                    f.write(f"\n--- STDERR ---\n{result.stderr}\n")
+
+    except Exception as e:
+        try:
+            with open(log_file, 'a') as f:
+                import traceback
+                f.write(f"Worker error: {e}\n")
+                traceback.print_exc(file=f)
+        except:
+            pass  # If we can't even write errors, just exit
+
+
+if __name__ == "__main__":
+    main()

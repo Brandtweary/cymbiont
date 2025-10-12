@@ -43,6 +43,8 @@ RUST_LOG=info cargo run          # Run with logging
 - Config file is optional - all settings have sensible defaults
 - Don't inline imports (except for temp debugging)
 - Comments are welcome for complex logic
+- Hooks: Read log path from config.yaml (`logging.directory`), default to `logs/` if not configured
+
 
 ### Log Level Guidelines
 - **INFO**: Use sparingly, only for messages you would want to see on every single run

@@ -7,8 +7,26 @@ This runs fully detached from the main conversation.
 import json
 import sys
 import subprocess
+import yaml
 from datetime import datetime
 from pathlib import Path
+
+
+def get_log_directory() -> Path:
+    """Get log directory from config.yaml, default to logs/ if not found."""
+    script_dir = Path(__file__).parent
+    config_path = script_dir.parent / "config.yaml"
+
+    try:
+        if config_path.exists():
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f)
+                if config and 'logging' in config and 'directory' in config['logging']:
+                    return Path(config['logging']['directory'])
+    except Exception:
+        pass
+
+    return script_dir.parent / "logs"
 
 
 def extract_text_content(content) -> str:
@@ -319,11 +337,12 @@ def main():
         # Update symlink to point to this latest run
         try:
             import os
-            symlink_path = Path("/home/brandt/projects/hector/monitoring_logs/latest")
+            log_base = get_log_directory()
+            symlink_path = log_base / "monitoring_logs" / "latest"
             # Remove existing symlink if present
             if symlink_path.exists() or symlink_path.is_symlink():
                 symlink_path.unlink()
-            # Create new symlink pointing to this run (relative path from monitoring_logs/)
+            # Create new symlink pointing to this run (relative path from monitoring_logs directory)
             os.symlink(f"timestamped/{monitoring_log_dir.name}", symlink_path)
         except Exception as e:
             # Don't fail if symlink update fails

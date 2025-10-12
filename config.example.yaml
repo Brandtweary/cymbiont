@@ -11,14 +11,20 @@ graphiti:
   # Default group_id for episodes (allows shared memory across sessions)
   default_group_id: "default"
 
+  # REQUIRED: Absolute path to graphiti-cymbiont/server directory (where main.py lives)
+  # Used to auto-launch Graphiti backend if not already running
+  # Example: "/absolute/path/to/graphiti-cymbiont/server"
+  server_path: ""
+
 similarity:
   # Minimum similarity score for search results (0.0-1.0)
   # Passed to Graphiti for search filtering
   min_score: 0.7
 
 corpus:
-  # Document sync directory (markdown files auto-synced to knowledge graph)
-  path: "/home/brandt/projects/hector/corpus"
+  # REQUIRED: Absolute path to document sync directory (markdown files auto-synced to knowledge graph)
+  # Example: "/absolute/path/to/your/corpus"
+  path: ""
 
   # Sync interval in hours (hourly batch processing)
   sync_interval_hours: 1.0
@@ -33,9 +39,10 @@ logging:
   # IMPORTANT: Use "file" for MCP mode (Claude Code treats stderr as errors)
   output: "file"
 
-  # Log directory (logs are named cymbiont_mcp.log with timestamped backups)
-  # MUST be absolute path (validated at startup)
-  log_directory: "/home/brandt/projects/hector/cymbiont/logs"
+  # Log directory (can be relative to binary or absolute)
+  # Default: "logs" (relative to cymbiont binary location)
+  # Example absolute: "/absolute/path/to/logs"
+  log_directory: "logs"
 
   # Maximum number of log files to retain
   max_files: 10

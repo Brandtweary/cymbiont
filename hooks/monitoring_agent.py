@@ -12,8 +12,26 @@ import json
 import sys
 import subprocess
 import os
+import yaml
 from datetime import datetime
 from pathlib import Path
+
+
+def get_log_directory() -> Path:
+    """Get log directory from config.yaml, default to logs/ if not found."""
+    script_dir = Path(__file__).parent
+    config_path = script_dir.parent / "config.yaml"
+
+    try:
+        if config_path.exists():
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f)
+                if config and 'logging' in config and 'directory' in config['logging']:
+                    return Path(config['logging']['directory'])
+    except Exception:
+        pass
+
+    return script_dir.parent / "logs"
 
 
 def main():
@@ -25,8 +43,9 @@ def main():
         # Read hook input from stdin
         input_data = json.load(sys.stdin)
 
-        # State files
-        state_dir = Path("/home/brandt/projects/hector/monitoring_logs")
+        # State files in monitoring_logs subdirectory
+        log_base = get_log_directory()
+        state_dir = log_base / "monitoring_logs"
         state_dir.mkdir(parents=True, exist_ok=True)
         counter_file = state_dir / "message_count.txt"
         cache_file = state_dir / "last_cached_message.txt"
@@ -38,8 +57,8 @@ def main():
 
             # Determine trigger source from hook type in input data
             # Log available keys for debugging
-            debug_log = state_dir / "hook_debug.log"
-            with open(debug_log, 'a') as f:
+            debug_log = state_dir / "monitoring_agent.log"
+            with open(debug_log, 'w') as f:
                 f.write(f"{datetime.now()}: Force trigger - available keys: {list(input_data.keys())}\n")
 
             # Get hook event name from input data
@@ -156,7 +175,8 @@ def main():
 
         # Create timestamped log directory
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        monitoring_log_dir = Path(f"/home/brandt/projects/hector/monitoring_logs/timestamped/{timestamp}")
+        log_base = get_log_directory()
+        monitoring_log_dir = log_base / "monitoring_logs" / "timestamped" / timestamp
         monitoring_log_dir.mkdir(parents=True, exist_ok=True)
 
         # Spawn fully detached background worker with cached message
@@ -176,7 +196,8 @@ def main():
         # Log error but don't block - no console output
         try:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            error_log = Path(f"/home/brandt/projects/hector/monitoring_logs/timestamped/error_{timestamp}.log")
+            log_base = get_log_directory()
+            error_log = log_base / "monitoring_logs" / "timestamped" / f"error_{timestamp}.log"
             error_log.parent.mkdir(parents=True, exist_ok=True)
             with open(error_log, 'w') as f:
                 import traceback

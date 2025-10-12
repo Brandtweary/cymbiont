@@ -2,6 +2,11 @@
 /target
 /Cargo.lock
 
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+
 # Configuration (keep example)
 /config.yaml
 CLAUDE.local.md
@@ -10,6 +15,8 @@ CLAUDE.local.md
 *.log
 logs/timestamped/*
 !logs/timestamped/.gitkeep
+logs/monitoring_logs/*
+!logs/monitoring_logs/.gitkeep
 logs/*_latest.log
 !logs/.gitkeep
 

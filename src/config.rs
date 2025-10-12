@@ -83,7 +83,7 @@ impl Default for GraphitiConfig {
             base_url: "http://localhost:8000".to_string(),
             timeout_secs: 30,
             default_group_id: "default".to_string(),
-            server_path: "/home/brandt/projects/hector/graphiti-cymbiont/server".to_string(),
+            server_path: String::new(), // REQUIRED: Must be configured in config.yaml
         }
     }
 }
@@ -97,7 +97,7 @@ impl Default for SimilarityConfig {
 impl Default for CorpusConfig {
     fn default() -> Self {
         Self {
-            path: "/home/brandt/projects/hector/corpus".to_string(),
+            path: String::new(), // REQUIRED: Must be configured in config.yaml
             sync_interval_hours: 1.0,
         }
     }
@@ -108,7 +108,7 @@ impl Default for LoggingConfig {
         Self {
             level: "info".to_string(),
             output: "file".to_string(),
-            log_directory: "/home/brandt/projects/hector/cymbiont/logs".to_string(),
+            log_directory: "logs".to_string(), // Relative to binary location
             max_files: 10,
             max_size_mb: 5,
             console_output: false, // CRITICAL for MCP mode
@@ -150,19 +150,31 @@ impl Config {
         }
     }
 
-    /// Validate that all paths are absolute
-    /// This is critical for MCP mode where the working directory is unpredictable
+    /// Validate and normalize paths
+    /// - log_directory: Can be relative (resolved from binary location) or absolute
+    /// - corpus.path: REQUIRED, must be absolute
+    /// - server_path: REQUIRED, must be absolute
     fn validate_paths(&mut self) -> Result<(), ConfigError> {
-        // Check log_directory
+        // Resolve log_directory relative to binary location if not absolute
         let log_path = Path::new(&self.logging.log_directory);
         if !log_path.is_absolute() {
-            return Err(ConfigError::Validation(format!(
-                "log_directory must be an absolute path, got: {}",
-                self.logging.log_directory
-            )));
+            // Get binary directory
+            let exe_path = std::env::current_exe()
+                .map_err(|e| ConfigError::Validation(format!("Failed to get binary path: {}", e)))?;
+            let exe_dir = exe_path.parent()
+                .ok_or_else(|| ConfigError::Validation("Binary has no parent directory".to_string()))?;
+
+            // Resolve relative path from binary location
+            let resolved = exe_dir.join(&self.logging.log_directory);
+            self.logging.log_directory = resolved.to_string_lossy().to_string();
         }
 
-        // Check corpus path
+        // Corpus path is REQUIRED and must be absolute
+        if self.corpus.path.is_empty() {
+            return Err(ConfigError::Validation(
+                "corpus.path is required - please configure it in config.yaml".to_string()
+            ));
+        }
         let corpus_path = Path::new(&self.corpus.path);
         if !corpus_path.is_absolute() {
             return Err(ConfigError::Validation(format!(
@@ -171,7 +183,12 @@ impl Config {
             )));
         }
 
-        // Check graphiti server path
+        // Graphiti server path is REQUIRED and must be absolute
+        if self.graphiti.server_path.is_empty() {
+            return Err(ConfigError::Validation(
+                "graphiti.server_path is required - please configure it in config.yaml".to_string()
+            ));
+        }
         let server_path = Path::new(&self.graphiti.server_path);
         if !server_path.is_absolute() {
             return Err(ConfigError::Validation(format!(

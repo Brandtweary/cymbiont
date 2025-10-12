@@ -1,5 +1,6 @@
 //! Configuration system
 //! Loads config from config.yaml or falls back to defaults
+//! Test comment for post-commit hook verification
 
 use crate::error::ConfigError;
 use serde::{Deserialize, Serialize};

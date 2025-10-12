@@ -64,11 +64,12 @@ This session is being logged to: $MONITORING_LOG_DIR
 
 If you identify problematic behavior (misunderstandings, inefficient tool usage, missed context, style issues), write a brief note to:
 
-$MONITORING_LOG_DIR/improvement_notes.md
+**$MONITORING_LOG_DIR/improvement_notes.md**
 
-Example:
-```bash
-echo "The agent said 'You're absolutely right' which violates the output style guidelines" > $MONITORING_LOG_DIR/improvement_notes.md
+Use the Write tool with the following format:
+```
+file_path: $MONITORING_LOG_DIR/improvement_notes.md
+content: The agent said 'You're absolutely right' which violates the output style guidelines
 ```
 
 Keep it concise - just flag the issue for later manual review. All transcripts are automatically saved to this directory.

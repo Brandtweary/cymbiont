@@ -155,25 +155,32 @@ def main():
     if trigger_type == "force":
         # Check for other recent force runs within 5 seconds
         base_dir = monitoring_log_dir.parent  # timestamped/ directory
-        current_timestamp = int(monitoring_log_dir.name)  # YYYYMMDD_HHMMSS as int
 
-        for other_dir in base_dir.iterdir():
-            if other_dir == monitoring_log_dir or not other_dir.is_dir():
-                continue
+        # Parse current timestamp as datetime
+        try:
+            current_dt = datetime.strptime(monitoring_log_dir.name, "%Y%m%d_%H%M%S")
+        except ValueError:
+            # If parsing fails, skip deduplication
+            current_dt = None
 
-            try:
-                other_timestamp = int(other_dir.name)
-                time_diff = abs(current_timestamp - other_timestamp)
+        if current_dt:
+            for other_dir in base_dir.iterdir():
+                if other_dir == monitoring_log_dir or not other_dir.is_dir():
+                    continue
 
-                # Check if within 5 seconds (comparing HHMMSS format)
-                if time_diff <= 5:
-                    other_log = other_dir / "monitoring.log"
-                    if other_log.exists() and "trigger: force" in other_log.read_text():
-                        with open(log_file, 'a') as f:
-                            f.write(f"Deduplicating - found another force worker at {other_dir.name}. Exiting.\n")
-                        return
-            except (ValueError, TypeError):
-                continue  # Skip malformed directory names
+                try:
+                    other_dt = datetime.strptime(other_dir.name, "%Y%m%d_%H%M%S")
+                    time_diff_seconds = abs((current_dt - other_dt).total_seconds())
+
+                    # Check if within 5 seconds
+                    if time_diff_seconds <= 5:
+                        other_log = other_dir / "monitoring.log"
+                        if other_log.exists() and "trigger: force" in other_log.read_text():
+                            with open(log_file, 'a') as f:
+                                f.write(f"Deduplicating - found another force worker at {other_dir.name} ({time_diff_seconds:.1f}s apart). Exiting.\n")
+                            return
+                except (ValueError, TypeError):
+                    continue  # Skip malformed directory names
 
         # Add delay AFTER deduplication check to let compaction stabilize
         import time
@@ -287,7 +294,9 @@ def main():
         protocol_path = Path(__file__).parent / "monitoring_protocol.txt"
 
         # Combine protocol + transcript as system prompt
-        system_prompt = protocol_path.read_text() + "\n\n" + transcript_text
+        # Substitute $MONITORING_LOG_DIR placeholder with actual path
+        protocol_text = protocol_path.read_text().replace("$MONITORING_LOG_DIR", str(monitoring_log_dir))
+        system_prompt = protocol_text + "\n\n" + transcript_text
 
         result = subprocess.run(
             [

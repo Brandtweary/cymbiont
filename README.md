@@ -33,7 +33,7 @@ Cymbiont is memory augmentation for general-purpose AI. Use it for:
 - **Writing**: Draft iterations, research sources, thematic connections
 - **Custom agents**: Build AI agents with persistent identity and long-term memory
 
-For developers, tools like [code2prompt](https://github.com/raphaelmansuy/code2prompt) generate markdown codebase maps that work seamlessly with Cymbiont. Just dump the output in your synced corpus folder and the knowledge graph ingests your entire codebase structure.
+For developers, tools like [code2prompt](https://github.com/raphaelmansuy/code2prompt) generate markdown codebase maps that work seamlessly with Cymbiont. Just dump the output in your synced corpus folder and the knowledge graph ingests your entire codebase structure. Cymbiont includes git post-commit hook templates (`hooks/post-commit.template.sh` and `hooks/generate_codebase_maps.template.py`) that automatically regenerate codebase maps after each commit, keeping your knowledge graph in sync with code changes. See `hooks/README.md` for setup instructions.
 
 ### Document Sync
 

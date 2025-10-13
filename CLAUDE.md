@@ -22,9 +22,17 @@ RUST_LOG=info cargo run          # Run with logging
 
 ## Core Directories
 - **src/**: Cymbiont MCP server implementation
+- **hooks/**: Claude Code hooks and git hook templates (portable, for users)
+  - **inject_kg_context.py**: UserPromptSubmit hook - dual-context KG injection
+  - **monitoring_agent.py**: Monitoring trigger (UserPromptSubmit/PreCompact/SessionEnd)
+  - **monitoring_worker.py**: Background worker spawned by monitoring_agent
+  - **monitoring_protocol.txt**: Monitoring agent instructions
+  - **post-commit.template.sh**: Git post-commit hook template
+  - **generate_codebase_maps.template.py**: Codebase map generator template
+  - **README.md**: Hook documentation and installation guide
 - **logs/**: Log directory
   - **timestamped/**: Timestamped log files
-  - **cymbiont_mcp_latest.log**: Symlink to latest log (`/home/brandt/projects/hector/cymbiont/logs/cymbiont_mcp_latest.log`)
+  - **cymbiont_mcp_latest.log**: Symlink to latest log
 - **autodebugger/**: Git submodule - logging utilities with verbosity monitoring
 
 ## Project Structure

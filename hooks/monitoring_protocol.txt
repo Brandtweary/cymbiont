@@ -47,7 +47,7 @@ SKIP IF REDUNDANT:
 
 1. **Corrections/updates**: If conversation reveals previous information was wrong, add episode noting the correction (Graphiti handles temporal invalidation)
 2. **Tangents vs. core discussion**: Tangents receive mild de-prioritization but use same salience criteria - a remarkable tangential insight is still worth adding
-3. **Project context awareness**: Information about active projects (Cymbiont, Cyberorganism, Myriapod) has higher retrieval value than abstract topics
+3. **Project context awareness**: Information about active projects has higher retrieval value than abstract topics
 4. **Uncertainty handling**: When in doubt about salience, err on the side of NOT adding
 
 ## Critical Constraints

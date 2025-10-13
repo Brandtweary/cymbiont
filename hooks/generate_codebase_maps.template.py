@@ -44,7 +44,7 @@ from pathlib import Path
 
 # Where to write the codebase map files
 # These will be synced to your knowledge graph by Cymbiont's document watcher
-CORPUS_DIR = "/absolute/path/to/your/corpus/codebase"
+CORPUS_DIR = "/absolute/path/to/your/corpus/codebase_maps"
 
 # Temporary directory for intermediate files (will be cleaned up)
 TEMP_DIR = "/tmp"
@@ -109,7 +109,7 @@ def parse_and_split_map(map_file: str, output_dir: str, project_name: str) -> No
 
     Args:
         map_file: Path to the generated codebase map
-        output_dir: Base output directory (e.g., corpus/codebase/)
+        output_dir: Base output directory (e.g., corpus/codebase_maps/)
         project_name: Name of the project (used as subdirectory)
     """
     with open(map_file, 'r') as f:

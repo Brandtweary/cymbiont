@@ -147,10 +147,6 @@ def main():
     trigger_type = sys.argv[4]  # "force" or "normal"
     log_file = monitoring_log_dir / "monitoring.log"
 
-    # Log trigger type
-    with open(log_file, 'w') as f:
-        f.write(f"Starting monitoring worker (trigger: {trigger_type})\n")
-
     # Deduplication for force triggers (PreCompact/SessionEnd)
     if trigger_type == "force":
         # Check for other recent force runs within 5 seconds
@@ -176,17 +172,13 @@ def main():
                     if time_diff_seconds <= 5:
                         other_log = other_dir / "monitoring.log"
                         if other_log.exists() and "trigger: force" in other_log.read_text():
-                            with open(log_file, 'a') as f:
-                                f.write(f"Deduplicating - found another force worker at {other_dir.name} ({time_diff_seconds:.1f}s apart). Exiting.\n")
-                            return
+                            return  # Skip duplicate
                 except (ValueError, TypeError):
                     continue  # Skip malformed directory names
 
         # Add delay AFTER deduplication check to let compaction stabilize
         import time
         time.sleep(1)
-        with open(log_file, 'a') as f:
-            f.write("Waited 1 second for compaction to stabilize.\n")
 
     try:
         # Copy original transcript
@@ -249,8 +241,6 @@ def main():
                 messages = filtered[anchor_index:]
             else:
                 # Anchor not found - fall back to last 10
-                with open(log_file, 'a') as f:
-                    f.write(f"WARNING: Cached anchor not found, using last 10 messages.\n")
                 messages = filtered[-10:]
         else:
             # No cached message (first run) - take last 10 filtered messages
@@ -262,9 +252,7 @@ def main():
                 messages.pop()
 
         if not messages:
-            with open(log_file, 'a') as f:
-                f.write("No messages to analyze after filtering and stripping trailing user messages.\n")
-            return
+            return  # Nothing to analyze
 
         # Format as text transcript for system prompt (filter out empty messages)
         transcript_text = "=== CONVERSATION TRANSCRIPT TO ANALYZE ===\n\n"
@@ -283,9 +271,7 @@ def main():
         transcript_text += "=== END OF TRANSCRIPT ===\n"
 
         if non_empty_count == 0:
-            with open(log_file, 'w') as f:
-                f.write("All messages were empty after filtering. Skipping monitoring.\n")
-            return
+            return  # All messages empty, nothing to monitor
 
         # Run monitoring agent with transcript as system prompt context
 

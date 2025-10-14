@@ -293,7 +293,7 @@ def main():
                 "mcp__cymbiont__add_memory",
                 "Write",
                 "--output-format=stream-json",
-                "--settings", '{"hooks": {"Stop": [], "UserPromptSubmit": []}}',
+                "--settings", '{"hooks": {"Stop": [], "UserPromptSubmit": [], "SessionStart": [], "SessionEnd": []}}',
                 "--append-system-prompt", system_prompt,
                 "--verbose",
                 "--print"

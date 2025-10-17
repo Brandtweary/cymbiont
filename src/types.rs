@@ -68,3 +68,16 @@ pub struct SearchContextRequest {
 pub struct SyncDocumentsRequest {
     // Empty - no parameters needed
 }
+
+/// Search document chunks by keyword (BM25)
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GetChunksRequest {
+    #[schemars(description = "BM25 keyword search query")]
+    pub keyword_query: String,
+
+    #[schemars(description = "Maximum number of chunks to return (default: 10)")]
+    pub max_results: Option<usize>,
+
+    #[schemars(description = "Optional semantic reranking query using cross-encoder")]
+    pub rerank_query: Option<String>,
+}

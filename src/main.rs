@@ -46,11 +46,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!("Cymbiont MCP server starting (version {})", env!("CARGO_PKG_VERSION"));
 
+    // Construct Graphiti log path (in same directory as Cymbiont logs)
+    let graphiti_log_path = std::path::PathBuf::from(&config.logging.log_directory)
+        .join("graphiti_latest.log");
+
     // Ensure Graphiti backend is running (launch if needed, intentional resource leak)
     graphiti_launcher::ensure_graphiti_running(
         &config.graphiti.base_url,
-        &config.graphiti.server_path
-    ).await?;
+        &config.graphiti.server_path,
+        &graphiti_log_path,
+    )
+    .await?;
 
     // Create Graphiti HTTP client
     let client = GraphitiClient::new(&config.graphiti)?;

@@ -2,9 +2,19 @@
 
 > **A knowledge graph engine for self-organizing AI agents**
 
-Most conversations with AI vanish the moment they end. Every insight, every connection you draw together, every pattern that emerges from working through a problem gets lost when you close the window. You start over each time, rebuilding context, re-explaining what you meant, rehashing old ground. There's no shared workspace, no persistent understanding, no way to build knowledge together over time.
+You're organizing a conference. The keynote speaker just canceled. Two weeks out.
 
-Cymbiont creates that workspace. A knowledge graph that both you and your AI can read, write, and traverse. Your conversations leave traces that connect to everything else you've explored. Ideas branch into relationships. Patterns emerge across months of work. The graph remembers so you don't have to, and your AI draws from this accumulated understanding automatically, like you would from your own memory.
+You open your notes, type out the situation. She was also moderating the afternoon panel. Her talk was anchoring the entire distributed systems track - three other speakers structured their talks as responses to her framework. You save the file. Cymbiont syncs it to the knowledge graph automatically.
+
+You start chatting with your AI assistant: "Okay, we need a replacement keynote. Who do we know working on consensus algorithms?" Your assistant immediately pulls up the speaker outreach notes you wrote three months ago - the two candidates who said maybe-next-year, the one who couldn't travel in spring, the researcher whose work would actually pair better with the panel topic anyway. You didn't dig through old documents. You didn't copy-paste your notes into the chat. The context was already there, retrieved silently based on what you're discussing right now.
+
+"Wait," you say, "if we bring in the researcher, doesn't that change the panel focus?" Your assistant surfaces the panel description from the website copy, the moderator's proposed questions from an email two weeks ago, the three panelists' talk abstracts. Everything connected. You didn't ask it to search - it knew what you needed. The panic starts to subside. You're not drowning in details anymore. You're actually thinking strategically.
+
+As you work through the solution together - restructure the panel, move one talk to a different track, brief the replacement speaker on the themes - Cymbiont extracts the key decisions from your conversation and saves them to the knowledge graph automatically. The new panel format. The rationale for the track changes. The timeline for confirming with speakers. No "write this down for later." No manual bookkeeping.
+
+For the critical details - speaker contracts, updated session times - you ask your assistant to record them explicitly to the graph with exact wording. The save happens asynchronously. You keep talking, barely a pause. Or you have your assistant update the scheduling document directly, where you can review it yourself later.
+
+This is Cymbiont. A fluid workspace where human notes, AI conversations, and automated memory formation interweave seamlessly. Some users write their own notes and use their assistant primarily for retrieval and discussion. Others have their assistant draft documents while they focus on synthesis and decision-making. Still others work primarily through conversation, relying on automatic memory formation to build their knowledge graph organically. There's no one right way - the interface adapts to how you think and work.
 
 ## Why Knowledge Graphs
 
@@ -67,9 +77,11 @@ Cymbiont works with any editor that uses local markdown files. Choose based on y
 
 IDEs with integrated terminals let you chat with your assistant and edit documents in the same application, the most convenient setup for most users. Some prefer separate windows for chat and editing, which works just as well.
 
-**PKM Apps** (specialized note-taking):
+**PKM Apps** (planned compatibility):
 - **Logseq**: Open-source PKM with graph view and local markdown
 - **Obsidian**: PKM with local vault and extensive plugins
+
+**Note**: PKM app compatibility is not yet officially supported. Cymbiont doesn't currently resolve block references (e.g., `((block-id))` syntax), so dumping an existing PKM graph directly into your corpus will result in raw reference syntax appearing in episodes. Block reference resolution will only be implemented if there's user demand. For now, we recommend manual migration of specific notes - your AI assistant can handle reference resolution during migration if you remind it to do so. Many users prefer starting with a clean knowledge graph anyway, as Cymbiont is a living graph with different usage patterns than traditional PKM apps.
 
 **Text Editors** (lightweight):
 - **Sublime Text**: Fast with minimap navigation
@@ -280,6 +292,26 @@ Neo4j Knowledge Graph
 
 **Neo4j Database**: Graph storage with vector indices for embeddings, full-text indices for keyword search, and Cypher query engine.
 
+### MCP Tools
+
+**add_memory**(name: String, episode_body: String, source_description: Option\<String\>)
+- Add a new memory episode to the knowledge graph
+
+**search_context**(query: String, max_results: Option\<usize\>)
+- Search for entities and relationships (default: 5 nodes, 10 facts)
+
+**get_chunks**(keyword_query: String, max_results: Option\<usize\>, rerank_query: Option\<String\>)
+- BM25 keyword search over document chunks (default: 10 results)
+
+**get_episodes**(last_n: Option\<usize\>)
+- Get recent episodes from the knowledge graph (default: 10)
+
+**delete_episode**(uuid: String)
+- Delete an episode by UUID
+
+**sync_documents**()
+- Trigger manual document synchronization
+
 ## Features
 
 - **Persistent Memory**: Temporal knowledge graph maintains context across AI assistant sessions
@@ -292,25 +324,43 @@ Neo4j Knowledge Graph
 
 ### Configuration
 
-Create `config.yaml` to customize (all settings optional):
+Copy `config.example.yaml` to `config.yaml` and customize for your environment.
+
+Cymbiont searches for config.yaml in multiple locations (first match wins):
+
+1. **`CYMBIONT_CONFIG` environment variable** - Explicit override path
+2. **`./config.yaml`** - Current directory (recommended for development, git cloned repos)
+3. **`~/.config/cymbiont/config.yaml`** - XDG standard location (recommended for production)
+4. **`<binary-dir>/config.yaml`** - Next to cymbiont binary (portable installs)
+5. **Defaults** - If no config file found (may fail validation if paths required)
+
+**Recommended setup during development** (git cloned repo):
+```bash
+cp config.example.yaml config.yaml
+# Edit config.yaml with your paths
+```
+
+The config will be found via `./config.yaml` since you're running from the repo directory.
+
+**Example config.yaml:**
 
 ```yaml
 graphiti:
   base_url: "http://localhost:8000"
   timeout_secs: 30
   default_group_id: "default"
-  server_path: "/path/to/graphiti-cymbiont/server"  # Required for auto-launch
+  server_path: "/path/to/graphiti-cymbiont/server"  # Required: absolute path
 
 similarity:
   min_score: 0.7
 
 corpus:
-  path: "/path/to/markdown/documents"
+  path: "/path/to/markdown/documents"  # Required: absolute path
   sync_interval_hours: 1.0
 
 logging:
   level: "info"  # trace, debug, info, warn, error
-  log_directory: "/absolute/path/to/logs"  # MUST be absolute
+  log_directory: "logs"  # Relative to binary or absolute
   max_files: 10
   max_size_mb: 5
   console_output: false  # MUST be false for MCP mode
@@ -321,7 +371,9 @@ verbosity:
   trace_threshold: 200
 ```
 
-**Note**: All paths must be absolute. Relative paths will cause validation errors.
+**Path Requirements**:
+- `server_path` and `corpus.path` must be absolute paths
+- `log_directory` can be relative (resolved from binary location) or absolute
 
 ### Data Model
 

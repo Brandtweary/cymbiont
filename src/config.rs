@@ -1,10 +1,79 @@
-//! Configuration system
-//! Loads config from config.yaml or falls back to defaults
+//! Configuration system with flexible discovery and validation
+//!
+//! Loads YAML configuration from multiple standard locations, supporting both
+//! development workflows (git repo with local config) and production deployments
+//! (system-wide install with XDG standard paths).
+//!
+//! # Configuration Discovery
+//!
+//! The system searches for `config.yaml` in the following order:
+//!
+//! 1. **CYMBIONT_CONFIG environment variable**: Explicit override path
+//!    - If set but file doesn't exist, returns error (fail-fast)
+//!    - Use for testing or custom deployments
+//!
+//! 2. **./config.yaml**: Current working directory
+//!    - For development in git repository
+//!    - Ignored by git (in .gitignore)
+//!
+//! 3. **~/.config/cymbiont/config.yaml**: XDG standard location
+//!    - For production system-wide installs
+//!    - Uses `directories` crate for cross-platform XDG support
+//!
+//! 4. **<binary-dir>/config.yaml**: Next to executable
+//!    - For portable installations
+//!    - Determined via `std::env::current_exe()`
+//!
+//! 5. **Defaults**: If no config found, use hardcoded defaults
+//!    - Logs warning
+//!    - Requires `corpus.path` and `graphiti.server_path` to be set before use
+//!
+//! # Configuration Structure
+//!
+//! The config file is divided into logical sections:
+//!
+//! - **graphiti**: Graphiti backend connection (base_url, timeout, server_path)
+//! - **similarity**: Search thresholds for semantic matching
+//! - **corpus**: Document sync settings (path, sync_interval)
+//! - **logging**: Log output configuration (level, directory, rotation)
+//! - **verbosity**: Autodebugger verbosity monitoring thresholds
+//!
+//! # Path Requirements
+//!
+//! Paths are validated and normalized during config load:
+//!
+//! - **log_directory**: Can be relative (resolved from binary location) or absolute
+//! - **corpus.path**: REQUIRED, must be absolute
+//! - **graphiti.server_path**: REQUIRED, must be absolute
+//!
+//! Relative paths for log_directory are resolved from the binary's parent directory,
+//! enabling portable installs where logs live alongside the binary.
+//!
+//! # Example
+//!
+//! ```yaml
+//! graphiti:
+//!   base_url: "http://localhost:8000"
+//!   timeout_secs: 30
+//!   default_group_id: "default"
+//!   server_path: "/absolute/path/to/graphiti-cymbiont"
+//!
+//! corpus:
+//!   path: "/absolute/path/to/corpus"
+//!   sync_interval_hours: 1.0
+//!
+//! logging:
+//!   level: "info"
+//!   log_directory: "logs"  # Relative to binary, or absolute path
+//!   max_files: 10
+//!   max_size_mb: 5
+//! ```
 
 use crate::error::ConfigError;
+use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Root configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,12 +198,21 @@ impl Default for VerbosityConfig {
 // Config loading
 
 impl Config {
-    /// Load config from config.yaml or use defaults
+    /// Load config from config.yaml with flexible location search
+    ///
+    /// Search order:
+    /// 1. CYMBIONT_CONFIG environment variable (explicit override)
+    /// 2. ./config.yaml (current directory, for development)
+    /// 3. ~/.config/cymbiont/config.yaml (XDG standard location)
+    /// 4. <binary-dir>/config.yaml (portable install)
+    /// 5. Defaults (if no config file found)
     pub fn load() -> Result<Self, ConfigError> {
-        let config_path = Path::new("config.yaml");
+        let config_path = Self::find_config_file()?;
 
-        if config_path.exists() {
-            let contents = fs::read_to_string(config_path)
+        if let Some(path) = config_path {
+            tracing::info!("Loading config from: {}", path.display());
+
+            let contents = fs::read_to_string(&path)
                 .map_err(|e| ConfigError::Io(e.to_string()))?;
 
             let mut config: Config = serde_yaml::from_str(&contents)
@@ -145,9 +223,52 @@ impl Config {
 
             Ok(config)
         } else {
-            // No config file - use defaults
+            tracing::warn!("No config.yaml found, using defaults");
             Ok(Config::default())
         }
+    }
+
+    /// Search for config.yaml in standard locations
+    fn find_config_file() -> Result<Option<PathBuf>, ConfigError> {
+        // 1. Check CYMBIONT_CONFIG environment variable
+        if let Ok(env_path) = std::env::var("CYMBIONT_CONFIG") {
+            let path = PathBuf::from(env_path);
+            if path.exists() {
+                return Ok(Some(path));
+            } else {
+                return Err(ConfigError::Io(format!(
+                    "CYMBIONT_CONFIG points to non-existent file: {}",
+                    path.display()
+                )));
+            }
+        }
+
+        // 2. Check current directory
+        let cwd_config = PathBuf::from("./config.yaml");
+        if cwd_config.exists() {
+            return Ok(Some(cwd_config));
+        }
+
+        // 3. Check XDG config directory (~/.config/cymbiont/config.yaml)
+        if let Some(proj_dirs) = ProjectDirs::from("", "", "cymbiont") {
+            let xdg_config = proj_dirs.config_dir().join("config.yaml");
+            if xdg_config.exists() {
+                return Ok(Some(xdg_config));
+            }
+        }
+
+        // 4. Check next to binary
+        let exe_path = std::env::current_exe()
+            .map_err(|e| ConfigError::Io(format!("Failed to get binary path: {}", e)))?;
+        let exe_dir = exe_path.parent()
+            .ok_or_else(|| ConfigError::Io("Binary has no parent directory".to_string()))?;
+        let binary_config = exe_dir.join("config.yaml");
+        if binary_config.exists() {
+            return Ok(Some(binary_config));
+        }
+
+        // 5. No config found
+        Ok(None)
     }
 
     /// Validate and normalize paths

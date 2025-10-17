@@ -1,4 +1,65 @@
-//! HTTP client for Graphiti backend
+//! HTTP client for Graphiti FastAPI backend
+//!
+//! Provides a typed interface to the Graphiti knowledge graph server over HTTP.
+//! All methods use hardcoded `group_id='default'` for simplicity, matching the
+//! single-user deployment model of Cymbiont.
+//!
+//! # Dual Retrieval Modes
+//!
+//! The client exposes two complementary search strategies:
+//!
+//! ## 1. Semantic Search (Entities & Facts)
+//!
+//! Searches the knowledge graph for extracted entities (nodes) and relationships (facts/edges):
+//!
+//! - **`search_nodes()`**: Find entities by semantic query
+//!   - Endpoint: `POST /search/nodes`
+//!   - Returns: EntityNode summaries with embeddings
+//!   - Use for: Conceptual exploration, discovering related entities
+//!
+//! - **`search_facts()`**: Find relationships by semantic query
+//!   - Endpoint: `POST /search`
+//!   - Returns: EntityEdge facts connecting entities
+//!   - Use for: Understanding connections, temporal relationships
+//!
+//! Both use hybrid search (BM25 + vector similarity + graph traversal) with reranking.
+//!
+//! ## 2. Chunk Search (Raw Text)
+//!
+//! Searches raw document chunks for exact wording:
+//!
+//! - **`search_chunks()`**: BM25 keyword search over document chunks
+//!   - Endpoint: `POST /chunks/search`
+//!   - Returns: ChunkNode content with document URI and position
+//!   - Optional: Cross-encoder semantic reranking
+//!   - Use for: Exact quotes, technical precision, source verification
+//!
+//! # Episode Management
+//!
+//! - **`add_episode()`**: Ingest new memory (creates episode → extracts entities/edges)
+//! - **`get_episodes()`**: Retrieve recent memory episodes chronologically
+//! - **`delete_episode()`**: Remove episode and associated chunks by UUID
+//!
+//! # Document Synchronization
+//!
+//! Background sync of markdown files from corpus directory:
+//!
+//! - **`start_sync()`**: Start file watcher with interval
+//! - **`stop_sync()`**: Stop file watcher
+//! - **`trigger_sync()`**: Manually trigger immediate sync (async, returns immediately)
+//!
+//! # Error Handling
+//!
+//! All methods return `Result<T, GraphitiError>` with:
+//! - `GraphitiError::Http`: Network/connection failures
+//! - `GraphitiError::Request`: Non-2xx HTTP status codes with server error message
+//! - `GraphitiError::InvalidResponse`: JSON deserialization failures
+//!
+//! # Configuration
+//!
+//! The client is configured via `GraphitiConfig`:
+//! - `base_url`: Graphiti server URL (default: `http://localhost:8000`)
+//! - `timeout_secs`: Request timeout (default: 30 seconds)
 
 use crate::config::GraphitiConfig;
 use crate::error::GraphitiError;
@@ -130,6 +191,51 @@ impl GraphitiClient {
         }
         if let Some(limit) = max_results {
             body["max_nodes"] = json!(limit);
+        }
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| GraphitiError::Http(e))?;
+
+        if !response.status().is_success() {
+            return Err(GraphitiError::Request(format!(
+                "HTTP {}: {}",
+                response.status(),
+                response.text().await.unwrap_or_default()
+            )));
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| GraphitiError::InvalidResponse(e.to_string()))
+    }
+
+    /// Search for chunks (text fragments) in knowledge graph
+    /// POST /chunks/search
+    /// Hardcodes group_id='default' for simplicity
+    pub async fn search_chunks(
+        &self,
+        keyword_query: &str,
+        max_results: Option<usize>,
+        rerank_query: Option<&str>,
+    ) -> Result<Value, GraphitiError> {
+        let url = format!("{}/chunks/search", self.base_url);
+
+        let mut body = json!({
+            "keyword_query": keyword_query,
+            "group_id": "default",  // HARDCODED
+        });
+
+        if let Some(limit) = max_results {
+            body["max_results"] = json!(limit);
+        }
+        if let Some(rerank) = rerank_query {
+            body["rerank_query"] = json!(rerank);
         }
 
         let response = self

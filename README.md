@@ -26,8 +26,6 @@ This enables reasoning over structure: discovering paths, detecting patterns, un
 
 Cymbiont is infrastructure for collective intelligence through shared representation. Your notes, conversations, and documents become a living network. The AI traverses it, extends it, discovers connections within it. You contribute structure and meaning. The AI explores knowledge space in ways you can't. Together you build understanding neither could create alone.
 
-This is compound computing: different cognitive substrates coordinating through a shared interface. The knowledge graph becomes the medium where human insight and machine computation meet, each preserving what makes it unique while amplifying what the other contributes.
-
 ## Using Cymbiont
 
 ### With Claude Code
@@ -58,7 +56,7 @@ corpus:
   sync_interval_hours: 1.0
 ```
 3. Files sync automatically on the hourly interval
-4. Your AI assistant can manually trigger sync using `sync_all_documents()`
+4. Your AI assistant can manually trigger sync using `sync_documents()`
 
 **How it works:**
 - New files: Full content ingested as episodes
@@ -131,7 +129,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 **3. Set up the knowledge graph backend**
 
 ```bash
-# Clone Graphiti fork
+# Clone and enter directory
 git clone https://github.com/Brandtweary/graphiti-cymbiont.git
 cd graphiti-cymbiont
 
@@ -150,11 +148,13 @@ EOF
 # Install server dependencies with editable graphiti-core
 cd server
 uv sync
+cd ../..  # Return to parent directory
 ```
 
 **4. Build Cymbiont**
 
 ```bash
+# Clone and enter directory
 git clone https://github.com/Brandtweary/cymbiont.git
 cd cymbiont
 cargo build --release
@@ -163,15 +163,20 @@ cargo build --release
 **5. Connect to your AI assistant**
 
 For Claude Code:
+
 ```bash
-claude mcp add cymbiont --transport stdio -- /path/to/cymbiont/target/release/cymbiont
+# Available across all projects (recommended)
+claude mcp add --scope user cymbiont --transport stdio -- /path/to/cymbiont/target/release/cymbiont
+
+# Or limit to specific project only
+claude mcp add --scope project cymbiont --transport stdio -- /path/to/cymbiont/target/release/cymbiont
 ```
 
 For other MCP-compatible AI assistants: Configure stdio transport to launch the `cymbiont` binary.
 
-**6. Install Claude Code Hooks (Required)**
+**6. Install Claude Code Hooks (Strongly Recommended)**
 
-The hooks enable automatic context injection and memory formation - without them, you'd need to manually query and save to the graph every time.
+The hooks enable automatic context injection and memory formation - without them, you need to remind your assistant to search and save to the graph.
 
 **Option 1: Point to cymbiont installation (Faster)**
 
@@ -258,6 +263,35 @@ Then edit the files in `~/.claude/hooks/` as needed.
 
 **If you don't have jq installed**, manually edit `~/.claude/settings.json` and add the hooks block shown above.
 
+**Optional: Customize Monitoring Protocol**
+
+The automated memory formation system uses `hooks/monitoring_protocol.txt` to decide what information is salient. The default protocol works well for most users, but you can customize it to fit your needs:
+
+```bash
+# If you copied hooks to ~/.claude/hooks/ (Option 2 above):
+nano ~/.claude/hooks/monitoring_protocol.txt
+
+# If you're pointing to cymbiont installation (Option 1 above):
+nano hooks/monitoring_protocol.txt
+```
+
+**7. Add Cymbiont Instructions to CLAUDE.md**
+
+Your AI assistant needs instructions for using Cymbiont effectively:
+
+```bash
+# Navigate to cymbiont directory
+cd cymbiont
+
+# If you used --scope user
+cat CLAUDE_INSTRUCTIONS_TEMPLATE.md >> ~/.claude/CLAUDE.md
+
+# If you used --scope project
+cat CLAUDE_INSTRUCTIONS_TEMPLATE.md >> /path/to/your/project/CLAUDE.md
+```
+
+**Important**: After adding, edit the CLAUDE.md file and customize the corpus path (`/path/to/your/corpus/`) to match your `config.yaml` settings.
+
 That's it! Restart Claude Code and the automated memory system is active.
 
 ---
@@ -318,9 +352,9 @@ Neo4j Knowledge Graph
 - **Hybrid Search**: Combines semantic similarity (embeddings), keyword matching (BM25), graph traversal (BFS), and reranking (RRF/cross-encoder)
 - **Entity Extraction**: LLM automatically identifies entities and relationships from text, JSON, or conversations
 - **Temporal Reasoning**: Bi-temporal model tracks when facts were learned (`created_at`) vs. when events occurred (`valid_at`)
-- **Multi-Format Ingestion**: Accepts plain text, structured JSON, and message formats
-- **Group Isolation**: Separate knowledge domains via `group_id` within single database
-- **Incremental Construction**: Process episodes independently without recomputing entire graph
+- **Automatic Document Sync**: Hourly corpus directory monitoring with intelligent change detection and diff summaries
+- **Dual Retrieval Modes**: Semantic search for conceptual exploration (`search_context`) + BM25 keyword search for exact text with provenance (`get_chunks`)
+- **Hook System**: Automatic context injection and memory formation via Claude Code hooks - no manual prompting required
 
 ### Configuration
 
@@ -459,7 +493,7 @@ Logs written to `logs/timestamped/cymbiont_mcp_YYYYMMDD_HHMMSS.log` with `cymbio
 
 - **Enhanced search**: Personalized PageRank and learned edge weights via GNN
 - **Graph maintenance**: Automated orphan cleanup and semantic drift detection
-- **Chunk retrieval**: Access original document text for precise citations
+- **Multi-format ingestion**: Ingest PDFs, images, audio, and other file types beyond markdown
 
 ## Resources
 

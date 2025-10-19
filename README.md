@@ -114,9 +114,9 @@ echo 'deb [signed-by=/usr/share/keyrings/neotechnology.gpg.key] https://debian.n
 sudo apt update && sudo apt install neo4j
 sudo systemctl enable neo4j
 
-# Set password
+# Set initial password (using demodemo as default for development)
 sudo systemctl stop neo4j
-sudo neo4j-admin dbms set-initial-password YOUR_PASSWORD
+sudo neo4j-admin dbms set-initial-password demodemo
 sudo systemctl start neo4j
 ```
 
@@ -147,7 +147,7 @@ cd graphiti-cymbiont
 cat > .env << 'EOF'
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
-NEO4J_PASSWORD=YOUR_PASSWORD
+NEO4J_PASSWORD=demodemo  # Default password set during Neo4j installation; change if you used different password
 OPENAI_API_KEY=your-api-key-here  # REQUIRED: Replace with your actual OpenAI API key
 MODEL_NAME=gpt-5-mini
 SMALL_MODEL_NAME=gpt-5-mini

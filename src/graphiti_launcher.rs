@@ -89,7 +89,6 @@ pub async fn wait_for_graphiti(base_url: &str, max_attempts: u32) -> Result<()> 
         }
 
         if attempt < max_attempts {
-            tracing::debug!("Waiting for Graphiti... (attempt {}/{})", attempt, max_attempts);
             sleep(Duration::from_millis(500)).await;
         }
     }
@@ -116,6 +115,7 @@ pub async fn ensure_graphiti_running(
     server_path: &str,
     log_path: &Path,
 ) -> Result<()> {
+
     // Try waiting for Graphiti first (maybe it's starting up)
     if wait_for_graphiti(base_url, 10).await.is_ok() {
         tracing::info!("Graphiti already running");

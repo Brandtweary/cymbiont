@@ -94,7 +94,12 @@ pub struct GraphitiConfig {
     pub base_url: String,
     pub timeout_secs: u64,
     pub default_group_id: String,
+    #[serde(default = "default_server_path")]
     pub server_path: String,
+}
+
+fn default_server_path() -> String {
+    "../../graphiti-cymbiont/server".to_string()
 }
 
 /// Similarity search configuration
@@ -153,7 +158,7 @@ impl Default for GraphitiConfig {
             base_url: "http://localhost:8000".to_string(),
             timeout_secs: 30,
             default_group_id: "default".to_string(),
-            server_path: "../graphiti-cymbiont/server".to_string(), // Bundled graphiti-cymbiont
+            server_path: "../../graphiti-cymbiont/server".to_string(), // Bundled graphiti-cymbiont
         }
     }
 }
@@ -176,7 +181,7 @@ impl Default for CorpusConfig {
 impl Default for LoggingConfig {
     fn default() -> Self {
         Self {
-            level: "info".to_string(),
+            level: "debug".to_string(),
             output: "file".to_string(),
             log_directory: "logs".to_string(), // Relative to binary location
             max_files: 10,

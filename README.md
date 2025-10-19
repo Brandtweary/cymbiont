@@ -140,7 +140,7 @@ cargo build --release
 **4. Set up the knowledge graph backend**
 
 ```bash
-# Configure graphiti-cymbiont (bundled in cymbiont/graphiti-cymbiont/)
+# Configure graphiti-cymbiont (bundled submodule)
 cd graphiti-cymbiont
 
 # Create .env in root directory (required for editable install)
@@ -475,7 +475,7 @@ verbosity:
 3. **Graph traversal**: BFS from relevant nodes
 4. **Reranking**: Reciprocal rank fusion (RRF), cross-encoder scoring, or node distance
 
-**Search Recipes** (configurable):
+**Search Recipes** (configurable in graphiti):
 - `EDGE_HYBRID_SEARCH_RRF`: Relationship search with rank fusion
 - `NODE_HYBRID_SEARCH_NODE_DISTANCE`: Entity search reranked by graph proximity
 - `COMBINED_HYBRID_SEARCH_CROSS_ENCODER`: Full hybrid with deep reranking

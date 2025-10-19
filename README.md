@@ -148,11 +148,11 @@ cat > .env << 'EOF'
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=YOUR_PASSWORD
-OPENAI_API_KEY=your-api-key-here
-MODEL_NAME=gpt-4o-mini
-SMALL_MODEL_NAME=gpt-4o-mini
-SEMAPHORE_LIMIT=10
-LLM_TEMPERATURE=0.0
+OPENAI_API_KEY=your-api-key-here  # REQUIRED: Replace with your actual OpenAI API key
+MODEL_NAME=gpt-5-mini
+SMALL_MODEL_NAME=gpt-5-mini
+LLM_TEMPERATURE=0.0  # REQUIRED for gpt-5-mini; adjust if using different models
+LOG_FILE=/path/to/cymbiont/logs/graphiti_latest.log  # Optional: Customize log path
 EOF
 
 # Install server dependencies with editable graphiti-core
@@ -194,7 +194,7 @@ cp config.example.yaml config.yaml
 
 The hooks enable automatic context injection and memory formation - without them, you need to remind your assistant to search and save to the graph.
 
-**Option 1: Point to cymbiont installation (Faster)**
+**Option 1: Point to cymbiont installation (Fastest)**
 
 ```bash
 # Find your cymbiont installation (if you don't remember where you installed it)
@@ -390,14 +390,6 @@ Cymbiont searches for config.yaml in multiple locations (first match wins):
 3. **`cymbiont/config.yaml`** - Repo root (relative to binary - goes up 2 levels from `target/debug/cymbiont`)
 4. **`~/.config/cymbiont/config.yaml`** - XDG standard location (recommended for production)
 5. **Defaults** - If no config file found (corpus.path defaults to None, document sync disabled)
-
-**Recommended setup during development** (git cloned repo):
-```bash
-cp config.example.yaml config.yaml
-# Edit config.yaml with your paths
-```
-
-The config will be found via `./config.yaml` since you're running from the repo directory.
 
 **Example config.yaml:**
 

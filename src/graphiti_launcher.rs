@@ -1,6 +1,6 @@
 //! Graphiti server launcher - ensures backend is running
 //!
-//! This module manages the Graphiti FastAPI server lifecycle to prevent data loss
+//! This module manages the Graphiti `FastAPI` server lifecycle to prevent data loss
 //! during episode ingestion. The server is launched as a detached background process
 //! and intentionally left running (resource leak) until system shutdown.
 
@@ -13,7 +13,7 @@ use tokio::time::sleep;
 
 /// Check if Graphiti is already running by hitting the health endpoint
 pub async fn is_graphiti_running(base_url: &str) -> bool {
-    let health_url = format!("{}/healthcheck", base_url);
+    let health_url = format!("{base_url}/healthcheck");
     let client = reqwest::Client::new();
 
     client.get(&health_url)
@@ -28,16 +28,16 @@ pub async fn is_graphiti_running(base_url: &str) -> bool {
 ///
 /// The process is spawned with:
 /// - stdin redirected to null
-/// - stdout and stderr redirected to log_path (append mode)
-/// - Working directory set to server_path
-/// - Using uvicorn ASGI server to run the FastAPI app
+/// - stdout and stderr redirected to `log_path` (append mode)
+/// - Working directory set to `server_path`
+/// - Using uvicorn ASGI server to run the `FastAPI` app
 ///
-/// Both stdout and stderr are redirected to the same log file using File::try_clone()
+/// Both stdout and stderr are redirected to the same log file using `File::try_clone()`
 /// to ensure proper interleaving of output (equivalent to shell's `>> log 2>&1`).
 ///
 /// Note: This is an intentional "resource leak" - the process will continue
 /// running after Cymbiont exits, ensuring no data loss during episode ingestion.
-pub async fn launch_graphiti(server_path: &str, log_path: &Path) -> Result<()> {
+pub fn launch_graphiti(server_path: &str, log_path: &Path) -> Result<()> {
     tracing::info!("Graphiti not running, launching background server...");
 
     // Ensure log directory exists
@@ -80,7 +80,7 @@ pub async fn launch_graphiti(server_path: &str, log_path: &Path) -> Result<()> {
 
 /// Wait for Graphiti to become healthy with exponential backoff
 ///
-/// Attempts health checks with 500ms intervals up to max_attempts times.
+/// Attempts health checks with 500ms intervals up to `max_attempts` times.
 pub async fn wait_for_graphiti(base_url: &str, max_attempts: u32) -> Result<()> {
     for attempt in 1..=max_attempts {
         if is_graphiti_running(base_url).await {
@@ -93,18 +93,18 @@ pub async fn wait_for_graphiti(base_url: &str, max_attempts: u32) -> Result<()> 
         }
     }
 
-    anyhow::bail!("Graphiti failed to start after {} attempts", max_attempts)
+    anyhow::bail!("Graphiti failed to start after {max_attempts} attempts")
 }
 
 /// Ensure Graphiti is running, launch if needed
 ///
-/// This function checks if Graphiti is already running at base_url.
-/// If not, it launches the server from server_path and waits for it to become healthy.
+/// This function checks if Graphiti is already running at `base_url`.
+/// If not, it launches the server from `server_path` and waits for it to become healthy.
 /// If already running, it simply logs and continues.
 ///
 /// # Arguments
-/// * `base_url` - The base URL where Graphiti should be running (e.g., "http://localhost:8000")
-/// * `server_path` - Path to graphiti-cymbiont/server directory
+/// * `base_url` - The base URL where Graphiti should be running (e.g., <http://localhost:8000>)
+/// * `server_path` - Path to `graphiti-cymbiont/server` directory
 /// * `log_path` - Path to log file for stdout/stderr redirection
 ///
 /// # Returns
@@ -123,7 +123,7 @@ pub async fn ensure_graphiti_running(
     }
 
     // Still not running - launch it
-    launch_graphiti(server_path, log_path).await?;
+    launch_graphiti(server_path, log_path)?;
     wait_for_graphiti(base_url, 10).await?; // 10 attempts * 500ms = 5s max
 
     Ok(())

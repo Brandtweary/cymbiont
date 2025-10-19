@@ -1,4 +1,4 @@
-//! HTTP client for Graphiti FastAPI backend
+//! HTTP client for Graphiti `FastAPI` backend
 //!
 //! Provides a typed interface to the Graphiti knowledge graph server over HTTP.
 //! All methods use hardcoded `group_id='default'` for simplicity, matching the
@@ -14,12 +14,12 @@
 //!
 //! - **`search_nodes()`**: Find entities by semantic query
 //!   - Endpoint: `POST /search/nodes`
-//!   - Returns: EntityNode summaries with embeddings
+//!   - Returns: `EntityNode` summaries with embeddings
 //!   - Use for: Conceptual exploration, discovering related entities
 //!
 //! - **`search_facts()`**: Find relationships by semantic query
 //!   - Endpoint: `POST /search`
-//!   - Returns: EntityEdge facts connecting entities
+//!   - Returns: `EntityEdge` facts connecting entities
 //!   - Use for: Understanding connections, temporal relationships
 //!
 //! Both use hybrid search (BM25 + vector similarity + graph traversal) with reranking.
@@ -30,7 +30,7 @@
 //!
 //! - **`search_chunks()`**: BM25 keyword search over document chunks
 //!   - Endpoint: `POST /chunks/search`
-//!   - Returns: ChunkNode content with document URI and position
+//!   - Returns: `ChunkNode` content with document URI and position
 //!   - Optional: Cross-encoder semantic reranking
 //!   - Use for: Exact quotes, technical precision, source verification
 //!
@@ -67,7 +67,7 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use std::time::Duration;
 
-/// HTTP client for Graphiti FastAPI backend
+/// HTTP client for Graphiti `FastAPI` backend
 #[derive(Clone)]
 pub struct GraphitiClient {
     client: Client,
@@ -75,12 +75,12 @@ pub struct GraphitiClient {
 }
 
 impl GraphitiClient {
-    /// Create new GraphitiClient from config
+    /// Create new `GraphitiClient` from config
     pub fn new(config: &GraphitiConfig) -> Result<Self, GraphitiError> {
         let client = Client::builder()
             .timeout(Duration::from_secs(config.timeout_secs))
             .build()
-            .map_err(|e| GraphitiError::Http(e))?;
+            .map_err(GraphitiError::Http)?;
 
         Ok(Self {
             client,
@@ -90,7 +90,7 @@ impl GraphitiClient {
 
     /// Add episode to knowledge graph
     /// POST /episodes
-    /// Hardcodes source='text' and group_id='default' for simplicity
+    /// Hardcodes source='text' and `group_id`='default' for simplicity
     pub async fn add_episode(
         &self,
         name: &str,
@@ -116,7 +116,7 @@ impl GraphitiClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| GraphitiError::Http(e))?;
+            .map_err(GraphitiError::Http)?;
 
         if !response.status().is_success() {
             return Err(GraphitiError::Request(format!(
@@ -156,7 +156,7 @@ impl GraphitiClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| GraphitiError::Http(e))?;
+            .map_err(GraphitiError::Http)?;
 
         if !response.status().is_success() {
             return Err(GraphitiError::Request(format!(
@@ -199,7 +199,7 @@ impl GraphitiClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| GraphitiError::Http(e))?;
+            .map_err(GraphitiError::Http)?;
 
         if !response.status().is_success() {
             return Err(GraphitiError::Request(format!(
@@ -217,7 +217,7 @@ impl GraphitiClient {
 
     /// Search for chunks (text fragments) in knowledge graph
     /// POST /chunks/search
-    /// Hardcodes group_id='default' for simplicity
+    /// Hardcodes `group_id`='default' for simplicity
     pub async fn search_chunks(
         &self,
         keyword_query: &str,
@@ -244,7 +244,7 @@ impl GraphitiClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| GraphitiError::Http(e))?;
+            .map_err(GraphitiError::Http)?;
 
         if !response.status().is_success() {
             return Err(GraphitiError::Request(format!(
@@ -261,16 +261,16 @@ impl GraphitiClient {
     }
 
     /// Get recent episodes
-    /// GET /episodes/{group_id}
+    /// GET `/episodes/{group_id}`
     pub async fn get_episodes(
         &self,
         group_id: &str,
         last_n: Option<usize>,
     ) -> Result<Value, GraphitiError> {
-        let mut url = format!("{}/episodes/{}", self.base_url, group_id);
+        let mut url = format!("{}/episodes/{group_id}", self.base_url);
 
         if let Some(n) = last_n {
-            url = format!("{}?last_n={}", url, n);
+            url = format!("{url}?last_n={n}");
         }
 
         let response = self
@@ -278,7 +278,7 @@ impl GraphitiClient {
             .get(&url)
             .send()
             .await
-            .map_err(|e| GraphitiError::Http(e))?;
+            .map_err(GraphitiError::Http)?;
 
         if !response.status().is_success() {
             return Err(GraphitiError::Request(format!(
@@ -297,14 +297,14 @@ impl GraphitiClient {
     /// Delete episode by UUID
     /// DELETE /episode/{uuid}
     pub async fn delete_episode(&self, uuid: &str) -> Result<String, GraphitiError> {
-        let url = format!("{}/episode/{}", self.base_url, uuid);
+        let url = format!("{}/episode/{uuid}", self.base_url);
 
         let response = self
             .client
             .delete(&url)
             .send()
             .await
-            .map_err(|e| GraphitiError::Http(e))?;
+            .map_err(GraphitiError::Http)?;
 
         if !response.status().is_success() {
             return Err(GraphitiError::Request(format!(
@@ -314,7 +314,7 @@ impl GraphitiClient {
             )));
         }
 
-        Ok(format!("Episode {} deleted", uuid))
+        Ok(format!("Episode {uuid} deleted"))
     }
 
     /// Start document sync watcher
@@ -339,7 +339,7 @@ impl GraphitiClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| GraphitiError::Http(e))?;
+            .map_err(GraphitiError::Http)?;
 
         if !response.status().is_success() {
             return Err(GraphitiError::Request(format!(
@@ -370,7 +370,7 @@ impl GraphitiClient {
             .post(&url)
             .send()
             .await
-            .map_err(|e| GraphitiError::Http(e))?;
+            .map_err(GraphitiError::Http)?;
 
         if !response.status().is_success() {
             return Err(GraphitiError::Request(format!(
@@ -403,7 +403,7 @@ impl GraphitiClient {
             .post(&url)
             .send()
             .await
-            .map_err(|e| GraphitiError::Http(e))?;
+            .map_err(GraphitiError::Http)?;
 
         if !response.status().is_success() {
             return Err(GraphitiError::Request(format!(

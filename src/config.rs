@@ -8,7 +8,7 @@
 //!
 //! The system searches for `config.yaml` in the following order:
 //!
-//! 1. **CYMBIONT_CONFIG environment variable**: Explicit override path
+//! 1. **`CYMBIONT_CONFIG` environment variable**: Explicit override path
 //!    - If set but file doesn't exist, returns error (fail-fast)
 //!    - Use for testing or custom deployments
 //!
@@ -33,9 +33,9 @@
 //!
 //! The config file is divided into logical sections:
 //!
-//! - **graphiti**: Graphiti backend connection (base_url, timeout, server_path)
+//! - **graphiti**: Graphiti backend connection (`base_url`, timeout, `server_path`)
 //! - **similarity**: Search thresholds for semantic matching
-//! - **corpus**: Document sync settings (path, sync_interval)
+//! - **corpus**: Document sync settings (path, `sync_interval`)
 //! - **logging**: Log output configuration (level, directory, rotation)
 //! - **verbosity**: Autodebugger verbosity monitoring thresholds
 //!
@@ -43,9 +43,9 @@
 //!
 //! Paths are validated and normalized during config load:
 //!
-//! - **log_directory**: Can be relative (resolved from binary location) or absolute
-//! - **corpus.path**: Optional; if provided, must be absolute
-//! - **graphiti.server_path**: Can be relative (resolved from binary location) or absolute
+//! - **`log_directory`**: Can be relative (resolved from binary location) or absolute
+//! - **`corpus.path`**: Optional; if provided, must be absolute
+//! - **`graphiti.server_path`**: Can be relative (resolved from binary location) or absolute
 //!
 //! Relative paths are resolved from the binary's parent directory, enabling portable
 //! installs where bundled components live alongside the binary.
@@ -77,7 +77,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Root configuration structure
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Config {
     pub graphiti: GraphitiConfig,
@@ -132,6 +132,7 @@ pub struct LoggingConfig {
 /// Verbosity monitoring thresholds
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[allow(clippy::struct_field_names)]
 pub struct VerbosityConfig {
     pub info_threshold: usize,
     pub debug_threshold: usize,
@@ -139,18 +140,6 @@ pub struct VerbosityConfig {
 }
 
 // Default implementations
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            graphiti: GraphitiConfig::default(),
-            similarity: SimilarityConfig::default(),
-            corpus: CorpusConfig::default(),
-            logging: LoggingConfig::default(),
-            verbosity: VerbosityConfig::default(),
-        }
-    }
-}
 
 impl Default for GraphitiConfig {
     fn default() -> Self {
@@ -207,7 +196,7 @@ impl Config {
     /// Load config from config.yaml with flexible location search
     ///
     /// Search order:
-    /// 1. CYMBIONT_CONFIG environment variable (explicit override)
+    /// 1. `CYMBIONT_CONFIG` environment variable (explicit override)
     /// 2. ./config.yaml (current directory)
     /// 3. cymbiont/config.yaml (repo root, relative to binary)
     /// 4. ~/.config/cymbiont/config.yaml (XDG standard location)
@@ -221,7 +210,7 @@ impl Config {
             let contents = fs::read_to_string(&path)
                 .map_err(|e| ConfigError::Io(e.to_string()))?;
 
-            let mut config: Config = serde_yaml::from_str(&contents)
+            let mut config: Self = serde_yaml::from_str(&contents)
                 .map_err(|e| ConfigError::Parse(e.to_string()))?;
 
             // Validate and enforce absolute paths
@@ -230,7 +219,7 @@ impl Config {
             Ok(config)
         } else {
             tracing::warn!("No config.yaml found, using defaults");
-            Ok(Config::default())
+            Ok(Self::default())
         }
     }
 
@@ -241,12 +230,11 @@ impl Config {
             let path = PathBuf::from(env_path);
             if path.exists() {
                 return Ok(Some(path));
-            } else {
-                return Err(ConfigError::Io(format!(
-                    "CYMBIONT_CONFIG points to non-existent file: {}",
-                    path.display()
-                )));
             }
+            return Err(ConfigError::Io(format!(
+                "CYMBIONT_CONFIG points to non-existent file: {}",
+                path.display()
+            )));
         }
 
         // 2. Check current directory
@@ -282,16 +270,16 @@ impl Config {
     }
 
     /// Validate and normalize paths
-    /// - log_directory: Can be relative (resolved from binary location) or absolute
-    /// - corpus.path: Optional; if provided, must be absolute
-    /// - server_path: Can be relative (resolved from binary location) or absolute
+    /// - `log_directory`: Can be relative (resolved from binary location) or absolute
+    /// - `corpus.path`: Optional; if provided, must be absolute
+    /// - `server_path`: Can be relative (resolved from binary location) or absolute
     fn validate_paths(&mut self) -> Result<(), ConfigError> {
         // Resolve log_directory relative to binary location if not absolute
         let log_path = Path::new(&self.logging.log_directory);
         if !log_path.is_absolute() {
             // Get binary directory
             let exe_path = std::env::current_exe()
-                .map_err(|e| ConfigError::Validation(format!("Failed to get binary path: {}", e)))?;
+                .map_err(|e| ConfigError::Validation(format!("Failed to get binary path: {e}")))?;
             let exe_dir = exe_path.parent()
                 .ok_or_else(|| ConfigError::Validation("Binary has no parent directory".to_string()))?;
 
@@ -305,20 +293,17 @@ impl Config {
             let corpus_path = Path::new(corpus_path_str);
             if !corpus_path.is_absolute() {
                 return Err(ConfigError::Validation(format!(
-                    "corpus.path must be an absolute path, got: {}",
-                    corpus_path_str
+                    "corpus.path must be an absolute path, got: {corpus_path_str}"
                 )));
             }
             if !corpus_path.exists() {
                 return Err(ConfigError::Validation(format!(
-                    "corpus.path does not exist: {}",
-                    corpus_path_str
+                    "corpus.path does not exist: {corpus_path_str}"
                 )));
             }
             if !corpus_path.is_dir() {
                 return Err(ConfigError::Validation(format!(
-                    "corpus.path must be a directory, got: {}",
-                    corpus_path_str
+                    "corpus.path must be a directory, got: {corpus_path_str}"
                 )));
             }
         }
@@ -331,16 +316,16 @@ impl Config {
         }
 
         let server_path = Path::new(&self.graphiti.server_path);
-        let resolved_server_path = if !server_path.is_absolute() {
+        let resolved_server_path = if server_path.is_absolute() {
+            server_path.to_path_buf()
+        } else {
             // Get binary directory and resolve relative path
             let exe_path = std::env::current_exe()
-                .map_err(|e| ConfigError::Validation(format!("Failed to get binary path: {}", e)))?;
+                .map_err(|e| ConfigError::Validation(format!("Failed to get binary path: {e}")))?;
             let exe_dir = exe_path.parent()
                 .ok_or_else(|| ConfigError::Validation("Binary has no parent directory".to_string()))?;
 
             exe_dir.join(&self.graphiti.server_path)
-        } else {
-            server_path.to_path_buf()
         };
 
         // Verify resolved path exists

@@ -8,7 +8,7 @@
 //! ## Memory Management
 //!
 //! - **`add_memory`**: Add new memory episode to knowledge graph
-//!   - Creates EpisodicNode and associated ChunkNode
+//!   - Creates `EpisodicNode` and associated `ChunkNode`
 //!   - Triggers LLM extraction of entities and relationships
 //!   - Use for: Capturing conversations, insights, events
 //!
@@ -45,7 +45,7 @@
 //! The two search tools serve complementary purposes:
 //!
 //! - **`search_context`**: Discovers entities and their relationships
-//!   - Returns extracted knowledge (EntityNode, EntityEdge)
+//!   - Returns extracted knowledge (`EntityNode`, `EntityEdge`)
 //!   - Semantic meaning preserved, exact wording lost
 //!   - Best for: "What do I know about X?" "How are X and Y related?"
 //!
@@ -63,7 +63,7 @@
 
 use crate::client::GraphitiClient;
 use crate::config::Config;
-use crate::types::*;
+use crate::types::{AddMemoryRequest, GetEpisodesRequest, DeleteEpisodeRequest, SyncDocumentsRequest, SearchContextRequest, GetChunksRequest};
 use rmcp::{
     handler::server::{tool::ToolRouter, wrapper::Parameters},
     model::InitializeResult,
@@ -101,7 +101,7 @@ impl CymbiontService {
                 req.source_description.as_deref(),
             )
             .await
-            .map_err(|e| format!("Graphiti request failed: {}", e))
+            .map_err(|e| format!("Graphiti request failed: {e}"))
     }
 
     /// Get recent episodes from knowledge graph
@@ -117,7 +117,7 @@ impl CymbiontService {
             .client
             .get_episodes("default", Some(last_n))
             .await
-            .map_err(|e| format!("Graphiti request failed: {}", e))?;
+            .map_err(|e| format!("Graphiti request failed: {e}"))?;
 
         Ok(serde_json::to_string_pretty(&episodes).unwrap_or_default())
     }
@@ -132,7 +132,7 @@ impl CymbiontService {
         self.client
             .delete_episode(&req.uuid)
             .await
-            .map_err(|e| format!("Graphiti request failed: {}", e))
+            .map_err(|e| format!("Graphiti request failed: {e}"))
     }
 
     // TODO: Consider adding delete_document MCP tool if document deletion becomes common in real workflows
@@ -148,7 +148,7 @@ impl CymbiontService {
         self.client
             .trigger_sync()
             .await
-            .map_err(|e| format!("Graphiti request failed: {}", e))
+            .map_err(|e| format!("Graphiti request failed: {e}"))
     }
 
     /// Search for both nodes and facts in parallel
@@ -170,8 +170,8 @@ impl CymbiontService {
         );
 
         // Handle errors
-        let nodes = nodes_result.map_err(|e| format!("Node search failed: {}", e))?;
-        let facts = facts_result.map_err(|e| format!("Fact search failed: {}", e))?;
+        let nodes = nodes_result.map_err(|e| format!("Node search failed: {e}"))?;
+        let facts = facts_result.map_err(|e| format!("Fact search failed: {e}"))?;
 
         // Merge results into combined JSON
         let combined = serde_json::json!({
@@ -195,7 +195,7 @@ impl CymbiontService {
             .client
             .search_chunks(&req.keyword_query, Some(max_results), req.rerank_query.as_deref())
             .await
-            .map_err(|e| format!("Chunk search failed: {}", e))?;
+            .map_err(|e| format!("Chunk search failed: {e}"))?;
 
         Ok(serde_json::to_string_pretty(&response["chunks"]).unwrap_or_default())
     }

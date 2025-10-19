@@ -1,3 +1,6 @@
 [submodule "autodebugger"]
 	path = autodebugger
 	url = ../../cymbiont/autodebugger
+[submodule "graphiti-cymbiont"]
+	path = graphiti-cymbiont
+	url = https://github.com/Brandtweary/graphiti-cymbiont.git

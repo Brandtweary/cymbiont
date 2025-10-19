@@ -22,6 +22,7 @@ RUST_LOG=info cargo run          # Run with logging
 
 ## Core Directories
 - **src/**: Cymbiont MCP server implementation
+- **graphiti-cymbiont/**: Git submodule - Graphiti backend (FastAPI server + knowledge graph engine)
 - **hooks/**: Claude Code hooks and git hook templates (portable, for users)
   - **inject_kg_context.py**: UserPromptSubmit hook - dual-context KG injection
   - **monitoring_agent.py**: Monitoring trigger (UserPromptSubmit/PreCompact/SessionEnd)

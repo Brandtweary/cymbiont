@@ -11,10 +11,10 @@ graphiti:
   # Default group_id for episodes (allows shared memory across sessions)
   default_group_id: "default"
 
-  # REQUIRED: Absolute path to graphiti-cymbiont/server directory (where main.py lives)
-  # Used to auto-launch Graphiti backend if not already running
-  # Example: "/absolute/path/to/graphiti-cymbiont/server"
-  server_path: ""
+  # Path to graphiti-cymbiont/server directory (where main.py lives)
+  # Default uses bundled graphiti-cymbiont (relative to binary)
+  # Override with custom absolute path if needed
+  # server_path: "/custom/path/to/graphiti-cymbiont/server"
 
 similarity:
   # Minimum similarity score for search results (0.0-1.0)
@@ -22,14 +22,13 @@ similarity:
   min_score: 0.7
 
 corpus:
-  # REQUIRED: Absolute path to document sync directory (markdown files auto-synced to knowledge graph)
-  # Example: "/absolute/path/to/your/corpus"
-  path: ""
+  # Absolute path to corpus directory (markdown files auto-synced to knowledge graph)
+  # Must be absolute. Leave commented/null to disable document sync.
+  # Example: "/home/username/Documents/knowledge-base"
+  path: null
 
   # Sync interval in hours (hourly batch processing)
   sync_interval_hours: 1.0
-
-  # Note: Cymbiont passes this config to Graphiti via POST /sync/start on startup
 
 logging:
   # Logging level: trace, debug, info, warn, error

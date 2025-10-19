@@ -126,11 +126,21 @@ sudo systemctl start neo4j
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-**3. Set up the knowledge graph backend**
+**3. Clone Cymbiont and build**
 
 ```bash
-# Clone and enter directory
-git clone https://github.com/Brandtweary/graphiti-cymbiont.git
+# Clone with submodules (includes bundled graphiti-cymbiont)
+git clone --recurse-submodules https://github.com/Brandtweary/cymbiont.git
+cd cymbiont
+
+# Build Cymbiont
+cargo build --release
+```
+
+**4. Set up the knowledge graph backend**
+
+```bash
+# Configure graphiti-cymbiont (bundled in cymbiont/graphiti-cymbiont/)
 cd graphiti-cymbiont
 
 # Create .env in root directory (required for editable install)
@@ -148,16 +158,7 @@ EOF
 # Install server dependencies with editable graphiti-core
 cd server
 uv sync
-cd ../..  # Return to parent directory
-```
-
-**4. Build Cymbiont**
-
-```bash
-# Clone and enter directory
-git clone https://github.com/Brandtweary/cymbiont.git
-cd cymbiont
-cargo build --release
+cd ../..  # Return to cymbiont root
 ```
 
 **5. Connect to your AI assistant**
@@ -174,7 +175,22 @@ claude mcp add --scope project cymbiont --transport stdio -- /path/to/cymbiont/t
 
 For other MCP-compatible AI assistants: Configure stdio transport to launch the `cymbiont` binary.
 
-**6. Install Claude Code Hooks (Strongly Recommended)**
+**6. Configure corpus path**
+
+Create a directory for your markdown files and configure the path:
+
+```bash
+# Create corpus directory (or use existing one)
+mkdir -p ~/Documents/cymbiont-corpus
+
+# Copy example config and set corpus path
+cd cymbiont
+cp config.example.yaml config.yaml
+# Edit config.yaml and set corpus.path to your directory (must be absolute path)
+# See Configuration section below for full details
+```
+
+**7. Install Claude Code Hooks (Strongly Recommended)**
 
 The hooks enable automatic context injection and memory formation - without them, you need to remind your assistant to search and save to the graph.
 
@@ -275,7 +291,7 @@ nano ~/.claude/hooks/monitoring_protocol.txt
 nano hooks/monitoring_protocol.txt
 ```
 
-**7. Add Cymbiont Instructions to CLAUDE.md**
+**8. Add Cymbiont Instructions to CLAUDE.md**
 
 Your AI assistant needs instructions for using Cymbiont effectively:
 
@@ -315,14 +331,14 @@ AI Assistant (Claude Code, etc.)
     ↓ MCP Protocol (stdio JSON-RPC)
 Cymbiont MCP Server (Rust)
     ↓ HTTP REST API
-Graphiti FastAPI Backend (Python)
+Graphiti-Cymbiont FastAPI Backend (Python, bundled)
     ↓ Bolt Protocol
 Neo4j Knowledge Graph
 ```
 
-**Cymbiont MCP Server**: Rust-based protocol adapter translating MCP's stdio JSON-RPC to Graphiti's HTTP API. Handles backend lifecycle, rotating file logging via autodebugger.
+**Cymbiont MCP Server**: Rust-based protocol adapter translating MCP's stdio JSON-RPC to Graphiti's HTTP API. Handles backend lifecycle, rotating file logging via autodebugger. Includes graphiti-cymbiont as bundled submodule.
 
-**Graphiti Backend**: Python FastAPI server with LLM-powered entity/relationship extraction, hybrid search (BM25 + vector + graph traversal + reranking), and temporal reasoning.
+**Graphiti-Cymbiont Backend**: Python FastAPI server (bundled with Cymbiont) providing LLM-powered entity/relationship extraction, hybrid search (BM25 + vector + graph traversal + reranking), and temporal reasoning. A fork of Graphiti with document synchronization and chunk retrieval features.
 
 **Neo4j Database**: Graph storage with vector indices for embeddings, full-text indices for keyword search, and Cypher query engine.
 
@@ -358,15 +374,22 @@ Neo4j Knowledge Graph
 
 ### Configuration
 
-Copy `config.example.yaml` to `config.yaml` and customize for your environment.
+**What you need to configure**: Set `corpus.path` to an absolute path where you want to keep your markdown files. All other settings have sensible defaults.
+
+Copy `config.example.yaml` to `config.yaml` and set your corpus path:
+
+```bash
+cp config.example.yaml config.yaml
+# Edit config.yaml and set corpus.path to your directory
+```
 
 Cymbiont searches for config.yaml in multiple locations (first match wins):
 
 1. **`CYMBIONT_CONFIG` environment variable** - Explicit override path
-2. **`./config.yaml`** - Current directory (recommended for development, git cloned repos)
-3. **`~/.config/cymbiont/config.yaml`** - XDG standard location (recommended for production)
-4. **`<binary-dir>/config.yaml`** - Next to cymbiont binary (portable installs)
-5. **Defaults** - If no config file found (may fail validation if paths required)
+2. **`./config.yaml`** - Current working directory
+3. **`cymbiont/config.yaml`** - Repo root (relative to binary - goes up 2 levels from `target/debug/cymbiont`)
+4. **`~/.config/cymbiont/config.yaml`** - XDG standard location (recommended for production)
+5. **Defaults** - If no config file found (corpus.path defaults to None, document sync disabled)
 
 **Recommended setup during development** (git cloned repo):
 ```bash
@@ -383,13 +406,15 @@ graphiti:
   base_url: "http://localhost:8000"
   timeout_secs: 30
   default_group_id: "default"
-  server_path: "/path/to/graphiti-cymbiont/server"  # Required: absolute path
+  # server_path uses bundled graphiti-cymbiont by default
+  # Override only if using custom installation:
+  # server_path: "/custom/path/to/graphiti-cymbiont/server"
 
 similarity:
   min_score: 0.7
 
 corpus:
-  path: "/path/to/markdown/documents"  # Required: absolute path
+  path: "/path/to/markdown/documents"  # Absolute path to your corpus directory
   sync_interval_hours: 1.0
 
 logging:
@@ -404,10 +429,6 @@ verbosity:
   debug_threshold: 100
   trace_threshold: 200
 ```
-
-**Path Requirements**:
-- `server_path` and `corpus.path` must be absolute paths
-- `log_directory` can be relative (resolved from binary location) or absolute
 
 ### Data Model
 

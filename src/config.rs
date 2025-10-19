@@ -13,20 +13,21 @@
 //!    - Use for testing or custom deployments
 //!
 //! 2. **./config.yaml**: Current working directory
-//!    - For development in git repository
+//!    - When CWD is set to cymbiont repo root
 //!    - Ignored by git (in .gitignore)
 //!
-//! 3. **~/.config/cymbiont/config.yaml**: XDG standard location
+//! 3. **cymbiont/config.yaml**: Repo root (relative to binary location)
+//!    - Binary is at `cymbiont/target/debug/cymbiont`
+//!    - Goes up 2 levels to find `cymbiont/config.yaml`
+//!    - Works regardless of where MCP server is launched from
+//!
+//! 4. **~/.config/cymbiont/config.yaml**: XDG standard location
 //!    - For production system-wide installs
 //!    - Uses `directories` crate for cross-platform XDG support
 //!
-//! 4. **<binary-dir>/config.yaml**: Next to executable
-//!    - For portable installations
-//!    - Determined via `std::env::current_exe()`
-//!
 //! 5. **Defaults**: If no config found, use hardcoded defaults
 //!    - Logs warning
-//!    - Requires `corpus.path` and `graphiti.server_path` to be set before use
+//!    - Corpus path defaults to None (document sync disabled)
 //!
 //! # Configuration Structure
 //!
@@ -43,11 +44,11 @@
 //! Paths are validated and normalized during config load:
 //!
 //! - **log_directory**: Can be relative (resolved from binary location) or absolute
-//! - **corpus.path**: REQUIRED, must be absolute
-//! - **graphiti.server_path**: REQUIRED, must be absolute
+//! - **corpus.path**: Optional; if provided, must be absolute
+//! - **graphiti.server_path**: Can be relative (resolved from binary location) or absolute
 //!
-//! Relative paths for log_directory are resolved from the binary's parent directory,
-//! enabling portable installs where logs live alongside the binary.
+//! Relative paths are resolved from the binary's parent directory, enabling portable
+//! installs where bundled components live alongside the binary.
 //!
 //! # Example
 //!
@@ -107,7 +108,7 @@ pub struct SimilarityConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CorpusConfig {
-    pub path: String,
+    pub path: Option<String>,
     pub sync_interval_hours: f64,
 }
 
@@ -152,7 +153,7 @@ impl Default for GraphitiConfig {
             base_url: "http://localhost:8000".to_string(),
             timeout_secs: 30,
             default_group_id: "default".to_string(),
-            server_path: String::new(), // REQUIRED: Must be configured in config.yaml
+            server_path: "../graphiti-cymbiont/server".to_string(), // Bundled graphiti-cymbiont
         }
     }
 }
@@ -166,7 +167,7 @@ impl Default for SimilarityConfig {
 impl Default for CorpusConfig {
     fn default() -> Self {
         Self {
-            path: String::new(), // REQUIRED: Must be configured in config.yaml
+            path: None,
             sync_interval_hours: 1.0,
         }
     }
@@ -202,9 +203,9 @@ impl Config {
     ///
     /// Search order:
     /// 1. CYMBIONT_CONFIG environment variable (explicit override)
-    /// 2. ./config.yaml (current directory, for development)
-    /// 3. ~/.config/cymbiont/config.yaml (XDG standard location)
-    /// 4. <binary-dir>/config.yaml (portable install)
+    /// 2. ./config.yaml (current directory)
+    /// 3. cymbiont/config.yaml (repo root, relative to binary)
+    /// 4. ~/.config/cymbiont/config.yaml (XDG standard location)
     /// 5. Defaults (if no config file found)
     pub fn load() -> Result<Self, ConfigError> {
         let config_path = Self::find_config_file()?;
@@ -249,7 +250,21 @@ impl Config {
             return Ok(Some(cwd_config));
         }
 
-        // 3. Check XDG config directory (~/.config/cymbiont/config.yaml)
+        // 3. Check cymbiont repo root (relative to binary location)
+        // Binary is at cymbiont/target/debug/cymbiont, go up 2 levels to cymbiont/
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(exe_dir) = exe_path.parent() {
+                // exe_dir is target/debug/, go up 2 levels
+                if let Some(repo_root) = exe_dir.parent().and_then(|p| p.parent()) {
+                    let repo_config = repo_root.join("config.yaml");
+                    if repo_config.exists() {
+                        return Ok(Some(repo_config));
+                    }
+                }
+            }
+        }
+
+        // 4. Check XDG config directory (~/.config/cymbiont/config.yaml)
         if let Some(proj_dirs) = ProjectDirs::from("", "", "cymbiont") {
             let xdg_config = proj_dirs.config_dir().join("config.yaml");
             if xdg_config.exists() {
@@ -257,24 +272,14 @@ impl Config {
             }
         }
 
-        // 4. Check next to binary
-        let exe_path = std::env::current_exe()
-            .map_err(|e| ConfigError::Io(format!("Failed to get binary path: {}", e)))?;
-        let exe_dir = exe_path.parent()
-            .ok_or_else(|| ConfigError::Io("Binary has no parent directory".to_string()))?;
-        let binary_config = exe_dir.join("config.yaml");
-        if binary_config.exists() {
-            return Ok(Some(binary_config));
-        }
-
-        // 5. No config found
+        // No config found
         Ok(None)
     }
 
     /// Validate and normalize paths
     /// - log_directory: Can be relative (resolved from binary location) or absolute
-    /// - corpus.path: REQUIRED, must be absolute
-    /// - server_path: REQUIRED, must be absolute
+    /// - corpus.path: Optional; if provided, must be absolute
+    /// - server_path: Can be relative (resolved from binary location) or absolute
     fn validate_paths(&mut self) -> Result<(), ConfigError> {
         // Resolve log_directory relative to binary location if not absolute
         let log_path = Path::new(&self.logging.log_directory);
@@ -290,33 +295,60 @@ impl Config {
             self.logging.log_directory = resolved.to_string_lossy().to_string();
         }
 
-        // Corpus path is REQUIRED and must be absolute
-        if self.corpus.path.is_empty() {
-            return Err(ConfigError::Validation(
-                "corpus.path is required - please configure it in config.yaml".to_string()
-            ));
-        }
-        let corpus_path = Path::new(&self.corpus.path);
-        if !corpus_path.is_absolute() {
-            return Err(ConfigError::Validation(format!(
-                "corpus.path must be an absolute path, got: {}",
-                self.corpus.path
-            )));
+        // Corpus path is optional; if provided, must be absolute
+        if let Some(corpus_path_str) = &self.corpus.path {
+            let corpus_path = Path::new(corpus_path_str);
+            if !corpus_path.is_absolute() {
+                return Err(ConfigError::Validation(format!(
+                    "corpus.path must be an absolute path, got: {}",
+                    corpus_path_str
+                )));
+            }
+            if !corpus_path.exists() {
+                return Err(ConfigError::Validation(format!(
+                    "corpus.path does not exist: {}",
+                    corpus_path_str
+                )));
+            }
+            if !corpus_path.is_dir() {
+                return Err(ConfigError::Validation(format!(
+                    "corpus.path must be a directory, got: {}",
+                    corpus_path_str
+                )));
+            }
         }
 
-        // Graphiti server path is REQUIRED and must be absolute
+        // Graphiti server path - resolve relative paths from binary location
         if self.graphiti.server_path.is_empty() {
             return Err(ConfigError::Validation(
                 "graphiti.server_path is required - please configure it in config.yaml".to_string()
             ));
         }
+
         let server_path = Path::new(&self.graphiti.server_path);
-        if !server_path.is_absolute() {
+        let resolved_server_path = if !server_path.is_absolute() {
+            // Get binary directory and resolve relative path
+            let exe_path = std::env::current_exe()
+                .map_err(|e| ConfigError::Validation(format!("Failed to get binary path: {}", e)))?;
+            let exe_dir = exe_path.parent()
+                .ok_or_else(|| ConfigError::Validation("Binary has no parent directory".to_string()))?;
+
+            exe_dir.join(&self.graphiti.server_path)
+        } else {
+            server_path.to_path_buf()
+        };
+
+        // Verify resolved path exists
+        if !resolved_server_path.exists() {
             return Err(ConfigError::Validation(format!(
-                "graphiti.server_path must be an absolute path, got: {}",
-                self.graphiti.server_path
+                "graphiti.server_path does not exist: {} (resolved to: {})",
+                self.graphiti.server_path,
+                resolved_server_path.display()
             )));
         }
+
+        // Update to absolute path
+        self.graphiti.server_path = resolved_server_path.to_string_lossy().to_string();
 
         Ok(())
     }

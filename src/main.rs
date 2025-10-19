@@ -62,24 +62,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = GraphitiClient::new(&config.graphiti)?;
     tracing::info!("Graphiti client initialized (base_url: {})", config.graphiti.base_url);
 
-    // Initialize document sync watcher (hourly sync)
-    match client
-        .start_sync(
-            &config.corpus.path,
-            config.corpus.sync_interval_hours,
-            &config.graphiti.default_group_id,
-        )
-        .await
-    {
-        Ok(msg) => tracing::info!("Document sync watcher started: {}", msg),
-        Err(e) => tracing::error!("Failed to start document sync watcher: {} (continuing without sync)", e),
-    }
+    // Initialize document sync if corpus path is configured
+    let sync_enabled = if let Some(corpus_path) = &config.corpus.path {
+        tracing::info!("Corpus path configured: {}", corpus_path);
 
-    // Trigger immediate sync on startup
-    match client.trigger_sync().await {
-        Ok(msg) => tracing::info!("Initial document sync triggered: {}", msg),
-        Err(e) => tracing::error!("Failed to trigger initial sync: {}", e),
-    }
+        // Start document sync watcher (hourly sync)
+        match client
+            .start_sync(
+                corpus_path,
+                config.corpus.sync_interval_hours,
+                &config.graphiti.default_group_id,
+            )
+            .await
+        {
+            Ok(msg) => tracing::info!("Document sync watcher started: {}", msg),
+            Err(e) => tracing::error!("Failed to start document sync watcher: {} (continuing without sync)", e),
+        }
+
+        // Trigger immediate sync on startup
+        match client.trigger_sync().await {
+            Ok(msg) => tracing::info!("Initial document sync triggered: {}", msg),
+            Err(e) => tracing::error!("Failed to trigger initial sync: {}", e),
+        }
+
+        true
+    } else {
+        tracing::warn!("No corpus path configured - document sync disabled");
+        tracing::warn!("To enable document sync, set 'corpus.path' in config.yaml");
+        false
+    };
 
     // Create Cymbiont MCP service
     let service = CymbiontService::new(client.clone(), config);
@@ -92,11 +103,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Wait for server shutdown
     let _quit_reason = server.waiting().await?;
 
-    // Graceful shutdown: stop document sync
-    tracing::info!("Shutting down document sync...");
-    match client.stop_sync().await {
-        Ok(msg) => tracing::info!("{}", msg),
-        Err(e) => tracing::error!("Failed to stop document sync: {}", e),
+    // Graceful shutdown: stop document sync if it was started
+    if sync_enabled {
+        tracing::info!("Shutting down document sync...");
+        match client.stop_sync().await {
+            Ok(msg) => tracing::info!("{}", msg),
+            Err(e) => tracing::error!("Failed to stop document sync: {}", e),
+        }
     }
 
     // Check for excessive logging and report

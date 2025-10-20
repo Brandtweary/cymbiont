@@ -337,17 +337,23 @@ def main():
             # No prompt to query, return empty context
             sys.exit(0)
 
-        # TODO: Remove this workaround once Claude Code fixes stale session_id bug
-        # WORKAROUND: Claude Code bug passes stale session ID after reload
-        # Manually find most recently modified transcript
-        import glob
-        session_dir = Path.home() / ".claude/projects/-home-brandt-projects-hector"
-        transcripts = glob.glob(str(session_dir / "*.jsonl"))
-        if transcripts:
-            transcript_path = max(transcripts, key=os.path.getmtime)
-        else:
-            # Fallback to hook input if no transcripts found
-            transcript_path = input_data.get('transcript_path', '')
+        # Get transcript path from hook input
+        transcript_path = input_data.get('transcript_path', '')
+        session_id = input_data.get('session_id', '')
+
+        # Debug: Log what we received to detect stale transcript bug
+        # See: https://github.com/anthropics/claude-code/issues/9188
+        try:
+            with open(log_file, 'a') as f:
+                f.write(f"Hook input: session_id={session_id}, transcript_path={transcript_path}\n")
+                if transcript_path and os.path.exists(transcript_path):
+                    mtime = os.path.getmtime(transcript_path)
+                    age_seconds = time.time() - mtime
+                    f.write(f"Transcript age: {age_seconds:.1f}s (modified: {time.ctime(mtime)})\n")
+                else:
+                    f.write(f"Transcript not found or empty path\n")
+        except Exception:
+            pass
 
         # Get last assistant message from transcript
         start_time = time.time()

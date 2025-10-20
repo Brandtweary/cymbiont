@@ -7,7 +7,6 @@ Also runs on PreCompact/SessionEnd with --force flag to capture remaining messag
 This script exits immediately to avoid blocking the main conversation.
 """
 
-import glob
 import json
 import sys
 import subprocess
@@ -130,17 +129,8 @@ def main():
             # Reset counter (before worker spawn in case of errors)
             counter_file.write_text("0")
 
-        # TODO: Remove this workaround once Claude Code fixes stale session_id bug
-        # WORKAROUND: Claude Code bug passes stale session ID after reload
-        # Manually find most recently modified transcript
-        session_dir = Path.home() / ".claude/projects/-home-brandt-projects-hector"
-        transcripts = glob.glob(str(session_dir / "*.jsonl"))
-
-        if transcripts:
-            transcript_path = max(transcripts, key=os.path.getmtime)
-        else:
-            # Fallback to hook input if no transcripts found
-            transcript_path = input_data.get('transcript_path', '')
+        # Get transcript path from hook input
+        transcript_path = input_data.get('transcript_path', '')
 
         # Validate transcript path
         if not transcript_path or not os.path.exists(transcript_path):

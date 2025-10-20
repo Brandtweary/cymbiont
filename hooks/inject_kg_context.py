@@ -13,11 +13,12 @@ import asyncio
 import json
 import os
 import sys
+import time
 import yaml
 from pathlib import Path
 from typing import Any
 
-import requests
+import httpx
 
 
 def get_log_directory() -> Path:
@@ -59,7 +60,7 @@ class Edge:
         self.target_node_name = target_node_name or target_node_uuid
 
 
-async def query_knowledge_graph(query_text: str, node_limit: int = 6, edge_limit: int = 12) -> tuple[list[Any], list[Any]]:
+async def query_knowledge_graph(query_text: str, node_limit: int = 6, edge_limit: int = 12) -> tuple[list[Any], list[Any], dict[str, float]]:
     """
     Query Graphiti FastAPI server for relevant nodes and facts.
 
@@ -69,26 +70,34 @@ async def query_knowledge_graph(query_text: str, node_limit: int = 6, edge_limit
         edge_limit: Number of edges to fetch (default 12 for agent queries with dedup headroom)
 
     Returns:
-        Tuple of (nodes, edges)
+        Tuple of (nodes, edges, timing_dict)
 
     Raises:
         Exception: Propagates any errors to caller for accumulation
     """
-    # Query nodes via FastAPI
-    node_response = requests.post(
-        "http://localhost:8000/search/nodes",
-        json={"query": query_text, "max_nodes": node_limit}
-    )
-    node_response.raise_for_status()
-    node_data = node_response.json()
+    timing = {}
 
-    # Query facts via FastAPI
-    fact_response = requests.post(
-        "http://localhost:8000/search",
-        json={"query": query_text, "max_facts": edge_limit}
-    )
-    fact_response.raise_for_status()
-    fact_data = fact_response.json()
+    async with httpx.AsyncClient() as client:
+        # Query nodes and facts in parallel
+        start = time.time()
+        node_task = client.post(
+            "http://localhost:8000/search/nodes",
+            json={"query": query_text, "max_nodes": node_limit}
+        )
+        edge_task = client.post(
+            "http://localhost:8000/search",
+            json={"query": query_text, "max_facts": edge_limit}
+        )
+
+        node_response, fact_response = await asyncio.gather(node_task, edge_task)
+
+        node_response.raise_for_status()
+        fact_response.raise_for_status()
+
+        node_data = node_response.json()
+        fact_data = fact_response.json()
+
+        timing['query_parallel'] = time.time() - start
 
     # Convert JSON responses to Node/Edge objects
     nodes = [Node(uuid=n["uuid"], name=n["name"], summary=n["summary"])
@@ -104,7 +113,7 @@ async def query_knowledge_graph(query_text: str, node_limit: int = 6, edge_limit
         target_node_name=e.get("target_node_name")
     ) for e in fact_data.get("facts", [])]
 
-    return nodes, edges
+    return nodes, edges, timing
 
 
 def get_last_assistant_message(transcript_path: str) -> str | None:
@@ -149,7 +158,7 @@ def get_last_assistant_message(transcript_path: str) -> str | None:
     return last_assistant_msg
 
 
-async def query_dual_context(user_msg: str, agent_msg: str | None) -> tuple[list[Any], list[Any], list[Any], list[Any]]:
+async def query_dual_context(user_msg: str, agent_msg: str | None) -> tuple[list[Any], list[Any], list[Any], list[Any], dict[str, float]]:
     """
     Query knowledge graph with both user and agent messages in parallel.
 
@@ -157,20 +166,26 @@ async def query_dual_context(user_msg: str, agent_msg: str | None) -> tuple[list
     Agent query fetches 2× target (6n/12e) - provides headroom for deduplication backfill.
 
     Returns:
-        Tuple of (user_nodes, user_edges, agent_nodes, agent_edges)
+        Tuple of (user_nodes, user_edges, agent_nodes, agent_edges, timing_dict)
     """
+    timing = {}
+
     if agent_msg:
         # Parallel queries: user gets exact count, agent gets 2× for deduplication headroom
-        (user_nodes, user_edges), (agent_nodes, agent_edges) = await asyncio.gather(
+        (user_nodes, user_edges, user_timing), (agent_nodes, agent_edges, agent_timing) = await asyncio.gather(
             query_knowledge_graph(user_msg, node_limit=3, edge_limit=6),
             query_knowledge_graph(agent_msg, node_limit=6, edge_limit=12)
         )
+        timing['user_query'] = user_timing['query_parallel']
+        timing['agent_query'] = agent_timing['query_parallel']
     else:
         # No agent message, only query user context
-        user_nodes, user_edges = await query_knowledge_graph(user_msg, node_limit=3, edge_limit=6)
+        user_nodes, user_edges, user_timing = await query_knowledge_graph(user_msg, node_limit=3, edge_limit=6)
         agent_nodes, agent_edges = [], []
+        timing['user_query'] = user_timing['query_parallel']
+        timing['agent_query'] = 0.0
 
-    return user_nodes, user_edges, agent_nodes, agent_edges
+    return user_nodes, user_edges, agent_nodes, agent_edges, timing
 
 
 def deduplicate_with_backfill(
@@ -256,12 +271,18 @@ def format_xml_context(
     user_edges: list[Any],
     agent_nodes: list[Any],
     agent_edges: list[Any],
-    errors: list[str] = None
+    errors: list[str] = None,
+    elapsed_time: float = 0.0
 ) -> str:
     """
     Format dual-context query results as XML for injection into Claude's context.
     """
     xml_parts = ["<knowledge-graph>"]
+
+    # Performance timing
+    xml_parts.append(f"<query-performance>{elapsed_time:.3f}s</query-performance>")
+
+    xml_parts.append("")  # blank line
 
     # Error section (if any errors occurred)
     if errors:
@@ -293,6 +314,8 @@ def main():
     """Main hook entry point."""
     errors = []
     user_nodes, user_edges, agent_nodes, agent_edges = [], [], [], []
+    elapsed_time = 0.0
+    timing_breakdown = {}
 
     # Simple debug log (overwrite mode)
     try:
@@ -327,22 +350,27 @@ def main():
             transcript_path = input_data.get('transcript_path', '')
 
         # Get last assistant message from transcript
+        start_time = time.time()
         agent_msg = None
         try:
             agent_msg = get_last_assistant_message(transcript_path) if transcript_path else None
         except Exception as e:
             errors.append(f"Transcript parsing error: {type(e).__name__}: {str(e)}")
+        timing_breakdown['transcript'] = time.time() - start_time
 
         # Query knowledge graph with dual context
+        query_start = time.time()
         try:
-            user_nodes_raw, user_edges_raw, agent_nodes_raw, agent_edges_raw = asyncio.run(
+            user_nodes_raw, user_edges_raw, agent_nodes_raw, agent_edges_raw, query_timing = asyncio.run(
                 query_dual_context(user_prompt, agent_msg)
             )
+            timing_breakdown.update(query_timing)
         except Exception as e:
             errors.append(f"Knowledge graph query error: {type(e).__name__}: {str(e)}")
             user_nodes_raw, user_edges_raw, agent_nodes_raw, agent_edges_raw = [], [], [], []
 
         # Deduplicate with user-priority backfill
+        dedup_start = time.time()
         try:
             user_nodes, agent_nodes, _ = deduplicate_with_backfill(user_nodes_raw, agent_nodes_raw, target_count=3)
             user_edges, agent_edges, _ = deduplicate_with_backfill(user_edges_raw, agent_edges_raw, target_count=6)
@@ -350,6 +378,14 @@ def main():
             errors.append(f"Deduplication error: {type(e).__name__}: {str(e)}")
             user_nodes, agent_nodes = user_nodes_raw[:3], agent_nodes_raw[:3]
             user_edges, agent_edges = user_edges_raw[:6], agent_edges_raw[:6]
+        timing_breakdown['dedup'] = time.time() - dedup_start
+
+        # Calculate total elapsed time for performance monitoring
+        elapsed_time = time.time() - start_time
+
+        # Alert on performance degradation
+        if elapsed_time > 5.0:
+            errors.append(f"Performance warning: KG query took {elapsed_time:.3f}s (threshold: 5.0s)")
 
     except Exception as e:
         # Catastrophic error - capture it
@@ -358,7 +394,7 @@ def main():
         errors.append(f"Traceback: {traceback.format_exc()}")
 
     # Always format and print context (even if empty/with errors)
-    xml_context = format_xml_context(user_nodes, user_edges, agent_nodes, agent_edges, errors)
+    xml_context = format_xml_context(user_nodes, user_edges, agent_nodes, agent_edges, errors, elapsed_time)
     print(xml_context)
     sys.exit(0)
 

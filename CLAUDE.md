@@ -6,24 +6,23 @@
 - **README.md**: User documentation and technical overview
 - **GRAPHITI_CONFIG.md**: Graphiti backend configuration reference (env vars, search recipes, tunable parameters)
 
-## Build/Test Commands
+## Commands
 ```bash
 # In cymbiont root
 cargo check                      # Quick syntax check
 cargo build                      # Build cymbiont
-cargo test                       # Run test suite
-RUST_LOG=info cargo run          # Run with logging
 ```
 
 ## Development Workflow
 
-**Editing Cymbiont**: After changes, run `cargo build` (debug build), then wait for session reload to pick up new binary.
+**Editing Cymbiont**: After changes, rebuild (`cargo build` for debug or `cargo build --release`) to match whichever binary your MCP is pointing to, then wait for session reload.
 
 **Editing Graphiti**: Kill the Graphiti server process first (`pkill -f "uvicorn graph_service.main:app"`). Cymbiont will auto-launch fresh instance on next connection.
 
 ## Core Directories
 - **src/**: Cymbiont MCP server implementation
 - **graphiti-cymbiont/**: Git submodule - Graphiti backend (FastAPI server + knowledge graph engine)
+- **autodebugger/**: Git submodule - logging utilities with verbosity monitoring
 - **hooks/**: Claude Code hooks and git hook templates (portable, for users)
   - **inject_kg_context.py**: UserPromptSubmit hook - dual-context KG injection
   - **monitoring_agent.py**: Monitoring trigger (UserPromptSubmit/PreCompact/SessionEnd)
@@ -35,7 +34,6 @@ RUST_LOG=info cargo run          # Run with logging
 - **logs/**: Log directory
   - **timestamped/**: Timestamped log files
   - **cymbiont_mcp_latest.log**: Symlink to latest log
-- **autodebugger/**: Git submodule - logging utilities with verbosity monitoring
 
 ## Project Structure
 - **src/**
@@ -50,11 +48,9 @@ RUST_LOG=info cargo run          # Run with logging
 ## Codebase Guidelines
 - Logging: use `tracing` macros - `error!()`, `warn!()`, `info!()`, `debug!()`, `trace!()`
 - Error handling: use `anyhow::Result` for application errors, `thiserror` for library errors
-- Config file is optional - all settings have sensible defaults
 - Don't inline imports (except for temp debugging)
 - Comments are welcome for complex logic
 - Hooks: Read log path from config.yaml (`logging.directory`), default to `logs/` if not configured
-
 
 ### Log Level Guidelines
 - **INFO**: Use sparingly, only for messages you would want to see on every single run

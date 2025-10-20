@@ -104,10 +104,9 @@ Cymbiont embraces an append-only model inherited from Graphiti. Rather than edit
 - **Use synced documents for content you'll edit**: Files in your corpus are easy to review and modify manually; conversational episodes become append-only memory
 - **Follow PKM hygiene**: No log files, no bulk external sources - link to external resources instead of ingesting them
 - **Be cautious with automation**: Homegrown scripts can easily dump thousands of files with unbounded API costs; the code2prompt post-commit hook (included in `hooks/`) regenerates codebase maps after every commit, but you'll want to filter out submodules or directories you've already indexed separately to avoid double-indexing the same code
-- **Deletion is awkward**: See [Deleting Data](#deleting-data) section for details
 - **Expect initial costs**: Your first corpus sync may cost $10-50 depending on size (assuming several hundred pages of notes), but costs stabilize quickly once you're only adding documents manually
 
-The graph grows organically as you work. Treat it like a living PKM system, not a curated database. Add corrections rather than seeking perfection, and trust the temporal model to handle contradictions over time.
+The graph grows organically as you work. Treat it like a living PKM system, not a curated database. Add corrections rather than seeking perfection, and trust the temporal model to handle contradictions over time. For cases where you do need to remove data, see [DELETING_DATA.md](DELETING_DATA.md).
 
 ## Installation Instructions
 
@@ -497,25 +496,6 @@ kill <PID>
 ```
 
 Next Cymbiont connection will start a fresh instance.
-
-## Deleting Data
-
-Cymbiont intentionally makes deletion non-trivial to reinforce the append-only paradigm. If you find yourself wanting to delete data frequently, you're probably fighting the system's design. Add corrective episodes instead.
-
-**Deleting conversational episodes**:
-```bash
-# Via MCP tool (easiest - your assistant can do this)
-# Just ask: "Delete episode <uuid>"
-# The delete_episode tool handles cleanup automatically
-```
-
-**Deleting synced documents**:
-```bash
-# Via curl (requires manual endpoint call)
-curl -X DELETE "http://localhost:8000/document/<document-uri>?delete_episodes=true"
-```
-
-**Deleting specific nodes or edges**: Your assistant can use cypher commands to manipulate the graph directly, but we don't recommend it. Fine-grained data surgery goes against Cymbiont's philosophy - add corrections rather than rewriting history.
 
 ## Upcoming Features
 

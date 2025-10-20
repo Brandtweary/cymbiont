@@ -4,6 +4,7 @@
 - **This file**: Development commands and guidelines
 - **config.example.yaml**: Configuration template
 - **README.md**: User documentation and technical overview
+- **DELETING_DATA.md**: Data deletion guide
 - **GRAPHITI_CONFIG.md**: Graphiti backend configuration reference (env vars, search recipes, tunable parameters)
 
 ## Commands

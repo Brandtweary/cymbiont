@@ -103,7 +103,7 @@ Cymbiont embraces an append-only model inherited from Graphiti. Rather than edit
 - **Add liberally**: Graph search scales sub-linearly; don't be stingy with memories or synced documents
 - **Use synced documents for content you'll edit**: Files in your corpus are easy to review and modify manually; conversational episodes become append-only memory
 - **Follow PKM hygiene**: No log files, no bulk external sources - link to external resources instead of ingesting them
-- **Be cautious with automation**: The code2prompt post-commit hook is powerful but requires careful filtering. Only sync files you'll actually reference
+- **Be cautious with automation**: Homegrown scripts can easily dump thousands of files with unbounded API costs; the code2prompt post-commit hook (included in `hooks/`) regenerates codebase maps after every commit, but you'll want to filter out submodules or directories you've already indexed separately to avoid double-indexing the same code
 - **Deletion is awkward**: See [Deleting Data](#deleting-data) section for details
 - **Expect initial costs**: Your first corpus sync may cost $10-50 depending on size (assuming several hundred pages of notes), but costs stabilize quickly once you're only adding documents manually
 
@@ -525,6 +525,7 @@ curl -X DELETE "http://localhost:8000/document/<document-uri>?delete_episodes=tr
 
 ## Resources
 
+- **Contributing Guide**: [CONTRIBUTING.md](CONTRIBUTING.md)
 - **Cymbiont Repository**: [github.com/Brandtweary/cymbiont](https://github.com/Brandtweary/cymbiont)
 - **Graphiti Fork**: [github.com/Brandtweary/graphiti-cymbiont](https://github.com/Brandtweary/graphiti-cymbiont)
 - **Neo4j Documentation**: [neo4j.com/docs](https://neo4j.com/docs/)

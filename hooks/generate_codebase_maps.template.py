@@ -54,8 +54,8 @@ TEMP_DIR = "/tmp"
 INCLUDE_PATTERNS = "*.rs,*.py,*.toml,*.yaml,*.yml,*.md,*.sh,*.json"
 
 # Directories and patterns to exclude
-# Common: build artifacts, dependencies, logs, caches
-EXCLUDE_PATTERNS = "*.pyc,__pycache__,node_modules,.git,build,dist,*.egg-info,target,.venv,logs,venv"
+# Common: build artifacts, dependencies, logs, caches, data directories
+EXCLUDE_PATTERNS = "*.pyc,__pycache__,node_modules,.git,build,dist,*.egg-info,target,.venv,logs,data,archive,venv"
 
 # Additional code2prompt flags (optional)
 # Examples: --encoding utf-8, --diff, --git-diff-branch main

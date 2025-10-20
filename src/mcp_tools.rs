@@ -111,7 +111,7 @@ impl CymbiontService {
         params: Parameters<GetEpisodesRequest>,
     ) -> Result<String, String> {
         let req = &params.0;
-        let last_n = req.last_n.unwrap_or(10);
+        let last_n = req.last_n.unwrap_or(10).min(100);
 
         let episodes = self
             .client
@@ -158,8 +158,8 @@ impl CymbiontService {
         params: Parameters<SearchContextRequest>,
     ) -> Result<String, String> {
         let req = &params.0;
-        let max_results = req.max_results.unwrap_or(5);
-        let max_facts = max_results * 2; // 1:2 ratio - facts are more information-dense
+        let max_results = req.max_results.unwrap_or(5).min(100);
+        let max_facts = (max_results * 2).min(200); // 1:2 ratio - facts are more information-dense
 
         // Run both searches in parallel (group_ids=None searches all groups, but "default" is the only group used)
         let (nodes_result, facts_result) = tokio::join!(
@@ -189,7 +189,7 @@ impl CymbiontService {
         params: Parameters<GetChunksRequest>,
     ) -> Result<String, String> {
         let req = &params.0;
-        let max_results = req.max_results.unwrap_or(10);
+        let max_results = req.max_results.unwrap_or(10).min(100);
 
         let response = self
             .client

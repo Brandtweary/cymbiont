@@ -1,26 +1,26 @@
 # Cymbiont
 
-> **A knowledge graph engine for self-organizing AI agents**
+> **Self-organizing knowledge graph memory for AI**
 
 You're organizing a conference. The keynote speaker just canceled. Two weeks out.
 
-You open your notes, type out the situation. She was also moderating the afternoon panel. Her talk was anchoring the entire distributed systems track - three other speakers structured their talks as responses to her framework. You save the file. Cymbiont syncs it to the knowledge graph automatically.
+You open your notes, type out the situation. She was also moderating the afternoon panel. Her talk was anchoring the entire distributed systems track; three other speakers structured their talks as responses to her framework. You save the file. Cymbiont syncs it to the knowledge graph automatically.
 
-You start chatting with your AI assistant: "Okay, we need a replacement keynote. Who do we know working on consensus algorithms?" Your assistant immediately pulls up the speaker outreach notes you wrote three months ago - the two candidates who said maybe-next-year, the one who couldn't travel in spring, the researcher whose work would actually pair better with the panel topic anyway. You didn't dig through old documents. You didn't copy-paste your notes into the chat. The context was already there, retrieved silently based on what you're discussing right now.
+You start chatting with your AI assistant: "Okay, we need a replacement keynote. Who do we know working on consensus algorithms?" Your assistant immediately pulls up the speaker outreach notes you wrote three months ago: the two candidates who said maybe-next-year, the one who couldn't travel in spring, the researcher whose work would actually pair better with the panel topic anyway. You didn't dig through old documents. You didn't copy-paste your notes into the chat. The context was already there, retrieved silently based on what you're discussing right now.
 
-"Wait," you say, "if we bring in the researcher, doesn't that change the panel focus?" Your assistant surfaces the panel description from the website copy, the moderator's proposed questions from an email two weeks ago, the three panelists' talk abstracts. Everything connected. You didn't ask it to search - it knew what you needed. The panic starts to subside. You're not drowning in details anymore. You're actually thinking strategically.
+"Wait," you say, "if we bring in the researcher, doesn't that change the panel focus?" Your assistant surfaces the panel description from the website copy, the moderator's proposed questions from an email two weeks ago, the three panelists' talk abstracts. Everything connected. You didn't ask it to search; it knew what you needed. The panic starts to subside. You're not drowning in details anymore. You're actually thinking strategically.
 
-As you work through the solution together - restructure the panel, move one talk to a different track, brief the replacement speaker on the themes - Cymbiont extracts the key decisions from your conversation and saves them to the knowledge graph automatically. The new panel format. The rationale for the track changes. The timeline for confirming with speakers. No "write this down for later." No manual bookkeeping.
+As you work through the solution together (restructure the panel, move one talk to a different track, brief the replacement speaker on the themes), Cymbiont extracts the key decisions from your conversation and saves them to the knowledge graph automatically. The new panel format. The rationale for the track changes. The timeline for confirming with speakers. No "write this down for later." No manual bookkeeping.
 
-For the critical details - speaker contracts, updated session times - you ask your assistant to record them explicitly to the graph with exact wording. The save happens asynchronously. You keep talking, barely a pause. Or you have your assistant update the scheduling document directly, where you can review it yourself later.
+For the critical details (speaker contracts, updated session times), you ask your assistant to record them explicitly to the graph with exact wording. The save happens asynchronously. You keep talking, barely a pause. Or you have your assistant update the scheduling document directly, where you can review it yourself later.
 
-This is Cymbiont. A fluid workspace where human notes, AI conversations, and automated memory formation interweave seamlessly. Some users write their own notes and use their assistant primarily for retrieval and discussion. Others have their assistant draft documents while they focus on synthesis and decision-making. Still others work primarily through conversation, relying on automatic memory formation to build their knowledge graph organically. There's no one right way - the interface adapts to how you think and work.
+This is Cymbiont. A fluid workspace where human notes, AI conversations, and automated memory formation interweave seamlessly. Some users write their own notes and use their assistant primarily for retrieval and discussion. Others have their assistant draft documents while they focus on synthesis and decision-making. Still others work primarily through conversation, relying on automatic memory formation to build their knowledge graph organically. The interface adapts to how you think and work.
 
 ## Why Knowledge Graphs
 
 Knowledge graphs give you explicit structure. Entities and relationships you can inspect, query, and traverse. Both human and AI build the graph together, contributing different perspectives on the same knowledge. The graph becomes the interface through which different forms of intelligence coordinate.
 
-This enables reasoning over structure: discovering paths, detecting patterns, understanding how concepts relate. Your AI can traverse the network of what you've built together, finding connections you didn't know existed, surfacing context that's actually relevant rather than statistically probable.
+This enables reasoning over structure: discovering paths, detecting patterns, understanding how concepts relate. Your AI can traverse the network of what you've built together, finding connections you didn't know existed, surfacing relevant context based on conceptual relationships.
 
 ## The Vision
 
@@ -30,9 +30,13 @@ Cymbiont is infrastructure for collective intelligence through shared representa
 
 ### With Claude Code
 
-Once installed, Cymbiont integrates seamlessly with your AI assistant. Your agent will automatically build and query the knowledge graph as you work, capturing insights from conversations, documents, and structured data. No manual intervention required.
+Once installed, Cymbiont integrates seamlessly with your AI assistant through two automated hooks that run in the background:
 
-The graph grows organically as you use your assistant, forming connections between concepts, tracking how information evolves over time, and surfacing relevant context when needed.
+**Context retrieval**: Every message you send triggers parallel knowledge graph queries using both your message and your assistant's previous response. Relevant entities and facts (typically 3 nodes and 6 facts per query) are silently retrieved and added to your assistant's context before it responds. This dual-query approach enables closed-loop feedback: your assistant's responses automatically load relevant context for follow-ups, and you steer knowledge exploration through your questions.
+
+**Memory formation**: Every 10 user messages, a background process analyzes the transcript and identifies salient information to add to the knowledge graph. This also triggers on session ends, clears, and compacts, running asynchronously without interrupting your work.
+
+At its best, Cymbiont fades into the background entirely. Your assistant appears to naturally recall past conversations and surface relevant context without visible tool calls or explicit prompting. The graph grows organically, and the memory system becomes invisible - just part of how your assistant thinks.
 
 Cymbiont is memory augmentation for general-purpose AI. Use it for:
 
@@ -40,8 +44,6 @@ Cymbiont is memory augmentation for general-purpose AI. Use it for:
 - **Research**: Literature notes, experimental results, evolving hypotheses
 - **Writing**: Draft iterations, research sources, thematic connections
 - **Custom agents**: Build AI agents with persistent identity and long-term memory
-
-For developers, tools like [code2prompt](https://github.com/raphaelmansuy/code2prompt) generate markdown codebase maps that work seamlessly with Cymbiont. Just dump the output in your synced corpus folder and the knowledge graph ingests your entire codebase structure. Cymbiont includes git post-commit hook templates (`hooks/post-commit.template.sh` and `hooks/generate_codebase_maps.template.py`) that automatically regenerate codebase maps after each commit, keeping your knowledge graph in sync with code changes. See `hooks/README.md` for setup instructions.
 
 ### Document Sync
 
@@ -64,6 +66,8 @@ corpus:
 - Renamed files: Episode metadata updated automatically
 - Deleted files: History preserved (append-only)
 
+**Codebase integration for developers**: Tools like [code2prompt](https://github.com/raphaelmansuy/code2prompt) generate markdown codebase maps that work seamlessly with Cymbiont. Just dump the output in your synced corpus folder and the knowledge graph ingests your entire codebase structure. Cymbiont includes git post-commit hook templates (`hooks/post-commit.template.sh` and `hooks/generate_codebase_maps.template.py`) that automatically regenerate codebase maps after each commit, keeping your knowledge graph in sync with code changes. See `hooks/README.md` for setup instructions.
+
 ### Recommended Editors
 
 Cymbiont works with any editor that uses local markdown files. Choose based on your workflow:
@@ -79,7 +83,7 @@ IDEs with integrated terminals let you chat with your assistant and edit documen
 - **Logseq**: Open-source PKM with graph view and local markdown
 - **Obsidian**: PKM with local vault and extensive plugins
 
-**Note**: PKM app compatibility is not yet officially supported. Cymbiont doesn't currently resolve block references (e.g., `((block-id))` syntax), so dumping an existing PKM graph directly into your corpus will result in raw reference syntax appearing in episodes. Block reference resolution will only be implemented if there's user demand. For now, we recommend manual migration of specific notes - your AI assistant can handle reference resolution during migration if you remind it to do so. Many users prefer starting with a clean knowledge graph anyway, as Cymbiont is a living graph with different usage patterns than traditional PKM apps.
+**Note**: PKM app compatibility is not yet officially supported. Cymbiont doesn't currently resolve block references (e.g., `((block-id))` syntax), so dumping an existing PKM graph directly into your corpus will result in raw reference syntax appearing in episodes. Block reference resolution will only be implemented if there's user demand. For now, we recommend manual migration of specific notes; your AI assistant can handle reference resolution during migration if you remind it to do so. Many users prefer starting with a clean knowledge graph anyway, as Cymbiont is a living graph with different usage patterns than traditional PKM apps.
 
 **Text Editors** (lightweight):
 - **Sublime Text**: Fast with minimap navigation
@@ -90,7 +94,22 @@ IDEs with integrated terminals let you chat with your assistant and edit documen
 - **iA Writer**: Distraction-free writing
 - **Zettlr**: Academic writing with Zettelkasten features
 
-## Quick Start
+### Usage Philosophy
+
+Cymbiont embraces an append-only model inherited from Graphiti. Rather than editing existing knowledge, you add new episodes that correct or update previous information. The ingestion pipeline handles deduplication and temporal invalidation automatically. The knowledge graph becomes shared memory between you and your assistant, with no separation between "your notes" and "agent memory." Your assistant is the primary interface to the graph; avoid interacting with the database directly unless necessary.
+
+**Best practices:**
+
+- **Add liberally**: Graph search scales sub-linearly; don't be stingy with memories or synced documents
+- **Use synced documents for content you'll edit**: Files in your corpus are easy to review and modify manually; conversational episodes become append-only memory
+- **Follow PKM hygiene**: No log files, no bulk external sources - link to external resources instead of ingesting them
+- **Be cautious with automation**: The code2prompt post-commit hook is powerful but requires careful filtering. Only sync files you'll actually reference
+- **Deletion is awkward**: See [Deleting Data](#deleting-data) section for details
+- **Expect initial costs**: Your first corpus sync may cost $10-50 depending on size (assuming several hundred pages of notes), but costs stabilize quickly once you're only adding documents manually
+
+The graph grows organically as you work. Treat it like a living PKM system, not a curated database. Add corrections rather than seeking perfection, and trust the temporal model to handle contradictions over time.
+
+## Installation Instructions
 
 ### What You'll Need
 
@@ -149,12 +168,17 @@ NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=demodemo  # Default password set during Neo4j installation; change if you used different password
 OPENAI_API_KEY=your-api-key-here  # REQUIRED: Replace with your actual OpenAI API key
-MODEL_NAME=gpt-5-mini
-SMALL_MODEL_NAME=gpt-5-mini
-LLM_TEMPERATURE=0.0  # REQUIRED for gpt-5-mini; adjust if using different models
+MODEL_NAME=gpt-5-mini                      # Main LLM for entity/relationship extraction
+SMALL_MODEL_NAME=gpt-5-nano                # Small LLM for deduplication/attributes
+EMBEDDING_MODEL_NAME=text-embedding-3-small # Embedding model for vector search
+SEMAPHORE_LIMIT=10                         # Concurrent LLM operations
 LOG_FILE=/path/to/cymbiont/logs/graphiti_latest.log  # Optional: Customize log path
 EOF
+```
 
+> **⚠️ Temporary OpenAI Dependency**: Cymbiont currently requires an OpenAI API key because the cross-encoder reranking model (used in chunk search) is hardcoded to use OpenAI's `gpt-4.1-nano`. We plan to make this configurable in the near-term, allowing you to use any model provider or disable reranking entirely.
+
+```bash
 # Install server dependencies with editable graphiti-core
 cd server
 uv sync
@@ -173,8 +197,6 @@ claude mcp add --scope user cymbiont --transport stdio -- /path/to/cymbiont/targ
 claude mcp add --scope project cymbiont --transport stdio -- /path/to/cymbiont/target/release/cymbiont
 ```
 
-For other MCP-compatible AI assistants: Configure stdio transport to launch the `cymbiont` binary.
-
 **6. Configure corpus path**
 
 Create a directory for your markdown files and configure the path:
@@ -192,7 +214,7 @@ cp config.example.yaml config.yaml
 
 **7. Install Claude Code Hooks (Strongly Recommended)**
 
-The hooks enable automatic context injection and memory formation - without them, you need to remind your assistant to search and save to the graph.
+The hooks enable automatic context injection and memory formation - without them, you must remind your assistant to search and save to the graph.
 
 **Option 1: Point to cymbiont installation (Fastest)**
 
@@ -293,7 +315,7 @@ nano hooks/monitoring_protocol.txt
 
 **8. Add Cymbiont Instructions to CLAUDE.md**
 
-Your AI assistant needs instructions for using Cymbiont effectively:
+Your AI assistant needs minimal instructions for using Cymbiont effectively:
 
 ```bash
 # Navigate to cymbiont directory
@@ -309,16 +331,6 @@ cat CLAUDE_INSTRUCTIONS_TEMPLATE.md >> /path/to/your/project/CLAUDE.md
 **Important**: After adding, edit the CLAUDE.md file and customize the corpus path (`/path/to/your/corpus/`) to match your `config.yaml` settings.
 
 That's it! Restart Claude Code and the automated memory system is active.
-
----
-
-## How It Works
-
-**Automatic Context**: Every message triggers parallel knowledge graph queries (your message + agent's previous response). Relevant entities and facts (~3 nodes + 6 facts) inject silently into the agent's context.
-
-**Automatic Memory**: Every 10 messages, a background agent analyzes the conversation and adds salient information to the graph. Monitoring logs go to `monitoring_logs/timestamped/YYYYMMDD_HHMMSS/` with a `latest/` symlink.
-
-**Customization**: Copy hooks to `~/.claude/hooks/` if you want to modify behavior, then update your settings to point there.
 
 ---
 
@@ -338,7 +350,7 @@ Neo4j Knowledge Graph
 
 **Cymbiont MCP Server**: Rust-based protocol adapter translating MCP's stdio JSON-RPC to Graphiti's HTTP API. Handles backend lifecycle, rotating file logging via autodebugger. Includes graphiti-cymbiont as bundled submodule.
 
-**Graphiti-Cymbiont Backend**: Python FastAPI server (bundled with Cymbiont) providing LLM-powered entity/relationship extraction, hybrid search (BM25 + vector + graph traversal + reranking), and temporal reasoning. A fork of Graphiti with document synchronization and chunk retrieval features.
+**Graphiti-Cymbiont Backend**: Python FastAPI server (bundled with Cymbiont) providing LLM-powered entity/relationship extraction, hybrid search (BM25 + vector + reranking), and temporal reasoning. A fork of Graphiti with document synchronization and chunk retrieval features.
 
 **Neo4j Database**: Graph storage with vector indices for embeddings, full-text indices for keyword search, and Cypher query engine.
 
@@ -365,7 +377,7 @@ Neo4j Knowledge Graph
 ## Features
 
 - **Persistent Memory**: Temporal knowledge graph maintains context across AI assistant sessions
-- **Hybrid Search**: Combines semantic similarity (embeddings), keyword matching (BM25), graph traversal (BFS), and reranking (RRF/cross-encoder)
+- **Hybrid Search**: Combines semantic similarity (embeddings), keyword matching (BM25), and reranking (RRF/cross-encoder)
 - **Entity Extraction**: LLM automatically identifies entities and relationships from text, JSON, or conversations
 - **Temporal Reasoning**: Bi-temporal model tracks when facts were learned (`created_at`) vs. when events occurred (`valid_at`)
 - **Automatic Document Sync**: Hourly corpus directory monitoring with intelligent change detection and diff summaries
@@ -401,9 +413,6 @@ graphiti:
   # server_path uses bundled graphiti-cymbiont by default
   # Override only if using custom installation:
   # server_path: "/custom/path/to/graphiti-cymbiont/server"
-
-similarity:
-  min_score: 0.7
 
 corpus:
   path: "/path/to/markdown/documents"  # Absolute path to your corpus directory
@@ -441,36 +450,37 @@ verbosity:
 - Embeddings for semantic search
 - Temporal tracking and invalidation
 
-### Bi-Temporal Model
-
-- `created_at`: When information entered the system
-- `valid_at`: When the event actually occurred
-- Enables point-in-time queries and historical reasoning
-
-## How It Works
-
 ### Ingestion Pipeline
 
-1. **Submit episode** via `add_memory` (text/JSON/messages)
-2. **LLM extraction**: Identify entities and relationships
-3. **Deduplication**: Semantic similarity matching against existing graph
-4. **Embedding generation**: Create vectors for nodes and edges
-5. **Graph update**: Save nodes/edges, create episodic links
-6. **Index update**: Refresh full-text and vector indices
-7. **Community detection** (optional): Cluster related entities
+1. **Submit episode** via `add_memory` (text)
+2. **LLM extraction**: Identify entities and relationships using configured models
+3. **Deduplication**: Two-stage process (fuzzy matching → LLM fallback) to merge duplicate entities
+4. **Attribute extraction**: Generate summaries and extract entity-specific attributes
+5. **Embedding generation**: Create vectors for entity names and relationship facts
+6. **Graph update**: Save nodes/edges with temporal metadata, create episodic links
+7. **Temporal invalidation**: Automatically expire contradicted facts based on timestamps
+8. **Community detection** (optional, disabled by default): Cluster related entities for hierarchical summaries
 
 ### Retrieval Pipeline
 
-**Hybrid Search Process**:
-1. **BM25 keyword search**: Full-text indices for exact matches
-2. **Vector similarity**: Cosine similarity on embeddings
-3. **Graph traversal**: BFS from relevant nodes
-4. **Reranking**: Reciprocal rank fusion (RRF), cross-encoder scoring, or node distance
+**Default Hybrid Search** (used by `search_context`):
+1. **BM25 keyword search**: Full-text indices for exact phrase matching
+2. **Vector similarity search**: Cosine similarity on embeddings (60% threshold)
+3. **Reciprocal rank fusion (RRF)**: Mathematical merging of BM25 and vector results
+4. **Final ranking**: Return top results after reranking
 
-**Search Recipes** (configurable in graphiti):
-- `EDGE_HYBRID_SEARCH_RRF`: Relationship search with rank fusion
-- `NODE_HYBRID_SEARCH_NODE_DISTANCE`: Entity search reranked by graph proximity
-- `COMBINED_HYBRID_SEARCH_CROSS_ENCODER`: Full hybrid with deep reranking
+**Optional enhancements** (configurable via search recipes):
+- Graph traversal (BFS) for exploring connected nodes
+- Cross-encoder reranking for precision-critical queries
+- MMR (diversity optimization) to reduce redundancy
+- Episode mention frequency for salience-based ranking
+
+**Chunk Search** (used by `get_chunks`):
+1. **BM25 keyword search** over document chunks (~256 tokens each)
+2. **Optional cross-encoder reranking** for answer-relevance judgment when `rerank_query` provided
+3. **Provenance aggregation**: Group chunks by source document with narrative ordering
+
+**For parameter tuning**: See [GRAPHITI_CONFIG.md](GRAPHITI_CONFIG.md) for comprehensive documentation of all configurable parameters in the ingestion and retrieval pipelines.
 
 ### Backend Management
 
@@ -488,23 +498,28 @@ kill <PID>
 
 Next Cymbiont connection will start a fresh instance.
 
-## Development
+## Deleting Data
 
-### Building
+Cymbiont intentionally makes deletion non-trivial to reinforce the append-only paradigm. If you find yourself wanting to delete data frequently, you're probably fighting the system's design. Add corrective episodes instead.
 
+**Deleting conversational episodes**:
 ```bash
-cargo build          # Debug
-cargo build --release # Optimized
-cargo test           # Run tests
+# Via MCP tool (easiest - your assistant can do this)
+# Just ask: "Delete episode <uuid>"
+# The delete_episode tool handles cleanup automatically
 ```
 
-### Logging
+**Deleting synced documents**:
+```bash
+# Via curl (requires manual endpoint call)
+curl -X DELETE "http://localhost:8000/document/<document-uri>?delete_episodes=true"
+```
 
-Logs written to `logs/timestamped/cymbiont_mcp_YYYYMMDD_HHMMSS.log` with `cymbiont_mcp_latest.log` symlink to most recent session.
+**Deleting specific nodes or edges**: Your assistant can use cypher commands to manipulate the graph directly, but we don't recommend it. Fine-grained data surgery goes against Cymbiont's philosophy - add corrections rather than rewriting history.
 
 ## Upcoming Features
 
-- **Enhanced search**: Personalized PageRank and learned edge weights via GNN
+- **Enhanced search**: Personalized PageRank graph traversal, learned edge weights via graph neural network
 - **Graph maintenance**: Automated orphan cleanup and semantic drift detection
 - **Multi-format ingestion**: Ingest PDFs, images, audio, and other file types beyond markdown
 

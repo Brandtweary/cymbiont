@@ -16,11 +16,6 @@ graphiti:
   # Override with custom absolute path if needed
   # server_path: "/custom/path/to/graphiti-cymbiont/server"
 
-similarity:
-  # Minimum similarity score for search results (0.0-1.0)
-  # Passed to Graphiti for search filtering
-  min_score: 0.7
-
 corpus:
   # Absolute path to corpus directory (markdown files auto-synced to knowledge graph)
   # Must be absolute. Leave commented/null to disable document sync.

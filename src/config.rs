@@ -34,7 +34,6 @@
 //! The config file is divided into logical sections:
 //!
 //! - **graphiti**: Graphiti backend connection (`base_url`, timeout, `server_path`)
-//! - **similarity**: Search thresholds for semantic matching
 //! - **corpus**: Document sync settings (path, `sync_interval`)
 //! - **logging**: Log output configuration (level, directory, rotation)
 //! - **verbosity**: Autodebugger verbosity monitoring thresholds
@@ -81,7 +80,6 @@ use std::path::{Path, PathBuf};
 #[serde(default)]
 pub struct Config {
     pub graphiti: GraphitiConfig,
-    pub similarity: SimilarityConfig,
     pub corpus: CorpusConfig,
     pub logging: LoggingConfig,
     pub verbosity: VerbosityConfig,
@@ -100,13 +98,6 @@ pub struct GraphitiConfig {
 
 fn default_server_path() -> String {
     "../../graphiti-cymbiont/server".to_string()
-}
-
-/// Similarity search configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct SimilarityConfig {
-    pub min_score: f64,
 }
 
 /// Document corpus sync configuration
@@ -149,12 +140,6 @@ impl Default for GraphitiConfig {
             default_group_id: "default".to_string(),
             server_path: "../../graphiti-cymbiont/server".to_string(), // Bundled graphiti-cymbiont
         }
-    }
-}
-
-impl Default for SimilarityConfig {
-    fn default() -> Self {
-        Self { min_score: 0.7 }
     }
 }
 

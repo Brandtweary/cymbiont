@@ -64,7 +64,7 @@ corpus:
 - New files: Full content ingested as episodes
 - Modified files: Semantic diff summaries added to graph
 - Renamed files: Episode metadata updated automatically
-- Deleted files: History preserved (append-only)
+- Deleted files: Automatic cleanup removes chunks, episodes, and metadata
 
 **Codebase integration for developers**: Tools like [code2prompt](https://github.com/raphaelmansuy/code2prompt) generate markdown codebase maps that work seamlessly with Cymbiont. Just dump the output in your synced corpus folder and the knowledge graph ingests your entire codebase structure. Cymbiont includes git post-commit hook templates (`hooks/post-commit.template.sh` and `hooks/generate_codebase_maps.template.py`) that automatically regenerate codebase maps after each commit, keeping your knowledge graph in sync with code changes. See `hooks/README.md` for setup instructions.
 

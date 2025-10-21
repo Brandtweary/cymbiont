@@ -74,7 +74,7 @@ pub struct SyncDocumentsRequest {
 /// Search document chunks by keyword (BM25)
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct GetChunksRequest {
-    #[schemars(description = "BM25 keyword search query")]
+    #[schemars(description = "BM25 keyword search query (searches content)")]
     pub keyword_query: String,
 
     #[schemars(description = "Maximum number of chunks to return (default: 10)")]

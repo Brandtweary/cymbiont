@@ -419,6 +419,7 @@ corpus:
 
 logging:
   level: "info"  # trace, debug, info, warn, error
+  output: "file"  # "file" or "stderr" - use "file" for MCP mode
   log_directory: "logs"  # Relative to binary or absolute
   max_files: 10
   max_size_mb: 5

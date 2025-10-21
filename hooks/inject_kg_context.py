@@ -30,8 +30,8 @@ def get_log_directory() -> Path:
         if config_path.exists():
             with open(config_path, 'r') as f:
                 config = yaml.safe_load(f)
-                if config and 'logging' in config and 'directory' in config['logging']:
-                    return Path(config['logging']['directory'])
+                if config and 'logging' in config and 'log_directory' in config['logging']:
+                    return Path(config['logging']['log_directory'])
     except Exception:
         pass
 

@@ -34,7 +34,7 @@
 //! The config file is divided into logical sections:
 //!
 //! - **graphiti**: Graphiti backend connection (`base_url`, timeout, `server_path`)
-//! - **corpus**: Document sync settings (path, `sync_interval`)
+//! - **corpus**: Document sync settings (path, `sync_interval_hours`)
 //! - **logging**: Log output configuration (level, directory, rotation)
 //! - **verbosity**: Autodebugger verbosity monitoring thresholds
 //!

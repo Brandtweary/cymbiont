@@ -21,8 +21,8 @@ def get_log_directory() -> Path:
         if config_path.exists():
             with open(config_path, 'r') as f:
                 config = yaml.safe_load(f)
-                if config and 'logging' in config and 'directory' in config['logging']:
-                    return Path(config['logging']['directory'])
+                if config and 'logging' in config and 'log_directory' in config['logging']:
+                    return Path(config['logging']['log_directory'])
     except Exception:
         pass
 
@@ -147,36 +147,8 @@ def main():
     trigger_type = sys.argv[4]  # "force" or "normal"
     log_file = monitoring_log_dir / "monitoring.log"
 
-    # Deduplication for force triggers (PreCompact/SessionEnd)
+    # Add delay for force triggers to let compaction stabilize
     if trigger_type == "force":
-        # Check for other recent force runs within 5 seconds
-        base_dir = monitoring_log_dir.parent  # timestamped/ directory
-
-        # Parse current timestamp as datetime
-        try:
-            current_dt = datetime.strptime(monitoring_log_dir.name, "%Y%m%d_%H%M%S")
-        except ValueError:
-            # If parsing fails, skip deduplication
-            current_dt = None
-
-        if current_dt:
-            for other_dir in base_dir.iterdir():
-                if other_dir == monitoring_log_dir or not other_dir.is_dir():
-                    continue
-
-                try:
-                    other_dt = datetime.strptime(other_dir.name, "%Y%m%d_%H%M%S")
-                    time_diff_seconds = abs((current_dt - other_dt).total_seconds())
-
-                    # Check if within 5 seconds
-                    if time_diff_seconds <= 5:
-                        other_log = other_dir / "monitoring.log"
-                        if other_log.exists() and "trigger: force" in other_log.read_text():
-                            return  # Skip duplicate
-                except (ValueError, TypeError):
-                    continue  # Skip malformed directory names
-
-        # Add delay AFTER deduplication check to let compaction stabilize
         import time
         time.sleep(1)
 

@@ -28,12 +28,12 @@ pub async fn is_graphiti_running(base_url: &str) -> bool {
 ///
 /// The process is spawned with:
 /// - stdin redirected to null
-/// - stdout and stderr redirected to `log_path` (append mode)
+/// - stdout and stderr redirected to `log_path` (truncate mode - fresh log per launch)
 /// - Working directory set to `server_path`
 /// - Using uvicorn ASGI server to run the `FastAPI` app
 ///
 /// Both stdout and stderr are redirected to the same log file using `File::try_clone()`
-/// to ensure proper interleaving of output (equivalent to shell's `>> log 2>&1`).
+/// to ensure proper interleaving of output (equivalent to shell's `> log 2>&1`).
 ///
 /// Note: This is an intentional "resource leak" - the process will continue
 /// running after Cymbiont exits, ensuring no data loss during episode ingestion.
@@ -78,7 +78,7 @@ pub fn launch_graphiti(server_path: &str, log_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Wait for Graphiti to become healthy with exponential backoff
+/// Wait for Graphiti to become healthy with fixed interval polling
 ///
 /// Attempts health checks with 500ms intervals up to `max_attempts` times.
 pub async fn wait_for_graphiti(base_url: &str, max_attempts: u32) -> Result<()> {

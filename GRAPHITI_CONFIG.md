@@ -26,8 +26,8 @@ Graphiti reads 57+ environment variables. Most are for alternative providers/tes
 - `NEO4J_PASSWORD`: Neo4j password
 
 ### LLM Configuration
-- `MODEL_NAME`: Main LLM for entity/relationship extraction (default: `gpt-4o`)
-- `SMALL_MODEL_NAME`: Small LLM for deduplication/attributes (default: `gpt-4o-mini`)
+- `MODEL_NAME`: Main LLM for entity/relationship extraction (default: `gpt-4.1-mini`)
+- `SMALL_MODEL_NAME`: Small LLM for deduplication/attributes (default: `gpt-4.1-nano`)
 - `EMBEDDING_MODEL_NAME`: Embedding model (default: `text-embedding-3-small`)
 - `EMBEDDING_DIM`: Embedding dimension (default: `1024`)
 
@@ -106,7 +106,7 @@ Graphiti reads 57+ environment variables. Most are for alternative providers/tes
 ### Attribute Extraction
 **File**: `graphiti_core/nodes/node_operations.py` (line 453)
 - Model: Small (`SMALL_MODEL_NAME`)
-- `MAX_SUMMARY_CHARS = 500`: Summary truncation (file: `graphiti_core/utils/text_utils.py`)
+- `MAX_SUMMARY_CHARS = 250`: Summary truncation (file: `graphiti_core/utils/text_utils.py`)
 
 ### Context Windows
 **File**: `graphiti_core/search/search_utils.py`
@@ -241,7 +241,7 @@ Used by:
 - Cosine similarity (semantic search on name_embedding)
 - Same reranking options as nodes (RRF, MMR, cross-encoder)
 
-**Location**: `graphiti_core/graph/graph_clustering.py`
+**Location**: `graphiti_core/utils/maintenance/community_operations.py`
 
 ---
 

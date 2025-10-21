@@ -5,11 +5,12 @@ This runs fully detached from the main conversation.
 """
 
 import json
-import sys
 import subprocess
-import yaml
+import sys
 from datetime import datetime
 from pathlib import Path
+
+import yaml
 
 
 def get_log_directory() -> Path:
@@ -19,7 +20,7 @@ def get_log_directory() -> Path:
 
     try:
         if config_path.exists():
-            with open(config_path, 'r') as f:
+            with open(config_path) as f:
                 config = yaml.safe_load(f)
                 if config and 'logging' in config and 'log_directory' in config['logging']:
                     return Path(config['logging']['log_directory'])
@@ -27,6 +28,23 @@ def get_log_directory() -> Path:
         pass
 
     return script_dir.parent / "logs"
+
+
+def get_monitoring_config() -> bool:
+    """Get monitoring.save_logs from config.yaml, default to True if not found."""
+    script_dir = Path(__file__).parent
+    config_path = script_dir.parent / "config.yaml"
+
+    try:
+        if config_path.exists():
+            with open(config_path) as f:
+                config = yaml.safe_load(f)
+                if config and 'monitoring' in config and 'save_logs' in config['monitoring']:
+                    return bool(config['monitoring']['save_logs'])
+    except Exception:
+        pass
+
+    return True  # Default: save logs for backward compatibility
 
 
 def extract_text_content(content) -> str:
@@ -49,6 +67,38 @@ def extract_text_content(content) -> str:
     return text.strip()
 
 
+# Improvement notes instructions (appended to protocol when save_logs=true)
+IMPROVEMENT_NOTES_INSTRUCTIONS = """
+
+## Data Collection
+
+This session is being logged to: $MONITORING_LOG_DIR
+
+If you identify problematic behavior (misunderstandings, inefficient tool usage, missed context, style issues), write a brief note to:
+
+**$MONITORING_LOG_DIR/improvement_notes.md**
+
+Use the Write tool with the following format:
+```
+file_path: $MONITORING_LOG_DIR/improvement_notes.md
+content: The agent said 'You're absolutely right' which violates the output style guidelines
+```
+
+Keep it concise - just flag the issue for later manual review. All transcripts are automatically saved to this directory. And don't flag emoji usage.
+
+## Monitoring Harness Feedback
+
+**Current transcript filtering**: Tool call results and system messages are excluded from your transcript to reduce context size. You receive only user messages and assistant responses.
+
+**Your responsibility**: If you encounter situations where missing tool calls or system messages prevented you from understanding important context, report this in improvement_notes.md. Include:
+- What context was missing
+- What conversation element you couldn't interpret without it
+- Whether the assistant's responses provided enough clues to reconstruct the context
+
+You're monitoring the conversation, but we also need you to monitor your own monitoring harness. Report any blind spots you encounter so we can evaluate whether the filtering strategy needs adjustment.
+"""
+
+
 def extract_memory_additions(jsonl_path):
     """Extract all add_memory tool calls from monitoring agent transcript.
 
@@ -60,7 +110,7 @@ def extract_memory_additions(jsonl_path):
     """
     additions = []
 
-    with open(jsonl_path, 'r') as f:
+    with open(jsonl_path) as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -147,15 +197,19 @@ def main():
     trigger_type = sys.argv[4]  # "force" or "normal"
     log_file = monitoring_log_dir / "monitoring.log"
 
+    # Get monitoring config
+    save_logs = get_monitoring_config()
+
     # Add delay for force triggers to let compaction stabilize
     if trigger_type == "force":
         import time
         time.sleep(1)
 
     try:
-        # Copy original transcript
-        import shutil
-        shutil.copy(transcript_path, monitoring_log_dir / "original_conversation.jsonl")
+        # Copy original transcript (only if save_logs enabled)
+        if save_logs:
+            import shutil
+            shutil.copy(transcript_path, monitoring_log_dir / "original_conversation.jsonl")
 
         # Step 1: Filter to user/assistant messages (excluding non-conversational)
         messages = []
@@ -172,9 +226,8 @@ def main():
                 content = msg['message']['content']
 
                 # Skip meta messages
-                if isinstance(content, str):
-                    if any(marker in content for marker in ['<command-name>', '<local-command', '[Request interrupted']):
-                        continue
+                if isinstance(content, str) and any(marker in content for marker in ['<command-name>', '<local-command', '[Request interrupted']):
+                    continue
 
                 # Skip orphaned tool results
                 if isinstance(content, list):
@@ -208,12 +261,8 @@ def main():
                         anchor_index = i
                         break
 
-            if anchor_index is not None:
-                # Found anchor - take all messages from anchor (inclusive) to end
-                messages = filtered[anchor_index:]
-            else:
-                # Anchor not found - fall back to last 10
-                messages = filtered[-10:]
+            # Found anchor: take from anchor to end. No anchor: fall back to last 10
+            messages = filtered[anchor_index:] if anchor_index is not None else filtered[-10:]
         else:
             # No cached message (first run) - take last 10 filtered messages
             messages = filtered[-10:]
@@ -229,7 +278,7 @@ def main():
         # Format as text transcript for system prompt (filter out empty messages)
         transcript_text = "=== CONVERSATION TRANSCRIPT TO ANALYZE ===\n\n"
         non_empty_count = 0
-        for i, msg in enumerate(messages):
+        for _i, msg in enumerate(messages):
             role = msg['type'].upper()
             content = extract_text_content(msg['message']['content'])
 
@@ -254,52 +303,63 @@ def main():
         # Combine protocol + transcript as system prompt
         # Substitute $MONITORING_LOG_DIR placeholder with actual path
         protocol_text = protocol_path.read_text().replace("$MONITORING_LOG_DIR", str(monitoring_log_dir))
+
+        # Conditionally append improvement notes instructions if save_logs enabled
+        if save_logs:
+            protocol_text += IMPROVEMENT_NOTES_INSTRUCTIONS.replace("$MONITORING_LOG_DIR", str(monitoring_log_dir))
+
         system_prompt = protocol_text + "\n\n" + transcript_text
+
+        # Build allowed tools list (only include Write if save_logs enabled)
+        allowed_tools = [
+            "mcp__cymbiont__search_context",
+            "mcp__cymbiont__add_memory",
+        ]
+        if save_logs:
+            allowed_tools.append("Write")
 
         result = subprocess.run(
             [
                 "claude",
                 "-p", "ultrathink: Examine the conversation transcript provided in the system prompt and add salient information to the knowledge graph.",
                 "--allowedTools",
-                "mcp__cymbiont__search_context",
-                "mcp__cymbiont__add_memory",
-                "Write",
+                *allowed_tools,
                 "--output-format=stream-json",
                 "--settings", '{"hooks": {"Stop": [], "UserPromptSubmit": [], "SessionStart": [], "SessionEnd": []}}',
                 "--append-system-prompt", system_prompt,
                 "--verbose",
                 "--print"
             ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True
         )
 
-        # Save the monitoring agent output
-        with open(monitoring_transcript, 'w') as f:
-            f.write(result.stdout)
+        # Save the monitoring agent output (only if save_logs enabled)
+        if save_logs:
+            with open(monitoring_transcript, 'w') as f:
+                f.write(result.stdout)
 
-        # Parse monitoring transcript for memory additions and save as markdown
-        try:
-            # Extract run timestamp from directory name (format: YYYYMMDD_HHMMSS)
-            dir_name = monitoring_log_dir.name
-            if len(dir_name) == 15 and '_' in dir_name:
-                date_part, time_part = dir_name.split('_')
-                run_timestamp = f"{date_part[:4]}-{date_part[4:6]}-{date_part[6:8]} {time_part[:2]}:{time_part[2:4]}:{time_part[4:6]}"
-            else:
-                run_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            # Parse monitoring transcript for memory additions and save as markdown
+            try:
+                # Extract run timestamp from directory name (format: YYYYMMDD_HHMMSS)
+                dir_name = monitoring_log_dir.name
+                if len(dir_name) == 15 and '_' in dir_name:
+                    date_part, time_part = dir_name.split('_')
+                    run_timestamp = f"{date_part[:4]}-{date_part[4:6]}-{date_part[6:8]} {time_part[:2]}:{time_part[2:4]}:{time_part[4:6]}"
+                else:
+                    run_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-            # Extract and format memory additions
-            additions = extract_memory_additions(monitoring_transcript)
-            markdown = format_memory_additions_markdown(additions, run_timestamp)
+                # Extract and format memory additions
+                additions = extract_memory_additions(monitoring_transcript)
+                markdown = format_memory_additions_markdown(additions, run_timestamp)
 
-            # Write to memory_additions.md
-            memory_additions_path = monitoring_log_dir / "memory_additions.md"
-            memory_additions_path.write_text(markdown)
-        except Exception as e:
-            # Log parsing errors but don't fail the whole worker
-            with open(log_file, 'a') as f:
-                f.write(f"\nWarning: Failed to parse memory additions: {e}\n")
+                # Write to memory_additions.md
+                memory_additions_path = monitoring_log_dir / "memory_additions.md"
+                memory_additions_path.write_text(markdown)
+            except Exception as e:
+                # Log parsing errors but don't fail the whole worker
+                with open(log_file, 'a') as f:
+                    f.write(f"\nWarning: Failed to parse memory additions: {e}\n")
 
         # Update symlink to point to this latest run
         try:
@@ -323,14 +383,24 @@ def main():
                 if result.stderr:
                     f.write(f"\n--- STDERR ---\n{result.stderr}\n")
 
+        # Cleanup: Remove empty monitoring directory if save_logs=false
+        # (Only when there are no error logs - empty dir means successful run with no artifacts)
+        if not save_logs:
+            try:
+                # Check if directory is empty
+                if monitoring_log_dir.exists() and not any(monitoring_log_dir.iterdir()):
+                    monitoring_log_dir.rmdir()
+            except Exception:
+                pass  # Don't fail on cleanup errors
+
     except Exception as e:
         try:
             with open(log_file, 'a') as f:
                 import traceback
                 f.write(f"Worker error: {e}\n")
                 traceback.print_exc(file=f)
-        except:
-            pass  # If we can't even write errors, just exit
+        except:  # noqa: E722
+            pass  # If we can't even write errors, just exit silently
 
 
 if __name__ == "__main__":

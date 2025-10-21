@@ -63,7 +63,10 @@
 
 use crate::client::GraphitiClient;
 use crate::config::Config;
-use crate::types::{AddMemoryRequest, GetEpisodesRequest, DeleteEpisodeRequest, SyncDocumentsRequest, SearchContextRequest, GetChunksRequest};
+use crate::types::{
+    AddMemoryRequest, DeleteEpisodeRequest, GetChunksRequest, GetEpisodesRequest,
+    SearchContextRequest, SyncDocumentsRequest,
+};
 use rmcp::{
     handler::server::{tool::ToolRouter, wrapper::Parameters},
     model::InitializeResult,
@@ -90,7 +93,10 @@ impl CymbiontService {
 #[tool_router]
 impl CymbiontService {
     /// Add memory episode to knowledge graph
-    #[tool(name = "add_memory", description = "Add a new memory episode to the knowledge graph")]
+    #[tool(
+        name = "add_memory",
+        description = "Add a new memory episode to the knowledge graph"
+    )]
     async fn add_memory(&self, params: Parameters<AddMemoryRequest>) -> Result<String, String> {
         let req = &params.0;
 
@@ -105,11 +111,11 @@ impl CymbiontService {
     }
 
     /// Get recent episodes from knowledge graph
-    #[tool(name = "get_episodes", description = "Get recent episodes from the knowledge graph")]
-    async fn get_episodes(
-        &self,
-        params: Parameters<GetEpisodesRequest>,
-    ) -> Result<String, String> {
+    #[tool(
+        name = "get_episodes",
+        description = "Get recent episodes from the knowledge graph"
+    )]
+    async fn get_episodes(&self, params: Parameters<GetEpisodesRequest>) -> Result<String, String> {
         let req = &params.0;
         let last_n = req.last_n.unwrap_or(10).min(100);
 
@@ -123,7 +129,10 @@ impl CymbiontService {
     }
 
     /// Delete episode by UUID
-    #[tool(name = "delete_episode", description = "Delete an episode from the knowledge graph by UUID")]
+    #[tool(
+        name = "delete_episode",
+        description = "Delete an episode from the knowledge graph by UUID"
+    )]
     async fn delete_episode(
         &self,
         params: Parameters<DeleteEpisodeRequest>,
@@ -140,7 +149,10 @@ impl CymbiontService {
     // See future_tasks.md for full context. Automated deletion detection would be cleaner long-term.
 
     /// Trigger manual document synchronization
-    #[tool(name = "sync_documents", description = "Trigger manual document synchronization for all corpus files")]
+    #[tool(
+        name = "sync_documents",
+        description = "Trigger manual document synchronization for all corpus files"
+    )]
     async fn sync_documents(
         &self,
         _params: Parameters<SyncDocumentsRequest>,
@@ -152,7 +164,10 @@ impl CymbiontService {
     }
 
     /// Search for both nodes and facts in parallel
-    #[tool(name = "search_context", description = "Search for both nodes and facts in the knowledge graph. Note: Node summaries compress original content. Use get_chunks(keyword_query) when you need exact wording, technical precision, or source verification.")]
+    #[tool(
+        name = "search_context",
+        description = "Search for both nodes and facts in the knowledge graph. Note: Node summaries compress original content. Use get_chunks(keyword_query) when you need exact wording, technical precision, or source verification."
+    )]
     async fn search_context(
         &self,
         params: Parameters<SearchContextRequest>,
@@ -165,8 +180,7 @@ impl CymbiontService {
         let (nodes_result, facts_result) = tokio::join!(
             self.client
                 .search_nodes(&req.query, None, Some(max_results)),
-            self.client
-                .search_facts(&req.query, None, Some(max_facts))
+            self.client.search_facts(&req.query, None, Some(max_facts))
         );
 
         // Handle errors
@@ -183,17 +197,21 @@ impl CymbiontService {
     }
 
     /// Search document chunks by keyword (BM25)
-    #[tool(name = "get_chunks", description = "Search document chunks by keyword (BM25). Use when you need exact wording, technical precision, or source verification.")]
-    async fn get_chunks(
-        &self,
-        params: Parameters<GetChunksRequest>,
-    ) -> Result<String, String> {
+    #[tool(
+        name = "get_chunks",
+        description = "Search document chunks by keyword (BM25). Use when you need exact wording, technical precision, or source verification."
+    )]
+    async fn get_chunks(&self, params: Parameters<GetChunksRequest>) -> Result<String, String> {
         let req = &params.0;
         let max_results = req.max_results.unwrap_or(10).min(100);
 
         let response = self
             .client
-            .search_chunks(&req.keyword_query, Some(max_results), req.rerank_query.as_deref())
+            .search_chunks(
+                &req.keyword_query,
+                Some(max_results),
+                req.rerank_query.as_deref(),
+            )
             .await
             .map_err(|e| format!("Chunk search failed: {e}"))?;
 
@@ -214,9 +232,7 @@ impl ServerHandler for CymbiontService {
                 icons: None,
             },
             capabilities: rmcp::model::ServerCapabilities {
-                tools: Some(rmcp::model::ToolsCapability {
-                    list_changed: None,
-                }),
+                tools: Some(rmcp::model::ToolsCapability { list_changed: None }),
                 ..Default::default()
             },
             instructions: None,

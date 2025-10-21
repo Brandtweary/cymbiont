@@ -11,6 +11,7 @@ use client::GraphitiClient;
 use config::Config;
 use mcp_tools::CymbiontService;
 use rmcp::ServiceExt;
+use std::path::PathBuf;
 use tokio::io::{stdin, stdout};
 
 #[tokio::main]
@@ -44,11 +45,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         file_config,
     );
 
-    tracing::info!("Cymbiont MCP server starting (version {})", env!("CARGO_PKG_VERSION"));
+    tracing::info!(
+        "Cymbiont MCP server starting (version {})",
+        env!("CARGO_PKG_VERSION")
+    );
 
     // Construct Graphiti log path (in same directory as Cymbiont logs)
-    let graphiti_log_path = std::path::PathBuf::from(&config.logging.log_directory)
-        .join("graphiti_latest.log");
+    let graphiti_log_path =
+        PathBuf::from(&config.logging.log_directory).join("graphiti_latest.log");
 
     // Ensure Graphiti backend is running (launch if needed, intentional resource leak)
     graphiti_launcher::ensure_graphiti_running(
@@ -60,7 +64,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create Graphiti HTTP client
     let client = GraphitiClient::new(&config.graphiti)?;
-    tracing::info!("Graphiti client initialized (base_url: {})", config.graphiti.base_url);
+    tracing::info!(
+        "Graphiti client initialized (base_url: {})",
+        config.graphiti.base_url
+    );
 
     // Initialize document sync if corpus path is configured
     let sync_enabled = if let Some(corpus_path) = &config.corpus.path {
@@ -76,7 +83,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await
         {
             Ok(msg) => tracing::info!("Document sync watcher started: {}", msg),
-            Err(e) => tracing::error!("Failed to start document sync watcher: {} (continuing without sync)", e),
+            Err(e) => tracing::error!(
+                "Failed to start document sync watcher: {} (continuing without sync)",
+                e
+            ),
         }
 
         // Trigger immediate sync on startup

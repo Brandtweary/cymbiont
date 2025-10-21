@@ -429,6 +429,10 @@ verbosity:
   info_threshold: 50
   debug_threshold: 100
   trace_threshold: 200
+
+monitoring:
+  save_logs: false  # Save observability logs (transcripts, agent output, memory summaries)
+                    # Set to true if you want to debug or fine-tune the monitoring system
 ```
 
 ### Data Model

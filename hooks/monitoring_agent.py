@@ -8,12 +8,13 @@ This script exits immediately to avoid blocking the main conversation.
 """
 
 import json
-import sys
-import subprocess
 import os
-import yaml
+import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
+
+import yaml
 
 
 def get_log_directory() -> Path:
@@ -23,7 +24,7 @@ def get_log_directory() -> Path:
 
     try:
         if config_path.exists():
-            with open(config_path, 'r') as f:
+            with open(config_path) as f:
                 config = yaml.safe_load(f)
                 if config and 'logging' in config and 'log_directory' in config['logging']:
                     return Path(config['logging']['log_directory'])
@@ -42,7 +43,6 @@ def main():
     log_base = get_log_directory()
     state_dir = log_base / "monitoring_logs"
     state_dir.mkdir(parents=True, exist_ok=True)
-    debug_log = state_dir / "monitoring_agent.log"
 
     try:
         # Read hook input from stdin
@@ -65,10 +65,7 @@ def main():
                 return  # Skip spurious trigger
 
             # Read cached anchor message if available
-            if cache_file.exists():
-                cached_message = cache_file.read_text().strip()
-            else:
-                cached_message = ""
+            cached_message = cache_file.read_text().strip() if cache_file.exists() else ""
 
             # Set sentinel value (-1) to signal hard reset
             # Next UserPromptSubmit will see -1 and start fresh interval at count=1
@@ -116,12 +113,8 @@ def main():
             # Counter >= 10: spawn worker
 
             # Read cached anchor message BEFORE overwriting
-            if cache_file.exists():
-                cached_message = cache_file.read_text().strip()
-            else:
-                # No cached message - this is first run or new chat
-                # Use empty string to signal worker to use fallback
-                cached_message = ""
+            # No cached message means first run or new chat - use empty string to signal worker fallback
+            cached_message = cache_file.read_text().strip() if cache_file.exists() else ""
 
             # Cache THIS message for next interval (before spawning worker)
             cache_file.write_text(user_prompt)
@@ -166,8 +159,8 @@ def main():
                 import traceback
                 f.write(f"Hook error: {e}\n")
                 traceback.print_exc(file=f)
-        except:
-            pass
+        except:  # noqa: E722
+            pass  # If we can't even write errors, just exit silently
 
 
 if __name__ == "__main__":

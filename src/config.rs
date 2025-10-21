@@ -72,6 +72,7 @@
 use crate::error::ConfigError;
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -83,6 +84,7 @@ pub struct Config {
     pub corpus: CorpusConfig,
     pub logging: LoggingConfig,
     pub verbosity: VerbosityConfig,
+    pub monitoring: MonitoringConfig,
 }
 
 /// Graphiti backend configuration
@@ -130,6 +132,13 @@ pub struct VerbosityConfig {
     pub trace_threshold: usize,
 }
 
+/// Monitoring configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MonitoringConfig {
+    pub save_logs: bool,
+}
+
 // Default implementations
 
 impl Default for GraphitiConfig {
@@ -175,6 +184,14 @@ impl Default for VerbosityConfig {
     }
 }
 
+impl Default for MonitoringConfig {
+    fn default() -> Self {
+        Self {
+            save_logs: true, // Backward compatible default
+        }
+    }
+}
+
 // Config loading
 
 impl Config {
@@ -192,11 +209,10 @@ impl Config {
         if let Some(path) = config_path {
             tracing::info!("Loading config from: {}", path.display());
 
-            let contents = fs::read_to_string(&path)
-                .map_err(|e| ConfigError::Io(e.to_string()))?;
+            let contents = fs::read_to_string(&path).map_err(|e| ConfigError::Io(e.to_string()))?;
 
-            let mut config: Self = serde_yaml::from_str(&contents)
-                .map_err(|e| ConfigError::Parse(e.to_string()))?;
+            let mut config: Self =
+                serde_yaml::from_str(&contents).map_err(|e| ConfigError::Parse(e.to_string()))?;
 
             // Validate and enforce absolute paths
             config.validate_paths()?;
@@ -211,7 +227,7 @@ impl Config {
     /// Search for config.yaml in standard locations
     fn find_config_file() -> Result<Option<PathBuf>, ConfigError> {
         // 1. Check CYMBIONT_CONFIG environment variable
-        if let Ok(env_path) = std::env::var("CYMBIONT_CONFIG") {
+        if let Ok(env_path) = env::var("CYMBIONT_CONFIG") {
             let path = PathBuf::from(env_path);
             if path.exists() {
                 return Ok(Some(path));
@@ -230,7 +246,7 @@ impl Config {
 
         // 3. Check cymbiont repo root (relative to binary location)
         // Binary is at cymbiont/target/debug/cymbiont, go up 2 levels to cymbiont/
-        if let Ok(exe_path) = std::env::current_exe() {
+        if let Ok(exe_path) = env::current_exe() {
             if let Some(exe_dir) = exe_path.parent() {
                 // exe_dir is target/debug/, go up 2 levels
                 if let Some(repo_root) = exe_dir.parent().and_then(|p| p.parent()) {
@@ -263,10 +279,11 @@ impl Config {
         let log_path = Path::new(&self.logging.log_directory);
         if !log_path.is_absolute() {
             // Get binary directory
-            let exe_path = std::env::current_exe()
+            let exe_path = env::current_exe()
                 .map_err(|e| ConfigError::Validation(format!("Failed to get binary path: {e}")))?;
-            let exe_dir = exe_path.parent()
-                .ok_or_else(|| ConfigError::Validation("Binary has no parent directory".to_string()))?;
+            let exe_dir = exe_path.parent().ok_or_else(|| {
+                ConfigError::Validation("Binary has no parent directory".to_string())
+            })?;
 
             // Resolve relative path from binary location
             let resolved = exe_dir.join(&self.logging.log_directory);
@@ -296,7 +313,7 @@ impl Config {
         // Graphiti server path - resolve relative paths from binary location
         if self.graphiti.server_path.is_empty() {
             return Err(ConfigError::Validation(
-                "graphiti.server_path is required - please configure it in config.yaml".to_string()
+                "graphiti.server_path is required - please configure it in config.yaml".to_string(),
             ));
         }
 
@@ -305,10 +322,11 @@ impl Config {
             server_path.to_path_buf()
         } else {
             // Get binary directory and resolve relative path
-            let exe_path = std::env::current_exe()
+            let exe_path = env::current_exe()
                 .map_err(|e| ConfigError::Validation(format!("Failed to get binary path: {e}")))?;
-            let exe_dir = exe_path.parent()
-                .ok_or_else(|| ConfigError::Validation("Binary has no parent directory".to_string()))?;
+            let exe_dir = exe_path.parent().ok_or_else(|| {
+                ConfigError::Validation("Binary has no parent directory".to_string())
+            })?;
 
             exe_dir.join(&self.graphiti.server_path)
         };

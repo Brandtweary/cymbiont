@@ -16,7 +16,8 @@ pub async fn is_graphiti_running(base_url: &str) -> bool {
     let health_url = format!("{base_url}/healthcheck");
     let client = reqwest::Client::new();
 
-    client.get(&health_url)
+    client
+        .get(&health_url)
         .timeout(Duration::from_secs(2))
         .send()
         .await
@@ -85,7 +86,10 @@ pub async fn wait_for_graphiti(base_url: &str, max_attempts: u32) -> Result<()> 
     let start = std::time::Instant::now();
 
     for attempt in 1..=max_attempts {
-        tracing::info!("Healthcheck attempt {attempt}/{max_attempts} (elapsed: {:?})", start.elapsed());
+        tracing::info!(
+            "Healthcheck attempt {attempt}/{max_attempts} (elapsed: {:?})",
+            start.elapsed()
+        );
 
         if is_graphiti_running(base_url).await {
             tracing::info!("Graphiti server is healthy after {:?}", start.elapsed());
@@ -97,7 +101,10 @@ pub async fn wait_for_graphiti(base_url: &str, max_attempts: u32) -> Result<()> 
         }
     }
 
-    anyhow::bail!("Graphiti failed to start after {max_attempts} attempts ({:?} elapsed)", start.elapsed())
+    anyhow::bail!(
+        "Graphiti failed to start after {max_attempts} attempts ({:?} elapsed)",
+        start.elapsed()
+    )
 }
 
 /// Ensure Graphiti is running, launch if needed
@@ -119,7 +126,6 @@ pub async fn ensure_graphiti_running(
     server_path: &str,
     log_path: &Path,
 ) -> Result<()> {
-
     // Try waiting for Graphiti first (maybe it's starting up)
     if wait_for_graphiti(base_url, 10).await.is_ok() {
         tracing::info!("Graphiti already running");

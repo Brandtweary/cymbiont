@@ -32,10 +32,9 @@ CUSTOMIZE:
 Edit the CONFIGURATION section below to match your project structure.
 """
 
-import os
 import re
-import sys
 import subprocess
+import sys
 from pathlib import Path
 
 # ============================================================================
@@ -112,7 +111,7 @@ def parse_and_split_map(map_file: str, output_dir: str, project_name: str) -> No
         output_dir: Base output directory (e.g., corpus/codebase_maps/)
         project_name: Name of the project (used as subdirectory)
     """
-    with open(map_file, 'r') as f:
+    with open(map_file) as f:
         content = f.read()
 
     # Rust version format: `filename`:
@@ -190,15 +189,15 @@ def main():
     print(f"✓ Generated temporary map at {temp_map}")
 
     # Parse and split
-    print(f"Splitting map into individual files...")
+    print("Splitting map into individual files...")
     parse_and_split_map(str(temp_map), CORPUS_DIR, project_name)
 
     # Clean up temp file
     temp_map.unlink()
-    print(f"✓ Cleaned up temporary map file")
+    print("✓ Cleaned up temporary map file")
 
     print(f"\n✓ Codebase maps written to {CORPUS_DIR}/{project_name}/")
-    print(f"  Files will be synced to knowledge graph on next doc sync (hourly or manual)")
+    print("  Files will be synced to knowledge graph on next doc sync (hourly or manual)")
 
 
 if __name__ == "__main__":

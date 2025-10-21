@@ -59,7 +59,9 @@ pub struct SearchContextRequest {
     #[schemars(description = "Search query string")]
     pub query: String,
 
-    #[schemars(description = "Maximum number of nodes to return (default: 5). Facts are returned at 2x this value (N nodes + 2N facts)")]
+    #[schemars(
+        description = "Maximum number of nodes to return (default: 5). Facts are returned at 2x this value (N nodes + 2N facts)"
+    )]
     pub max_results: Option<usize>,
 }
 

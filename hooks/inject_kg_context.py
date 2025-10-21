@@ -14,11 +14,11 @@ import json
 import os
 import sys
 import time
-import yaml
 from pathlib import Path
 from typing import Any
 
 import httpx
+import yaml
 
 
 def get_log_directory() -> Path:
@@ -28,7 +28,7 @@ def get_log_directory() -> Path:
 
     try:
         if config_path.exists():
-            with open(config_path, 'r') as f:
+            with open(config_path) as f:
                 config = yaml.safe_load(f)
                 if config and 'logging' in config and 'log_directory' in config['logging']:
                     return Path(config['logging']['log_directory'])
@@ -50,7 +50,7 @@ class Node:
 class Edge:
     """Simple edge container matching Graphiti edge structure."""
     def __init__(self, uuid: str, name: str, fact: str, source_node_uuid: str, target_node_uuid: str,
-                 source_node_name: str = None, target_node_name: str = None):
+                 source_node_name: str | None = None, target_node_name: str | None = None):
         self.uuid = uuid
         self.name = name
         self.fact = fact
@@ -131,7 +131,7 @@ def get_last_assistant_message(transcript_path: str) -> str | None:
 
     last_assistant_msg = None
 
-    with open(transcript_path, 'r') as f:
+    with open(transcript_path) as f:
         for line in f:
             try:
                 entry = json.loads(line.strip())
@@ -271,7 +271,7 @@ def format_xml_context(
     user_edges: list[Any],
     agent_nodes: list[Any],
     agent_edges: list[Any],
-    errors: list[str] = None,
+    errors: list[str] | None = None,
     elapsed_time: float = 0.0
 ) -> str:
     """
@@ -351,7 +351,7 @@ def main():
                     age_seconds = time.time() - mtime
                     f.write(f"Transcript age: {age_seconds:.1f}s (modified: {time.ctime(mtime)})\n")
                 else:
-                    f.write(f"Transcript not found or empty path\n")
+                    f.write("Transcript not found or empty path\n")
         except Exception:
             pass
 
@@ -365,7 +365,6 @@ def main():
         timing_breakdown['transcript'] = time.time() - start_time
 
         # Query knowledge graph with dual context
-        query_start = time.time()
         try:
             user_nodes_raw, user_edges_raw, agent_nodes_raw, agent_edges_raw, query_timing = asyncio.run(
                 query_dual_context(user_prompt, agent_msg)

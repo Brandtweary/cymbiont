@@ -133,10 +133,11 @@ pub struct VerbosityConfig {
 }
 
 /// Monitoring configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MonitoringConfig {
     pub save_logs: bool,
+    pub collect_improvement_notes: bool,
 }
 
 // Default implementations
@@ -180,14 +181,6 @@ impl Default for VerbosityConfig {
             info_threshold: 50,
             debug_threshold: 100,
             trace_threshold: 200,
-        }
-    }
-}
-
-impl Default for MonitoringConfig {
-    fn default() -> Self {
-        Self {
-            save_logs: true, // Backward compatible default
         }
     }
 }

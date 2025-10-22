@@ -21,9 +21,10 @@ Counter-based monitoring system that spawns a background agent every 10 messages
 
 Spawned by `monitoring_agent.py` to run Claude Code in the background, analyze conversation transcripts, and add episodes to the knowledge graph. Runs fully detached to avoid blocking the main conversation.
 
-**Observability logs** are controlled by `monitoring.save_logs` in `config.yaml`:
-- When `true`: Saves original transcripts, agent output, memory summaries, improvement notes (for system developers)
-- When `false` (default): Episodes still added to graph, but without debug artifacts (reduces disk usage)
+**Observability logs** are controlled by two config options:
+- `monitoring.save_logs`: When `true`, saves original transcripts, agent output, memory summaries (for debugging)
+- `monitoring.collect_improvement_notes`: When `true` (requires `save_logs: true`), also collects improvement notes for fine-tuning datasets
+- Default for both: `false` (episodes still added to graph, minimal disk usage)
 
 ### `monitoring_protocol.txt`
 **Configuration**

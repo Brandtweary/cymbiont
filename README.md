@@ -432,7 +432,7 @@ verbosity:
 
 monitoring:
   save_logs: false  # Save observability logs (transcripts, agent output, memory summaries)
-                    # Set to true if you want to debug or fine-tune the monitoring system
+  collect_improvement_notes: false  # Collect fine-tuning dataset (requires save_logs: true)
 ```
 
 ### Data Model

@@ -57,7 +57,11 @@ verbosity:
 
 monitoring:
   # Save observability logs for monitoring agent runs
-  # When true: saves original transcripts, agent output, memory summaries, improvement notes
+  # When true: saves original transcripts, agent output, memory summaries
   # When false: episodes still get added to graph, just without debug artifacts
   # Most users won't need this - it's primarily for system developers
   save_logs: false
+
+  # Collect improvement notes for fine-tuning datasets (requires save_logs: true)
+  # Local only - flags problematic behavior in improvement_notes.md for supervised learning
+  collect_improvement_notes: false

@@ -31,7 +31,7 @@ def get_log_directory() -> Path:
 
 
 def get_monitoring_config() -> bool:
-    """Get monitoring.save_logs from config.yaml, default to True if not found."""
+    """Get monitoring.save_logs from config.yaml, default to False if not found."""
     script_dir = Path(__file__).parent
     config_path = script_dir.parent / "config.yaml"
 
@@ -44,7 +44,24 @@ def get_monitoring_config() -> bool:
     except Exception:
         pass
 
-    return True  # Default: save logs for backward compatibility
+    return False
+
+
+def get_improvement_notes_config() -> bool:
+    """Get monitoring.collect_improvement_notes from config.yaml, default to False if not found."""
+    script_dir = Path(__file__).parent
+    config_path = script_dir.parent / "config.yaml"
+
+    try:
+        if config_path.exists():
+            with open(config_path) as f:
+                config = yaml.safe_load(f)
+                if config and 'monitoring' in config and 'collect_improvement_notes' in config['monitoring']:
+                    return bool(config['monitoring']['collect_improvement_notes'])
+    except Exception:
+        pass
+
+    return False
 
 
 def extract_text_content(content) -> str:
@@ -199,6 +216,7 @@ def main():
 
     # Get monitoring config
     save_logs = get_monitoring_config()
+    collect_improvement_notes = get_improvement_notes_config()
 
     # Add delay for force triggers to let compaction stabilize
     if trigger_type == "force":
@@ -304,18 +322,18 @@ def main():
         # Substitute $MONITORING_LOG_DIR placeholder with actual path
         protocol_text = protocol_path.read_text().replace("$MONITORING_LOG_DIR", str(monitoring_log_dir))
 
-        # Conditionally append improvement notes instructions if save_logs enabled
-        if save_logs:
+        # Conditionally append improvement notes instructions if both flags enabled
+        if save_logs and collect_improvement_notes:
             protocol_text += IMPROVEMENT_NOTES_INSTRUCTIONS.replace("$MONITORING_LOG_DIR", str(monitoring_log_dir))
 
         system_prompt = protocol_text + "\n\n" + transcript_text
 
-        # Build allowed tools list (only include Write if save_logs enabled)
+        # Build allowed tools list (only include Write if improvement notes enabled)
         allowed_tools = [
             "mcp__cymbiont__search_context",
             "mcp__cymbiont__add_memory",
         ]
-        if save_logs:
+        if save_logs and collect_improvement_notes:
             allowed_tools.append("Write")
 
         result = subprocess.run(

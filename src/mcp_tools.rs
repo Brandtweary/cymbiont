@@ -95,7 +95,7 @@ impl CymbiontService {
     /// Add memory episode to knowledge graph
     #[tool(
         name = "add_memory",
-        description = "Add a new memory episode to the knowledge graph"
+        description = "Add new memory episode to knowledge graph"
     )]
     async fn add_memory(&self, params: Parameters<AddMemoryRequest>) -> Result<String, String> {
         let req = &params.0;
@@ -113,7 +113,7 @@ impl CymbiontService {
     /// Get recent episodes from knowledge graph
     #[tool(
         name = "get_episodes",
-        description = "Get recent episodes from the knowledge graph"
+        description = "Get recent episodes from knowledge graph"
     )]
     async fn get_episodes(&self, params: Parameters<GetEpisodesRequest>) -> Result<String, String> {
         let req = &params.0;
@@ -131,7 +131,7 @@ impl CymbiontService {
     /// Delete episode by UUID
     #[tool(
         name = "delete_episode",
-        description = "Delete an episode from the knowledge graph by UUID"
+        description = "Delete episode by UUID"
     )]
     async fn delete_episode(
         &self,
@@ -151,7 +151,7 @@ impl CymbiontService {
     /// Trigger manual document synchronization
     #[tool(
         name = "sync_documents",
-        description = "Trigger manual document synchronization for all corpus files"
+        description = "Trigger manual document sync for corpus files"
     )]
     async fn sync_documents(
         &self,
@@ -166,7 +166,7 @@ impl CymbiontService {
     /// Search for both nodes and facts in parallel
     #[tool(
         name = "search_context",
-        description = "Search for both nodes and facts in the knowledge graph. Note: Node summaries compress original content. Use get_chunks(keyword_query) when you need exact wording, technical precision, or source verification."
+        description = "Search entities and relationships (compressed summaries - use get_chunks for exact text)"
     )]
     async fn search_context(
         &self,
@@ -199,7 +199,7 @@ impl CymbiontService {
     /// Search document chunks by keyword (BM25)
     #[tool(
         name = "get_chunks",
-        description = "Search document chunks by keyword (BM25). Use when you need exact wording, technical precision, or source verification."
+        description = "BM25 keyword search over raw document chunks"
     )]
     async fn get_chunks(&self, params: Parameters<GetChunksRequest>) -> Result<String, String> {
         let req = &params.0;

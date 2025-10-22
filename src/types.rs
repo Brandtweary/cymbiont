@@ -1,5 +1,17 @@
 //! Request/response types for MCP tools
 //!
+//! ## rmcp SDK Behavior: Struct Doc Comments Override Tool Descriptions
+//!
+//! **CRITICAL**: The rmcp SDK prioritizes struct doc comments (`///`) over `#[tool(description)]`
+//! attributes when generating MCP tool schemas. This is a footgun.
+//!
+//! - **With struct doc comment**: rmcp uses the struct comment, ignoring `#[tool(description)]`
+//! - **Without struct doc comment**: rmcp correctly uses `#[tool(description)]` from mcp_tools.rs
+//!
+//! **Our convention**: DO NOT add doc comments to these request structs. Tool descriptions belong
+//! in `mcp_tools.rs` under the `#[tool]` attribute, not here. Keep these structs documentation-free
+//! to avoid shadowing the canonical descriptions.
+//!
 //! ## Claude Code MCP Display Bug
 //!
 //! There is a known flakey bug in Claude Code where MCP tools with empty parameter schemas
@@ -26,60 +38,52 @@ use serde::{Deserialize, Serialize};
 
 // === Functional Tool Requests (v1) ===
 
-/// Add memory episode to knowledge graph
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AddMemoryRequest {
-    #[schemars(description = "Name for the episode")]
+    #[schemars(description = "Episode name")]
     pub name: String,
 
-    #[schemars(description = "Episode content/body")]
+    #[schemars(description = "Episode content")]
     pub episode_body: String,
 
     #[schemars(description = "Source description")]
     pub source_description: Option<String>,
 }
 
-/// Get recent episodes from knowledge graph
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct GetEpisodesRequest {
-    #[schemars(description = "Number of most recent episodes to retrieve (default: 10)")]
+    #[schemars(description = "Recent episodes to retrieve (default: 10)")]
     pub last_n: Option<usize>,
 }
 
-/// Delete episode by UUID
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DeleteEpisodeRequest {
-    #[schemars(description = "UUID of the episode to delete")]
+    #[schemars(description = "Episode UUID")]
     pub uuid: String,
 }
 
-/// Search for both nodes and facts in parallel
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SearchContextRequest {
-    #[schemars(description = "Search query string")]
+    #[schemars(description = "Search query")]
     pub query: String,
 
-    #[schemars(
-        description = "Maximum number of nodes to return (default: 5). Facts are returned at 2x this value (N nodes + 2N facts)"
-    )]
+    #[schemars(description = "Max nodes (default: 5, facts: 2x)")]
     pub max_results: Option<usize>,
 }
 
-/// Trigger manual document sync (always runs async)
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SyncDocumentsRequest {
     // Empty - no parameters needed
 }
 
-/// Search document chunks by keyword (BM25)
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct GetChunksRequest {
-    #[schemars(description = "BM25 keyword search query (searches content)")]
+    #[schemars(description = "Keyword query")]
     pub keyword_query: String,
 
-    #[schemars(description = "Maximum number of chunks to return (default: 10)")]
+    #[schemars(description = "Max chunks (default: 10)")]
     pub max_results: Option<usize>,
 
-    #[schemars(description = "Optional semantic reranking query using cross-encoder")]
+    #[schemars(description = "Reranking query (cross-encoder)")]
     pub rerank_query: Option<String>,
 }

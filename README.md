@@ -102,7 +102,7 @@ Cymbiont embraces an append-only model inherited from Graphiti. Rather than edit
 
 - **Add liberally**: Graph search scales sub-linearly; don't be stingy with memories or synced documents
 - **Use synced documents for content you'll edit**: Files in your corpus are easy to review and modify manually; conversational episodes become append-only memory
-- **Follow PKM hygiene**: No log files, no bulk external sources - link to external resources instead of ingesting them
+- **Follow PKM hygiene**: No log files, no bulk external sources - link to external resources instead of ingesting them. As a safety mechanism, documents exceeding 1MB (configurable via `GRAPHITI_MAX_DOCUMENT_SIZE_MB`) are automatically rejected during sync.
 - **Be cautious with automation**: Homegrown scripts can easily dump thousands of files with unbounded API costs; the code2prompt post-commit hook (included in `hooks/`) regenerates codebase maps after every commit, but you'll want to filter out submodules or directories you've already indexed separately to avoid double-indexing the same code
 - **Expect initial costs**: Your first corpus sync may cost $10-50 depending on size (assuming several hundred pages of notes), but costs stabilize quickly once you're only adding documents manually
 
@@ -171,6 +171,7 @@ MODEL_NAME=gpt-5-mini                      # Main LLM for entity/relationship ex
 SMALL_MODEL_NAME=gpt-5-nano                # Small LLM for deduplication/attributes
 EMBEDDING_MODEL_NAME=text-embedding-3-small # Embedding model for vector search
 SEMAPHORE_LIMIT=10                         # Concurrent LLM operations
+GRAPHITI_MAX_DOCUMENT_SIZE_MB=1            # Max file size for corpus ingestion (prevents credit waste from accidental huge files)
 LOG_FILE=/path/to/cymbiont/logs/graphiti_latest.log  # Optional: Customize log path
 EOF
 ```

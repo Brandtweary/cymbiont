@@ -127,14 +127,15 @@ pub async fn ensure_graphiti_running(
     log_path: &Path,
 ) -> Result<()> {
     // Try waiting for Graphiti first (maybe it's starting up)
-    if wait_for_graphiti(base_url, 10).await.is_ok() {
+    // Increased to 20 attempts to account for Python environment cold start (~7s)
+    if wait_for_graphiti(base_url, 20).await.is_ok() {
         tracing::info!("Graphiti already running");
         return Ok(());
     }
 
     // Still not running - launch it
     launch_graphiti(server_path, log_path)?;
-    wait_for_graphiti(base_url, 10).await?; // 10 attempts * 500ms = 5s max
+    wait_for_graphiti(base_url, 20).await?; // 20 attempts * 500ms = 10s max (accounts for uv + Python startup)
 
     Ok(())
 }

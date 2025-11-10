@@ -117,6 +117,12 @@ The graph grows organically as you work. Treat it like a living PKM system, not 
 - **Python 3.10+**: For the knowledge graph backend
 - **Neo4j**: Graph database
 - **OpenAI API Key**: For entity extraction and semantic search
+- **C compiler and build tools**: Required for compiling Rust dependencies with native code
+  - Ubuntu/Debian: `sudo apt install build-essential`
+  - macOS: `xcode-select --install`
+  - Other Linux: Install gcc, make, and related development tools
+
+**Note**: The Python backend requires ~4GB of dependencies including PyTorch with CUDA libraries (standard for ML frameworks). Power users comfortable with dependency management can investigate CPU-only alternatives.
 
 ### Installation
 

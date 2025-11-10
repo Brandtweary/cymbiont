@@ -65,3 +65,8 @@ monitoring:
   # Collect improvement notes for fine-tuning datasets (requires save_logs: true)
   # Local only - flags problematic behavior in improvement_notes.md for supervised learning
   collect_improvement_notes: false
+
+  # Show KG query performance timing in injected context (for profiling)
+  # Displays total execution time in <query-performance> tag
+  # Performance warnings (>5s) always trigger regardless of this setting
+  show_kg_query_performance: false

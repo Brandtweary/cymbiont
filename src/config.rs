@@ -138,6 +138,7 @@ pub struct VerbosityConfig {
 pub struct MonitoringConfig {
     pub save_logs: bool,
     pub collect_improvement_notes: bool,
+    pub show_kg_query_performance: bool,
 }
 
 // Default implementations

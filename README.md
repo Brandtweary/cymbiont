@@ -434,6 +434,7 @@ verbosity:
 monitoring:
   save_logs: false  # Save observability logs (transcripts, agent output, memory summaries)
   collect_improvement_notes: false  # Collect fine-tuning dataset (requires save_logs: true)
+  show_kg_query_performance: false  # Show query timing in KG context (for profiling)
 ```
 
 ### Data Model

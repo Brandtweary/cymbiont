@@ -38,6 +38,23 @@ def get_log_directory() -> Path:
     return script_dir.parent / "logs"
 
 
+def should_show_query_performance() -> bool:
+    """Check if KG query performance timing should be displayed."""
+    script_dir = Path(__file__).parent
+    config_path = script_dir.parent / "config.yaml"
+
+    try:
+        if config_path.exists():
+            with open(config_path) as f:
+                config = yaml.safe_load(f)
+                if config and 'monitoring' in config:
+                    return config['monitoring'].get('show_kg_query_performance', False)
+    except Exception:
+        pass
+
+    return False  # Default: disabled
+
+
 # Simple data classes for graph results
 class Node:
     """Simple node container matching Graphiti node structure."""
@@ -272,17 +289,18 @@ def format_xml_context(
     agent_nodes: list[Any],
     agent_edges: list[Any],
     errors: list[str] | None = None,
-    elapsed_time: float = 0.0
+    elapsed_time: float = 0.0,
+    show_performance: bool = False
 ) -> str:
     """
     Format dual-context query results as XML for injection into Claude's context.
     """
     xml_parts = ["<knowledge-graph>"]
 
-    # Performance timing
-    xml_parts.append(f"<query-performance>{elapsed_time:.3f}s</query-performance>")
-
-    xml_parts.append("")  # blank line
+    # Performance timing (configurable via monitoring.show_kg_query_performance)
+    if show_performance:
+        xml_parts.append(f"<query-performance>{elapsed_time:.3f}s</query-performance>")
+        xml_parts.append("")  # blank line
 
     # Error section (if any errors occurred)
     if errors:
@@ -389,6 +407,8 @@ def main():
         elapsed_time = time.time() - start_time
 
         # Alert on performance degradation
+        # Note: Empirically observe warm-up period over first ~5 conversation turns
+        # (4.7s → 3.0s → 3.2s → 2.4s → 2.2s → 3.0s → 2.2s, trending toward ~2s).
         if elapsed_time > 5.0:
             errors.append(f"Performance warning: KG query took {elapsed_time:.3f}s (threshold: 5.0s)")
 
@@ -399,7 +419,8 @@ def main():
         errors.append(f"Traceback: {traceback.format_exc()}")
 
     # Always format and print context (even if empty/with errors)
-    xml_context = format_xml_context(user_nodes, user_edges, agent_nodes, agent_edges, errors, elapsed_time)
+    show_performance = should_show_query_performance()
+    xml_context = format_xml_context(user_nodes, user_edges, agent_nodes, agent_edges, errors, elapsed_time, show_performance)
     print(xml_context)
     sys.exit(0)
 

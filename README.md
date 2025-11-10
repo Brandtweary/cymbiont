@@ -122,7 +122,7 @@ The graph grows organically as you work. Treat it like a living PKM system, not 
   - macOS: `xcode-select --install`
   - Other Linux: Install gcc, make, and related development tools
 
-**Note**: The Python backend requires ~4GB of dependencies including PyTorch with CUDA libraries (standard for ML frameworks). Power users comfortable with dependency management can investigate CPU-only alternatives.
+**Note**: The Python backend requires ~4GB of dependencies including PyTorch with CUDA libraries
 
 ### Installation
 
